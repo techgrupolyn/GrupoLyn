@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { CeoLogin, hasUsableCeoToken, isCeoView, shouldShowCeoDashboard, shouldShowCeoLogin } from './ceo-dashboard/CeoLogin';
+import { CeoLogin, hasUsableCeoToken, initialDashboardView, isCeoView, shouldShowCeoDashboard, shouldShowCeoLogin } from './ceo-dashboard/CeoLogin';
 import api from './api';
 const CEOApp = lazy(() => import('./ceo-dashboard/App'));
 
@@ -1598,12 +1598,7 @@ export default function App() {
   const [authorizing, setAuthorizing] = useState(false);
   const [authorizeError, setAuthorizeError] = useState(null);
   const [pendingNumberError, setPendingNumberError] = useState(null);
-  const [view, setView] = useState(() => {
-    const params = new URLSearchParams(window.location.search);
-    const urlView = params.get('view');
-    if (urlView) return urlView;
-    return 'home';
-  });
+  const [view, setView] = useState(() => initialDashboardView(window.location.search, window.location.hostname));
   const [chatTab, setChatTab] = useState('chats');
   const [batchItems, setBatchItems] = useState([]);
   const [batchDrafts, setBatchDrafts] = useState({});

@@ -16,6 +16,12 @@ export function isCeoView(view) {
   return CEO_VIEWS.has(String(view || '').toLowerCase());
 }
 
+export function initialDashboardView(search = '', hostname = '') {
+  const requestedView = new URLSearchParams(search).get('view');
+  if (requestedView) return requestedView;
+  return String(hostname).toLowerCase().startsWith('ceo.') ? 'ceo' : 'home';
+}
+
 export function shouldShowCeoDashboard(view, ceoUser) {
   return isCeoView(view) && Boolean(ceoUser);
 }
