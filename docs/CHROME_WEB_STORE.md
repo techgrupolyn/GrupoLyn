@@ -1,4 +1,4 @@
-# Publicación no listada en Chrome Web Store
+# Publicación pública en Chrome Web Store
 
 ## Artefacto de subida
 
@@ -9,7 +9,7 @@ Sube `extension/dist/lyn-superagente-extension.zip` desde Chrome Web Store Devel
 - **Nombre:** LYN Superagente
 - **Resumen:** Asistente interno para revisar chats grupales de WhatsApp Web, sincronizar pendientes y preparar respuestas con IA.
 - **Categoría:** Productividad
-- **Visibilidad:** Unlisted / No listado
+- **Visibilidad:** Public / Pública
 - **URL de política de privacidad:** `https://ceo.grupolyn.com/privacy.html`
 - **Sitio web:** `https://ceo.grupolyn.com`
 
@@ -46,4 +46,4 @@ Chrome Web Store exige material visual real de la extensión. Antes de enviar, c
 
 ## Distribución a empleados
 
-Tras aprobarse, selecciona **Unlisted**. Comparte solamente la URL de Chrome Web Store con cada empleado. Cada persona instala con un clic, recibe su código único, lo pega una vez y vincula su WhatsApp mediante QR. Las actualizaciones posteriores se entregan automáticamente por Chrome.
+Tras aprobarse, selecciona **Public**. La ficha será visible en Chrome Web Store, pero la plataforma no permite operar sin un código de activación `LYN1` válido, de un solo uso, vinculado a una cuenta y revocable por el CEO. Comparte la URL de Chrome Web Store con cada empleado. Cada persona instala con un clic, recibe su código único, lo pega una vez y vincula su WhatsApp mediante QR. Las actualizaciones posteriores se entregan automáticamente por Chrome.
