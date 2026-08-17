@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "LYN Superagente",
+  "version": "1.0.0",
+  "description": "Extensión profesional conectada a Evolution API y backend para análisis IA, clasificación de urgencia y respuesta asistida.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "alarms",
+    "notifications",
+    "sidePanel",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "http://localhost:3003/*",
+    "http://localhost:8080/*",
+    "http://127.0.0.1:3003/*",
+    "http://127.0.0.1:8080/*",
+    "https://*/*",
+    "https://web.whatsapp.com/*",
+    "https://api.whatsapp.com/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https: http://localhost:3003 http://localhost:8080 http://127.0.0.1:3003 http://127.0.0.1:8080 ws://localhost:* ws://127.0.0.1:*;",
+    "service_worker": "script-src 'self'; object-src 'self';"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["src/content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "LYN Superagente",
+    "default_icon": {
+      "16": "scripts/icons/icon16.png",
+      "48": "scripts/icons/icon48.png",
+      "128": "scripts/icons/icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/sidepanel.html"
+  },
+  "options_page": "src/options/options.html",
+  "icons": {
+    "16": "scripts/icons/icon16.png",
+    "48": "scripts/icons/icon48.png",
+    "128": "scripts/icons/icon128.png"
+  }
+}

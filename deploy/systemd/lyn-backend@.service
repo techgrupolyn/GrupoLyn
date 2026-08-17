@@ -1,0 +1,21 @@
+[Unit]
+Description=LYN Superagente backend (%i)
+After=network-online.target postgresql.service lyn-evolution@%i.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lyn
+Group=lyn
+WorkingDirectory=/opt/lyn/backend
+EnvironmentFile=/etc/lyn/instances/%i/backend.env
+ExecStart=/usr/bin/npm run start:prod
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/lyn
+
+[Install]
+WantedBy=multi-user.target

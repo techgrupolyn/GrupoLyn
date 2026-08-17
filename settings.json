@@ -1,0 +1,1 @@
+{"webhook": "http://localhost:3000/webhook/evolution", "webhookByEvents": true, "webhookEvents": ["messages", "chats", "contacts", "presence"]}

@@ -1,0 +1,21 @@
+[Unit]
+Description=LYN Evolution API (%i)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lyn
+Group=lyn
+WorkingDirectory=/opt/lyn/evolution-api
+EnvironmentFile=/etc/lyn/instances/%i/evolution.env
+ExecStart=/usr/bin/npm run start:prod
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/lyn/evolution-api
+
+[Install]
+WantedBy=multi-user.target

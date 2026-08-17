@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LYN Superagente - Configuración</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+      background: #0d0f12;
+      color: #f2f2f2;
+      padding: 24px;
+    }
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 18px;
+      margin: 0 0 16px;
+      color: #00a884;
+    }
+    .card {
+      border: 1px solid #2a3942;
+      border-radius: 12px;
+      background: #111b21;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .field {
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: #8696a0;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+    }
+    input, select {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid #2a3942;
+      background: #0d0d0d;
+      color: #f2f2f2;
+      padding: 10px;
+      font-size: 13px;
+    }
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    button {
+      cursor: pointer;
+      border-radius: 8px;
+      border: 1px solid #2a3942;
+      background: #202c33;
+      color: #f2f2f2;
+      padding: 10px 14px;
+      font-size: 12px;
+    }
+    button.primary {
+      background: #00a884;
+      border-color: #00a884;
+      color: #000;
+      font-weight: 600;
+    }
+    .status {
+      font-size: 12px;
+      color: #10b981;
+    }
+    .error {
+      font-size: 12px;
+      color: #ef4444;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Configuración de LYN Superagente</h1>
+
+    <div class="card">
+      <h2 style="font-size:14px;margin:0 0 8px;color:#f2f2f2;">Activar extensión</h2>
+      <p style="font-size:12px;line-height:1.5;color:#8696a0;margin:0 0 12px;">Pegá el código de un solo uso entregado por el CEO. Luego abrí el panel y escaneá el QR de tu cuenta WhatsApp.</p>
+      <div class="field">
+        <label>Código de activación</label>
+        <input id="activationCode" type="text" autocomplete="off" placeholder="LYN1..." />
+      </div>
+      <div class="actions">
+        <button id="activate" class="primary">Activar</button>
+      </div>
+      <div id="activationStatus" class="status" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card">
+      <div class="field">
+        <label>Backend URL (avanzado)</label>
+        <input id="backendUrl" type="text" value="http://127.0.0.1:3003" />
+      </div>
+      <div class="actions">
+        <button id="save" class="primary">Guardar</button>
+      </div>
+      <div id="status" class="status" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

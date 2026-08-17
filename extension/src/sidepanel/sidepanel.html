@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LYN Superagente</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+      background: #0d0f12;
+      color: #f2f2f2;
+      width: 100%;
+      min-height: 100vh;
+    }
+    .header {
+      border-bottom: 1px solid #2a3942;
+      padding: 14px 16px;
+      background: #111b21;
+    }
+    .title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: #00a884;
+    }
+    .subtitle {
+      margin: 4px 0 0;
+      font-size: 11px;
+      color: #8696a0;
+    }
+    .section {
+      padding: 14px 16px;
+      border-bottom: 1px solid #2a3942;
+    }
+    .section-title {
+      margin: 0 0 8px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: #8696a0;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      border: 1px solid #2a3942;
+      background: #111b21;
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+    }
+    .dot.ok { background: #10b981; }
+    .dot.warn { background: #f59e0b; }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    button {
+      cursor: pointer;
+      border-radius: 8px;
+      border: 1px solid #2a3942;
+      background: #202c33;
+      color: #f2f2f2;
+      padding: 10px 12px;
+      font-size: 12px;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+    button:hover {
+      background: #2a3942;
+      border-color: #8696a0;
+    }
+    button.primary:hover {
+      background: #008f6f;
+      border-color: #008f6f;
+    }
+    button.danger {
+      background: #7f1d1d;
+      border-color: #7f1d1d;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .metric {
+      border-radius: 10px;
+      border: 1px solid #2a3942;
+      background: #0d0d0d;
+      padding: 10px;
+      text-align: center;
+    }
+    .metric-value {
+      font-size: 18px;
+      font-weight: 700;
+      color: #f2f2f2;
+    }
+    .metric-label {
+      margin-top: 4px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: #8696a0;
+    }
+    .empty {
+      color: #737373;
+      font-size: 12px;
+    }
+    .error {
+      color: #ef4444;
+      font-size: 12px;
+    }
+    .chat-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .chat-card {
+      border-radius: 10px;
+      border: 1px solid #2a3942;
+      background: #111b21;
+    }
+    .chat-card.group-chat {
+      border-color: #1d5a6e;
+      background: #0f1d23;
+    }
+    .chat-card.group-chat .chat-card-name {
+      color: #4ecdc4;
+    }
+    .chat-card-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.2s ease;
+    }
+    .chat-card-header:hover {
+      background: #18262e;
+    }
+    .chat-select {
+      width: 18px;
+      height: 18px;
+      margin: 0;
+      accent-color: #00a884;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .chat-card-body {
+      border-top: 1px solid #2a3942;
+      padding: 10px 12px;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      transition: opacity 0.2s ease;
+    }
+    .chat-card-body.open {
+      display: flex;
+    }
+    .chat-card-title {
+      flex: 1;
+      min-width: 0;
+    }
+    .chat-card-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: #f2f2f2 !important;
+      background: #111b21 !important;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .chat-card-meta {
+      font-size: 11px;
+      color: #8696a0 !important;
+      background: #111b21 !important;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+    .chat-card-toggle {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      border: 2px solid #00a884;
+      background: #00a884;
+      color: #000;
+      font-size: 16px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s ease, border-color 0.2s ease;
+      cursor: pointer;
+    }
+    .chat-card-toggle:hover {
+      background: #008f6f;
+      border-color: #008f6f;
+      color: #fff;
+    }
+    .chat-card-section-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #8696a0;
+    }
+    .chat-card-summary,
+    .chat-card-reply {
+      border-radius: 8px;
+      border: 1px solid #2a3942;
+      background: #0d0f12;
+      padding: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #f2f2f2;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .chat-card-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .chat-card-actions button {
+      flex: 1;
+      min-width: 90px;
+      font-size: 12px;
+    }
+    .selection-footer {
+      position: sticky;
+      bottom: 0;
+      z-index: 2;
+      padding: 12px 16px;
+      border-top: 1px solid #2a3942;
+      background: #111b21;
+    }
+    .selection-footer button {
+      width: 100%;
+    }
+    .chat-card-messages {
+      border-radius: 8px;
+      border: 1px solid #2a3942;
+      background: #0d0f12;
+      padding: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #f2f2f2;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .group-message-line {
+      border-left: 2px solid #4ecdc4;
+      padding-left: 6px;
+      margin-bottom: 4px;
+    }
+    .badge-pill {
+      border-radius: 999px;
+      background: #00a884;
+      color: #000;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      min-width: 24px;
+      text-align: center;
+    }
+    .select {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid #2a3942;
+      background: #0d0d0d;
+      color: #f2f2f2;
+      padding: 10px;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    .textarea {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid #2a3942;
+      background: #0d0d0d;
+      color: #f2f2f2;
+      padding: 8px;
+      resize: vertical;
+      min-height: 140px;
+      font-family: inherit;
+      font-size: 13px;
+      line-height: 1.45;
+      margin-bottom: 8px;
+    }
+    .reply-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .reply-actions button {
+      flex: 1;
+    }
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid #2a3942;
+    }
+    .tab {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: #8696a0;
+      padding: 10px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      cursor: pointer;
+    }
+    .tab.active {
+      color: #f2f2f2;
+      border-bottom: 2px solid #00a884;
+    }
+    .panel {
+      padding: 12px 16px;
+    }
+    .panel.hidden {
+      display: none;
+    }
+    .qr-image {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid #2a3942;
+      background: #0d0d0d;
+      margin-top: 10px;
+    }
+    .urgency-alta { border-left: 3px solid #ef4444; }
+    .urgency-media { border-left: 3px solid #f59e0b; }
+    .urgency-baja { border-left: 3px solid #10b981; }
+    .unread { border-left: 3px solid #00a884; }
+    .summary-box {
+      border-radius: 10px;
+      border: 1px solid #2a3942;
+      background: #111b21;
+      padding: 12px;
+      margin-top: 10px;
+      white-space: pre-wrap;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #f2f2f2;
+    }
+    .hidden { display: none !important; }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .status-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      border: 1px solid #2a3942;
+      background: #111b21;
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+    .status-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .icon-button {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      border: 1px solid #2a3942;
+      background: #202c33;
+      color: #f2f2f2;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+    .icon-button:hover {
+      background: #2a3942;
+      border-color: #8696a0;
+    }
+    .privacy-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      border: 1px solid #2a3942;
+      background: #111b21;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+    .privacy-chip.active {
+      background: #00a884;
+      color: #000;
+      border-color: #00a884;
+    }
+    .role-section {
+      margin-top: 10px;
+    }
+    .auto-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      border: 1px solid #2a3942;
+      background: #111b21;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: #8696a0;
+    }
+    .auto-badge.on {
+      background: #111b21;
+      border-color: #00a884;
+      color: #00a884;
+    }
+  </style>
+</head>
+<body>
+  <div id="panel-login" class="panel hidden">
+    <div class="header">
+      <div class="title">LYN Superagente</div>
+      <div class="subtitle">Extensión conectada a Evolution API</div>
+    </div>
+    <div class="section">
+      <div class="status-bar">
+        <div class="status-left">
+          <div class="status-chip">
+            <span class="dot" id="status-dot-login"></span>
+            <span id="status-text-login">Desconectado</span>
+          </div>
+        </div>
+        <div class="status-actions">
+          <button id="btn-refresh-status-login" class="icon-button" title="Actualizar estado">⟳</button>
+        </div>
+      </div>
+      <button id="btn-open-qr" style="width:100%;margin-top:10px;">Abrir QR</button>
+      <div id="qr-output" class="empty" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+
+  <div id="panel-role-setup" class="panel hidden">
+    <div class="header">
+      <div class="title">LYN Superagente</div>
+      <div class="subtitle">Cuenta WhatsApp vinculada</div>
+    </div>
+    <div class="section">
+      <div class="section-title">Asistente predeterminado</div>
+      <p class="empty" style="line-height:1.5;margin:0 0 12px;">Elegí el asistente de IA que analizará tus chats por defecto. Podrás cambiarlo cuando quieras desde el panel.</p>
+      <select id="default-specialist-select" class="select" aria-label="Asistente predeterminado"></select>
+      <button id="btn-confirm-default-role" class="primary" style="width:100%;">Continuar</button>
+      <div id="default-role-status" class="empty" style="margin-top:10px;"></div>
+    </div>
+  </div>
+  <div id="panel-main" class="panel hidden">
+    <div class="header">
+      <div class="title">LYN Superagente</div>
+      <div class="subtitle">Extensión conectada a Evolution API</div>
+      <div class="status-bar" style="margin-top:8px;">
+        <div class="status-left">
+          <div class="status-chip">
+            <span class="dot" id="status-dot-main"></span>
+            <span id="status-text-main">Desconectado</span>
+          </div>
+          <div id="privacy-chip" class="privacy-chip" title="Modo privacidad: leer sin marcar como leído">
+            <span>👁️ Privacidad</span>
+          </div>
+        </div>
+        <div class="status-actions">
+          <button id="btn-refresh-status-main" class="icon-button" title="Actualizar estado">⟳</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Rol</div>
+      <select id="specialist-select" class="select"></select>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Chats pendientes</div>
+      <div id="chat-list" class="chat-list"></div>
+    </div>
+
+    <div class="selection-footer">
+      <button id="btn-send-selected" class="primary" disabled>Responder seleccionados (0)</button>
+      <div id="selection-status" class="empty" style="margin-top:8px;"></div>
+    </div>
+  </div>
+
+  <div id="panel-chat" class="panel hidden">
+    <div class="header">
+      <div class="title">LYN Superagente</div>
+      <div class="subtitle" id="chat-title">Chat</div>
+      <div class="status-bar" style="margin-top:8px;">
+        <div class="status-left">
+          <div class="status-chip">
+            <span class="dot" id="status-dot-chat"></span>
+            <span id="status-text-chat">Desconectado</span>
+          </div>
+        </div>
+        <div class="status-actions">
+          <button id="btn-refresh-status-chat" class="icon-button" title="Actualizar estado">⟳</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Resumen</div>
+      <button id="btn-summary" class="primary" style="width:100%;">Generar resumen</button>
+      <div id="summary-output" class="empty" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Respuesta sugerida</div>
+      <button id="btn-generate-reply" class="primary" style="width:100%;">Generar respuesta</button>
+      <textarea id="reply-text" class="textarea" placeholder="Editá la respuesta antes de enviarla..." style="margin-top:10px;"></textarea>
+      <div class="reply-actions" style="margin-top:8px;">
+        <button id="btn-copy">Copiar</button>
+        <button id="btn-regenerate">Regenerar</button>
+        <button id="btn-send" class="primary">Enviar respuesta</button>
+      </div>
+      <div id="reply-output" class="empty" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="section">
+      <button id="btn-back-chats" style="width:100%;">Volver a chats</button>
+    </div>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
