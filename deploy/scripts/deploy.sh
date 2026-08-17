@@ -19,7 +19,7 @@ fi
 
 ensure_env_access
 
-"$ROOT/deploy/scripts/preflight.sh"
+bash "$ROOT/deploy/scripts/preflight.sh"
 
 run_as_lyn() {
   runuser -u lyn -- "$@"
