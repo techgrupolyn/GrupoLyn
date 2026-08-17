@@ -29,7 +29,7 @@ run_as_lyn npm run build
 cd "$ROOT/evolution-api"
 run_as_lyn npm ci
 run_as_lyn_with_env /etc/lyn/evolution.env npm --prefix "$ROOT/evolution-api" run db:generate
-run_as_lyn npm run build
+run_as_lyn env NODE_OPTIONS=--max-old-space-size=1536 npm run build
 
 cd "$ROOT/frontend"
 run_as_lyn npm ci
