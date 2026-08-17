@@ -68,6 +68,23 @@
       color: #000;
       font-weight: 600;
     }
+    .consent {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 14px 0;
+      color: #8696a0;
+      font-size: 12px;
+      line-height: 1.5;
+      text-transform: none;
+      letter-spacing: normal;
+    }
+    .consent input {
+      width: auto;
+      margin-top: 2px;
+    }
+    a { color: #00a884; }
+    button:disabled { cursor: not-allowed; opacity: 0.5; }
     .status {
       font-size: 12px;
       color: #10b981;
@@ -84,27 +101,21 @@
 
     <div class="card">
       <h2 style="font-size:14px;margin:0 0 8px;color:#f2f2f2;">Activar extensión</h2>
-      <p style="font-size:12px;line-height:1.5;color:#8696a0;margin:0 0 12px;">Pegá el código de un solo uso entregado por el CEO. Luego abrí el panel y escaneá el QR de tu cuenta WhatsApp.</p>
+      <p style="font-size:12px;line-height:1.5;color:#8696a0;margin:0 0 12px;">Pegá el código de un solo uso entregado por el CEO. No necesitás configurar servidores. Luego abrí el panel lateral y vinculá tu cuenta WhatsApp con el QR.</p>
       <div class="field">
         <label>Código de activación</label>
         <input id="activationCode" type="text" autocomplete="off" placeholder="LYN1..." />
       </div>
+      <label class="consent">
+        <input id="privacyAccepted" type="checkbox" />
+        <span>Confirmo que puedo usar esta cuenta de WhatsApp para fines laborales y acepto la <a href="https://ceo.grupolyn.com/privacy.html" target="_blank" rel="noreferrer">política de privacidad</a>.</span>
+      </label>
       <div class="actions">
-        <button id="activate" class="primary">Activar</button>
+        <button id="activate" class="primary" disabled>Activar</button>
       </div>
       <div id="activationStatus" class="status" style="margin-top:10px;"></div>
     </div>
 
-    <div class="card">
-      <div class="field">
-        <label>Backend URL (avanzado)</label>
-        <input id="backendUrl" type="text" value="http://127.0.0.1:3003" />
-      </div>
-      <div class="actions">
-        <button id="save" class="primary">Guardar</button>
-      </div>
-      <div id="status" class="status" style="margin-top:10px;"></div>
-    </div>
   </div>
 
   <script type="module" src="options.js"></script>

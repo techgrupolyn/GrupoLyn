@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "LYN Superagente",
   "version": "1.0.0",
-  "description": "Extensión profesional conectada a Evolution API y backend para análisis IA, clasificación de urgencia y respuesta asistida.",
+  "description": "Asistente interno para analizar chats grupales de WhatsApp Web y preparar resúmenes y respuestas con IA.",
   "permissions": [
     "storage",
     "tabs",
@@ -12,22 +12,21 @@
     "unlimitedStorage"
   ],
   "host_permissions": [
-    "http://localhost:3003/*",
-    "http://localhost:8080/*",
-    "http://127.0.0.1:3003/*",
-    "http://127.0.0.1:8080/*",
-    "https://*/*",
-    "https://web.whatsapp.com/*",
-    "https://api.whatsapp.com/*"
+    "https://ceo.grupolyn.com/*",
+    "https://web.whatsapp.com/*"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https: http://localhost:3003 http://localhost:8080 http://127.0.0.1:3003 http://127.0.0.1:8080 ws://localhost:* ws://127.0.0.1:*;",
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://ceo.grupolyn.com;",
     "service_worker": "script-src 'self'; object-src 'self';"
   },
   "content_scripts": [
     {
-      "matches": ["https://web.whatsapp.com/*"],
-      "js": ["src/content/content.js"],
+      "matches": [
+        "https://web.whatsapp.com/*"
+      ],
+      "js": [
+        "src/content/content.js"
+      ],
       "run_at": "document_idle"
     }
   ],

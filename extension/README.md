@@ -5,8 +5,8 @@ La misma extensión se distribuye a toda la empresa. Cada instalación queda asi
 ## Flujo de empleado
 
 1. El CEO crea la cuenta en **Configuración → Cuentas WhatsApp** y genera un código para ella.
-2. El empleado instala el paquete ZIP o carga esta carpeta en `chrome://extensions` con modo desarrollador.
-3. Abre **Opciones**, pega el código `LYN1...` y activa la extensión una sola vez.
+2. En producción, el empleado instala desde el enlace no listado de Chrome Web Store. Para desarrollo, puede cargar esta carpeta en `chrome://extensions` con modo desarrollador.
+3. Abre **Opciones**, acepta la política de privacidad, pega el código `LYN1...` y activa la extensión una sola vez. El código ya contiene la URL segura del backend.
 4. Abre el panel lateral y escanea el QR de la cuenta asignada.
 5. Elige su rol predeterminado. Chats, mensajes, resúmenes y respuestas quedan aislados de otras cuentas.
 

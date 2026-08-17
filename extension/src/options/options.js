@@ -4,37 +4,37 @@ function $(id) {
   return document.getElementById(id);
 }
 
-async function loadSettings() {
-  const data = await chrome.storage.local.get(['backendUrl', 'activationLabel']);
-  if (data.backendUrl) $('backendUrl').value = data.backendUrl;
-  if (data.activationLabel) $('activationStatus').textContent = `Activada: ${data.activationLabel}`;
-}
-
-function isValidBackendUrl(value) {
-  try {
-    const url = new URL(value);
-    const isLocal = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-    return url.protocol === 'https:' || (url.protocol === 'http:' && isLocal);
-  } catch {
-    return false;
-  }
-}
-
-function setStatus(id, message, isError = false) {
-  const status = $(id);
+function setStatus(message, isError = false) {
+  const status = $('activationStatus');
   status.className = isError ? 'error' : 'status';
   status.textContent = message;
 }
 
+function updateActivationButton() {
+  $('activate').disabled = !$('privacyAccepted').checked;
+}
+
+async function loadSettings() {
+  const data = await chrome.storage.local.get(['activationLabel', 'privacyAccepted']);
+  $('privacyAccepted').checked = Boolean(data.privacyAccepted);
+  updateActivationButton();
+  if (data.activationLabel) setStatus(`Activada: ${data.activationLabel}`);
+}
+
 async function activateExtension() {
+  if (!$('privacyAccepted').checked) {
+    setStatus('Debés aceptar la política de privacidad para activar la extensión.', true);
+    return;
+  }
+
   const parsed = parseActivationCode($('activationCode').value);
   if (!parsed) {
-    setStatus('activationStatus', 'El código no es válido.', true);
+    setStatus('El código no es válido.', true);
     return;
   }
 
   try {
-    setStatus('activationStatus', 'Validando código...');
+    setStatus('Validando código...');
     const response = await fetch(`${parsed.backendUrl}/api/extension/invitations/redeem`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -47,39 +47,20 @@ async function activateExtension() {
       backendUrl: data.backend_url,
       extensionActivationId: data.activation_id || '',
       activationLabel: data.label || 'Cuenta vinculada',
+      privacyAccepted: true,
       defaultSpecialistId: '',
       chats: [],
       messages: {},
     });
-    $('backendUrl').value = data.backend_url;
     $('activationCode').value = '';
-    setStatus('activationStatus', 'Activada. Abrí el panel lateral y escaneá el código QR.');
+    setStatus('Activada. Abrí el panel lateral y escaneá el QR de tu cuenta WhatsApp.');
   } catch (error) {
-    setStatus('activationStatus', `Error: ${error.message || error}`, true);
-  }
-}
-
-async function saveSettings() {
-  const backendUrl = $('backendUrl').value.trim();
-  if (!backendUrl) {
-    setStatus('status', 'Completá la URL del backend', true);
-    return;
-  }
-  if (!isValidBackendUrl(backendUrl)) {
-    setStatus('status', 'Usa HTTPS para servidores remotos; HTTP solo se permite en localhost.', true);
-    return;
-  }
-
-  try {
-    await chrome.storage.local.set({ backendUrl });
-    setStatus('status', 'Guardado');
-  } catch (error) {
-    setStatus('status', `Error: ${error.message || error}`, true);
+    setStatus(`Error: ${error.message || error}`, true);
   }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
   $('activate').addEventListener('click', activateExtension);
-  $('save').addEventListener('click', saveSettings);
+  $('privacyAccepted').addEventListener('change', updateActivationButton);
 });
