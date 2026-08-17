@@ -3,10 +3,21 @@ set -euo pipefail
 
 ROOT=/opt/lyn
 
+ensure_env_access() {
+  install -d -o root -g lyn -m 0750 /etc/lyn
+  for env_file in /etc/lyn/backend.env /etc/lyn/evolution.env; do
+    [[ -f "$env_file" ]] || continue
+    chown root:lyn "$env_file"
+    chmod 0640 "$env_file"
+  done
+}
+
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Ejecuta este script con sudo."
   exit 1
 fi
+
+ensure_env_access
 
 "$ROOT/deploy/scripts/preflight.sh"
 

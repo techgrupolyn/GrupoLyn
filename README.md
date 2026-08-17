@@ -67,7 +67,7 @@ La guía completa está en `docs/PRODUCCION_LIGHTSAIL.md`. El despliegue usa:
 
 - Nginx como único punto público (`80/443`).
 - Backend y Evolution API vinculados a `127.0.0.1`.
-- Variables secretas en `/etc/lyn/*.env` con permisos `600`.
+- Variables secretas en `/etc/lyn/*.env` con propietario `root:lyn` y permisos `640`.
 - Servicios `systemd`, script de despliegue y respaldo PostgreSQL incluidos en `deploy/`.
 
 No expongas PostgreSQL (`5432`), Evolution (`8080`) ni el backend (`3003`) a Internet.

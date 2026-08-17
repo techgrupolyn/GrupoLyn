@@ -21,7 +21,8 @@ sudo apt install -y nodejs
 sudo useradd --system --create-home --home-dir /opt/lyn --shell /usr/sbin/nologin lyn
 sudo mkdir -p /opt/lyn /etc/lyn /var/backups/lyn
 sudo chown -R lyn:lyn /opt/lyn /var/backups/lyn
-sudo chmod 700 /etc/lyn
+sudo chown root:lyn /etc/lyn
+sudo chmod 750 /etc/lyn
 ```
 
 Instala el proyecto en `/opt/lyn` con el usuario `lyn`. No copies `node_modules`, `.env`, ni bases de datos desde desarrollo.

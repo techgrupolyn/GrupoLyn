@@ -21,6 +21,7 @@ check_instance() {
   local backend_env="$1"
   local evolution_env="$2"
   [[ -r "$backend_env" && -r "$evolution_env" ]] || { echo "No se pueden leer los archivos de entorno." >&2; return 1; }
+  runuser -u lyn -- test -r "$backend_env" && runuser -u lyn -- test -r "$evolution_env" || { echo "El usuario lyn no puede leer los archivos de entorno." >&2; return 1; }
   if grep -q 'REEMPLAZA_' "$backend_env" "$evolution_env"; then
     echo "Hay valores REEMPLAZA_ sin configurar." >&2
     return 1
