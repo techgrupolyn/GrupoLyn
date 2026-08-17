@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { CeoLogin, hasUsableCeoToken, initialDashboardView, isCeoView, shouldShowCeoDashboard, shouldShowCeoLogin } from '../src/ceo-dashboard/CeoLogin';
+import { CeoLogin, hasUsableCeoToken, initialDashboardView, isCeoView, shouldPollWhatsappConnection, shouldShowCeoDashboard, shouldShowCeoLogin } from '../src/ceo-dashboard/CeoLogin';
 
 describe('Acceso del panel CEO', () => {
   it('muestra el dashboard solo con sesión CEO y sin depender de WhatsApp', () => {
@@ -12,6 +12,11 @@ describe('Acceso del panel CEO', () => {
     expect(initialDashboardView('', 'ceo.grupolyn.com')).toBe('ceo');
     expect(initialDashboardView('?view=settings', 'ceo.grupolyn.com')).toBe('settings');
     expect(initialDashboardView('', '127.0.0.1')).toBe('home');
+  });
+  it('never polls the WhatsApp QR flow from CEO views', () => {
+    expect(shouldPollWhatsappConnection('ceo', false)).toBe(false);
+    expect(shouldPollWhatsappConnection('settings', false)).toBe(false);
+    expect(shouldPollWhatsappConnection('home', false)).toBe(true);
   });
   it('reconoce las subrutas internas del CEO y nunca las deriva al QR', () => {
     expect(isCeoView('settings')).toBe(true);

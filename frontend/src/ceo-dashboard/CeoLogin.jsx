@@ -22,6 +22,9 @@ export function initialDashboardView(search = '', hostname = '') {
   return String(hostname).toLowerCase().startsWith('ceo.') ? 'ceo' : 'home';
 }
 
+export function shouldPollWhatsappConnection(view, connected) {
+  return !connected && !isCeoView(view);
+}
 export function shouldShowCeoDashboard(view, ceoUser) {
   return isCeoView(view) && Boolean(ceoUser);
 }

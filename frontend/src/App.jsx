@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { CeoLogin, hasUsableCeoToken, initialDashboardView, isCeoView, shouldShowCeoDashboard, shouldShowCeoLogin } from './ceo-dashboard/CeoLogin';
+import { CeoLogin, hasUsableCeoToken, initialDashboardView, isCeoView, shouldPollWhatsappConnection, shouldShowCeoDashboard, shouldShowCeoLogin } from './ceo-dashboard/CeoLogin';
 import api from './api';
 const CEOApp = lazy(() => import('./ceo-dashboard/App'));
 
@@ -1904,7 +1904,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (connected) return;
+    if (!shouldPollWhatsappConnection(view, connected)) return;
     let cancelled = false;
     let timer = null;
 
@@ -1960,7 +1960,7 @@ export default function App() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [connected, qr]);
+  }, [connected, qr, view]);
 
 
   useEffect(() => {
