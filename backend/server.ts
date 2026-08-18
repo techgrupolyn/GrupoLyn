@@ -2,7 +2,6 @@ import 'dotenv/config';
 import cors from 'cors';
 import express, { NextFunction, Request, Response } from 'express';
 import { createServer } from 'http';
-import { Server as SocketIOServer } from 'socket.io';
 import { Pool } from 'pg';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -82,24 +81,31 @@ const pool = new Pool({
 });
 
 const app = express();
+const configuredExtensionOrigins = new Set(
+  (process.env.CHROME_EXTENSION_IDS || '')
+    .split(',')
+    .map((id) => id.trim().toLowerCase())
+    .filter((id) => /^[a-z]{32}$/.test(id))
+    .map((id) => `chrome-extension://${id}`),
+);
+const allowUnregisteredExtensionOrigins = process.env.NODE_ENV !== 'production';
 const allowedOrigins = new Set(
   (process.env.CORS_ALLOWED_ORIGINS || 'http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5175,http://localhost:5175')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
 );
+function isAllowedExtensionOrigin(origin?: string): boolean {
+  if (!origin) return false;
+  return configuredExtensionOrigins.has(origin) || (
+    allowUnregisteredExtensionOrigins && /^chrome-extension:\/\/[a-z]{32}$/i.test(origin)
+  );
+}
 function isAllowedOrigin(origin?: string): boolean {
   if (!origin) return true;
-  return allowedOrigins.has(origin) || /^chrome-extension:\/\/[a-z]{32}$/i.test(origin);
+  return allowedOrigins.has(origin) || isAllowedExtensionOrigin(origin);
 }
-function requireLoopbackRequest(req: Request, res: Response, next: NextFunction): void {
-  const remoteAddress = String(req.socket.remoteAddress || '');
-  if (remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1') {
-    next();
-    return;
-  }
-  res.status(403).json({ error: 'La API solo acepta conexiones locales' });
-}
+app.set('trust proxy', 1);
 app.use(cors({
   origin(origin, callback) {
     callback(null, isAllowedOrigin(origin));
@@ -111,16 +117,16 @@ app.use(cors({
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(compression());
 app.use(express.json({ limit: '10mb' }));
-app.use('/api', requireLoopbackRequest, requireExtensionActivation);
 
-const limiter = rateLimit({ windowMs: 60_000, max: 50000, standardHeaders: true, legacyHeaders: false,
-message: { error: 'Demasiadas solicitudes, intenta en un minuto.' } });
-app.use(limiter);
+const limiter = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Demasiadas solicitudes, intenta en un minuto.' } });
+const activationLimiter = rateLimit({ windowMs: 15 * 60_000, max: 12, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Demasiados intentos de activación. Espera unos minutos e inténtalo nuevamente.' } });
+const ceoLoginLimiter = rateLimit({ windowMs: 15 * 60_000, max: 10, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Demasiados intentos de inicio de sesión. Espera unos minutos e inténtalo nuevamente.' } });
+app.use('/api', limiter, requireApiAccess);
 
 const server = createServer(app);
-const io = new SocketIOServer(server, {
-  cors: { origin: '*', methods: ['GET', 'POST'] },
-});
 
 type SSEWriter = { accountId: string; write: (msg: string) => void };
 
@@ -511,6 +517,7 @@ async function ensureDatabaseSchema(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_extension_activations_invitation ON extension_activations(invitation_id);
     ALTER TABLE extension_invitations ADD COLUMN IF NOT EXISTS account_id VARCHAR(120) NOT NULL DEFAULT 'default';
     ALTER TABLE extension_activations ADD COLUMN IF NOT EXISTS account_id VARCHAR(120) NOT NULL DEFAULT 'default';
+    ALTER TABLE extension_activations ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
     CREATE INDEX IF NOT EXISTS idx_extension_invitations_account ON extension_invitations(account_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS roles (
       id VARCHAR(255) PRIMARY KEY,
@@ -687,67 +694,81 @@ function createCeoToken(user: { id: number; usuario: string; rol: string }): str
   return `${payload}.${signature}`;
 }
 
-function requireCeoAuth(req: Request, res: Response, next: NextFunction): void {
+type CeoSession = { id?: number; usuario?: string; nombre?: string; rol?: string; exp?: number };
+
+function readCeoSession(req: Request): CeoSession | null {
   const authorization = String(req.header('authorization') || '');
   const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
   const [payload, signature] = token.split('.');
   const expected = payload ? createHmac('sha256', CEO_SESSION_SECRET).update(payload).digest('base64url') : '';
-  if (!payload || !signature || signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
-    res.status(401).json({ error: 'Sesión de CEO inválida o vencida' });
-    return;
-  }
+  if (!payload || !signature || signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
   try {
-    const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { exp?: number; rol?: string };
-    if (!session.exp || session.exp <= Date.now() || !['superadmin', 'admin', 'CEO'].includes(String(session.rol))) {
-      res.status(403).json({ error: 'No tienes permisos para esta operación' });
-      return;
-    }
-    next();
+    const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as CeoSession;
+    return session.exp && session.exp > Date.now() ? session : null;
   } catch {
-    res.status(401).json({ error: 'Sesión de CEO inválida o vencida' });
+    return null;
   }
 }
 
+function requireCeoAuth(req: Request, res: Response, next: NextFunction): void {
+  const session = readCeoSession(req);
+  if (!session) {
+    res.status(401).json({ error: 'Sesión de CEO inválida o vencida' });
+    return;
+  }
+  if (!['superadmin', 'admin', 'CEO'].includes(String(session.rol))) {
+    res.status(403).json({ error: 'No tienes permisos para esta operación' });
+    return;
+  }
+  res.locals.ceoSession = session;
+  next();
+}
+
 function requireCeoSession(req: Request, res: Response, next: NextFunction): void {
-  const authorization = String(req.header('authorization') || '');
-  const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
-  const [payload, signature] = token.split('.');
-  const expected = payload ? createHmac('sha256', CEO_SESSION_SECRET).update(payload).digest('base64url') : '';
-  if (!payload || !signature || signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+  const session = readCeoSession(req);
+  if (!session) {
     res.status(401).json({ error: 'Sesión inválida o vencida. Inicia sesión nuevamente.' });
     return;
   }
-  try {
-    const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { exp?: number };
-    if (!session.exp || session.exp <= Date.now()) {
-      res.status(401).json({ error: 'Sesión inválida o vencida. Inicia sesión nuevamente.' });
-      return;
-    }
-    next();
-  } catch {
-    res.status(401).json({ error: 'Sesión inválida o vencida. Inicia sesión nuevamente.' });
-  }
+  res.locals.ceoSession = session;
+  next();
+}
+
+function isPublicApiRoute(path: string): boolean {
+  return path === '/auth/ceo-login' || path === '/extension/invitations/redeem';
 }
 
 function isExtensionAccountRoute(path: string): boolean {
   return [
-    /^\/events$/, /^\/auth\/(status|qr|authorize)$/, /^\/chats$/, /^\/chats\/unread-reconcile$/, /^\/chats\/[^/]+\/mensajes(?:\/latest)?$/, /^\/chats\/[^/]+\/read$/,
-    /^\/mensajes\/changes$/, /^\/enviar$/, /^\/classify$/, /^\/specialists(?:\/[^/]+)?$/, /^\/chat\/summary$/, /^\/chat\/reply$/, /^\/chat\/[^/]+\/(summaries|replies)$/,
-    /^\/ai\/auto-reply$/, /^\/sincronizar$/,
+    /^\/events$/, /^\/auth\/(status|qr|authorize)$/, /^\/chats$/, /^\/chats\/ensure$/, /^\/chats\/unread-reconcile$/, /^\/chats\/[^/]+\/mensajes(?:\/latest)?$/, /^\/chats\/[^/]+\/(read|name|resolve-name)$/ ,
+    /^\/mensajes\/changes$/, /^\/enviar$/, /^\/classify$/, /^\/specialists(?:\/[^/]+)?$/, /^\/chat\/summary$/, /^\/chat\/reply$/, /^\/chat\/[^/]+\/(summaries|replies)$/ ,
+    /^\/ai\/auto-reply$/, /^\/sincronizar$/, /^\/pendientes$/ ,
   ].some((pattern) => pattern.test(path));
 }
-async function requireExtensionActivation(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const origin = String(req.header('origin') || '');
-  const activationId = String(req.header('x-extension-activation') || req.query.activation_id || '').trim();
-  const isExtensionRequest = /^chrome-extension:\/\/[a-z]{32}$/i.test(origin) || Boolean(activationId);
-  if (!isExtensionRequest || req.path === '/extension/invitations/redeem') {
+
+function requireApiAccess(req: Request, res: Response, next: NextFunction): void {
+  if (isPublicApiRoute(req.path)) {
     next();
     return;
   }
-  if (!isExtensionAccountRoute(req.path)) {
-    res.status(403).json({ error: 'Esta ruta no está disponible para extensiones; usa el Dashboard CEO.' });
+  if (req.header('authorization')) {
+    requireCeoAuth(req, res, next);
     return;
   }
+  if (!isExtensionAccountRoute(req.path)) {
+    res.status(401).json({ error: 'Esta ruta requiere una sesión CEO o una activación válida de extensión' });
+    return;
+  }
+  void requireExtensionActivation(req, res, next);
+}
+
+async function requireExtensionActivation(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const origin = String(req.header('origin') || '');
+  if (process.env.NODE_ENV === 'production' && !isAllowedExtensionOrigin(origin)) {
+    res.status(403).json({ error: 'Origen de extensión no autorizado' });
+    return;
+  }
+  const activationId = String(req.header('x-extension-activation') || (req.path === '/events' ? req.query.activation_id : '') || '').trim();
   if (!activationId) {
     res.status(401).json({ error: 'La extensión debe activarse con un código válido' });
     return;
@@ -759,9 +780,9 @@ async function requireExtensionActivation(req: Request, res: Response, next: Nex
        INNER JOIN extension_invitations i ON i.id = a.invitation_id
        INNER JOIN whatsapp_accounts wa ON wa.id = COALESCE(NULLIF(a.account_id, ''), i.account_id)
        WHERE a.id = $1
+         AND a.revoked_at IS NULL
          AND wa.activo = TRUE
-         AND i.revoked_at IS NULL
-         AND i.expires_at > NOW()`,
+         AND i.revoked_at IS NULL`,
       [activationId],
     );
     if (!rows.length) {
@@ -776,6 +797,7 @@ async function requireExtensionActivation(req: Request, res: Response, next: Nex
     res.status(503).json({ error: 'No se pudo validar la activación de la extensión' });
   }
 }
+
 function requireWebhookAuth(req: Request, res: Response, next: NextFunction): void {
   if (process.env.NODE_ENV === 'test') {
     next();
@@ -2519,7 +2541,10 @@ app.post('/api/enviar', async (req: Request, res: Response) => {
 });
 app.get('/api/specialists', async (_req: Request, res: Response) => {
   try {
-    const { rows } = await pool.query(`SELECT id, nombre, rol, sistema_prompt, modelo, activo FROM especialistas ORDER BY id`);
+    const includeSystemPrompt = Boolean(res.locals.ceoSession);
+    const { rows } = await pool.query(includeSystemPrompt
+      ? `SELECT id, nombre, rol, sistema_prompt, modelo, activo FROM especialistas ORDER BY id`
+      : `SELECT id, nombre, rol, modelo, activo FROM especialistas ORDER BY id`);
     res.json(rows);
   } catch (error) {
     console.error('[specialists] Error:', (error as Error).message);
@@ -2531,7 +2556,10 @@ app.get('/api/specialists/:id', async (req: Request, res: Response) => {
   try {
     const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ error: 'id es obligatorio' });
-    const { rows } = await pool.query(`SELECT id, nombre, rol, sistema_prompt, modelo, activo FROM especialistas WHERE id = $1`, [id]);
+    const includeSystemPrompt = Boolean(res.locals.ceoSession);
+    const { rows } = await pool.query(includeSystemPrompt
+      ? `SELECT id, nombre, rol, sistema_prompt, modelo, activo FROM especialistas WHERE id = $1`
+      : `SELECT id, nombre, rol, modelo, activo FROM especialistas WHERE id = $1`, [id]);
     if (!rows.length) return res.status(404).json({ error: 'Especialista no encontrado' });
     await loadSpecialistsFromDb();
     res.json(rows[0]);
@@ -3650,7 +3678,7 @@ app.post('/api/auth/demo', async (_req: Request, res: Response) => {
   setImmediate(() => { syncEvolutionData().catch(() => {}); });
 });
 
-app.post('/api/auth/ceo-login', async (req: Request, res: Response) => {
+app.post('/api/auth/ceo-login', ceoLoginLimiter, async (req: Request, res: Response) => {
   try {
     const { usuario, contraseña } = req.body as { usuario?: string; contraseña?: string };
     const user = String(usuario || '').trim();
@@ -3710,7 +3738,7 @@ app.get('/api/extension/invitations', requireCeoAuth, async (_req: Request, res:
   try {
     const { rows } = await pool.query(
       `SELECT i.id, i.label, i.account_id, wa.nombre AS account_name, i.expires_at, i.redeemed_at, i.revoked_at, i.created_by, i.created_at,
-              a.id AS activation_id, a.activated_at, a.last_seen_at
+              a.id AS activation_id, a.activated_at, a.last_seen_at, a.revoked_at AS activation_revoked_at
        FROM extension_invitations i
        LEFT JOIN extension_activations a ON a.invitation_id = i.id
        ORDER BY i.created_at DESC`,
@@ -3729,11 +3757,12 @@ app.delete('/api/extension/invitations/:id', requireCeoAuth, async (req: Request
     const { rows } = await pool.query(
       `UPDATE extension_invitations
        SET revoked_at = NOW()
-       WHERE id = $1 AND redeemed_at IS NULL AND revoked_at IS NULL
+       WHERE id = $1 AND revoked_at IS NULL
        RETURNING id`,
       [id],
     );
-    if (!rows.length) return res.status(409).json({ error: 'Solo se pueden invalidar códigos pendientes' });
+    if (!rows.length) return res.status(409).json({ error: 'El código ya fue revocado o no existe' });
+    await pool.query('UPDATE extension_activations SET revoked_at = NOW() WHERE invitation_id = $1 AND revoked_at IS NULL', [id]);
     res.json({ ok: true, id });
   } catch (error) {
     console.error('[extension/invitations] Error invalidando:', (error as Error).message);
@@ -3763,7 +3792,7 @@ app.post('/api/extension/invitations', requireCeoAuth, async (req: Request, res:
   }
 });
 
-app.post('/api/extension/invitations/redeem', async (req: Request, res: Response) => {
+app.post('/api/extension/invitations/redeem', activationLimiter, async (req: Request, res: Response) => {
   try {
     const parsed = parseInvitationCode(String(req.body?.code || ''));
     const expectedBaseUrl = invitationPublicBaseUrl();

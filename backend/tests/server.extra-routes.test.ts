@@ -4,16 +4,15 @@ import { app } from '../server.ts';
 
 const client = request(app);
 
-describe('Server - rutas adicionales', () => {
-  it('GET /api/chats/:id/mensajes/latest acepta since y devuelve array', async () => {
+describe('Server - rutas adicionales protegidas', () => {
+  it('bloquea sincronización incremental sin activación', async () => {
     const res = await client.get('/api/chats/120363000000000@g.us/mensajes/latest?since=');
-    expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.status).toBe(401);
   });
 
-  it('POST /api/enviar rechaza payload vacío', async () => {
+  it('bloquea envíos sin activación', async () => {
     const res = await client.post('/api/enviar').send({ chatId: '', texto: '' });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(401);
   });
 });
 
@@ -34,25 +33,20 @@ describe('Server - seguridad CEO', () => {
     expect(res.status).toBe(401);
   });
 });
+
 describe('Server - activación de extensiones', () => {
   it('exige una sesión CEO para generar códigos de activación', async () => {
     const res = await client.post('/api/extension/invitations').send({});
     expect(res.status).toBe(401);
   });
 
-  it('rechaza códigos de activación vacíos antes de consultar invitaciones', async () => {
+  it('mantiene público el canje, pero rechaza códigos vacíos', async () => {
     const res = await client.post('/api/extension/invitations/redeem').send({ code: '' });
     expect(res.status).toBe(400);
   });
-});
-describe('Server - administración de invitaciones', () => {
+
   it('protege el historial de activaciones con sesión CEO', async () => {
     const res = await client.get('/api/extension/invitations');
-    expect(res.status).toBe(401);
-  });
-
-  it('protege la invalidación de códigos con sesión CEO', async () => {
-    const res = await client.delete('/api/extension/invitations/no-existe');
     expect(res.status).toBe(401);
   });
 });

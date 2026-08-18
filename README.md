@@ -85,3 +85,8 @@ En producción, ejecuta las mismas comprobaciones bajo `https://app.example.com`
 ## Múltiples cuentas de WhatsApp
 
 Para desplegar varias cuentas de WhatsApp en una plataforma centralizada, sigue [la guía multi-cuenta](docs/PRODUCCION_MULTIINSTANCIA_LIGHTSAIL.md). Todas comparten backend, Dashboard CEO y base de datos; cada cuenta usa una instancia Evolution y un `account_id` aislados.
+
+
+## Seguridad
+
+Consulta [docs/SECURITY.md](docs/SECURITY.md) antes de publicar la extensión o desplegar una instancia.

@@ -237,8 +237,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           method: 'POST',
           body: JSON.stringify({ mensaje: message.text })
         });
-      } else if (message.type === 'CEO_METRICS') {
-        result = await backendRequest('/ceo/metrics');
       } else if (message.type === 'PENDENTS') {
         const query = new URLSearchParams();
         if (message.usuario_id) query.set('usuario_id', message.usuario_id);
@@ -292,10 +290,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         result = await backendRequest('/auth/status');
       } else if (message.type === 'EVOLUTION_QR') {
         result = await backendRequest('/auth/qr');
-      } else if (message.type === 'EVOLUTION_LOGOUT') {
-        result = await backendRequest('/instance/logout', { method: 'DELETE' });
-      } else if (message.type === 'EVOLUTION_RESTART') {
-        result = await backendRequest('/instance/restart', { method: 'POST' });
       } else if (message.type === 'RESOLVE_CHAT_NAME') {
         const nameResult = await backendRequest(`/chats/${encodeURIComponent(message.chatId)}/resolve-name`, { method: 'POST' });
         result = typeof nameResult?.nombre === 'string' ? nameResult.nombre : '';

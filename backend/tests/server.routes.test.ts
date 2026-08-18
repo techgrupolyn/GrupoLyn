@@ -4,94 +4,63 @@ import { app } from '../server.ts';
 
 const client = request(app);
 
-describe('Server - rutas', () => {
-  describe('GET /api/chats', () => {
-    it('devuelve 200 y un array', async () => {
-      const res = await client.get('/api/chats');
-      expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-    });
+describe('Server - protección de APIs de extensión', () => {
+  it('rechaza chats sin una activación válida', async () => {
+    const res = await client.get('/api/chats');
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/activarse con un código válido/i);
   });
 
-  describe('Activación de extensión', () => {
-    it('rechaza peticiones de extensiones sin activación', async () => {
-      const res = await client
-        .get('/api/chats')
-        .set('Origin', 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  it('rechaza una extensión sin código de activación', async () => {
+    const res = await client
+      .get('/api/chats')
+      .set('Origin', 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
-      expect(res.status).toBe(401);
-      expect(res.body.error).toContain('activarse');
-    });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain('activarse');
   });
 
-  describe('GET /api/chats/:id/mensajes', () => {
-    it('devuelve 400 si el id esta vacio', async () => {
-      const res = await client.get('/api/chats/%20/mensajes');
-      expect(res.status).toBe(400);
-    });
-
-    it('rechaza chats individuales', async () => {
-      const res = await client.get('/api/chats/5491111111111@s.whatsapp.net/mensajes');
-      expect(res.status).toBe(400);
-      expect(res.body.error).toContain('grupales');
-    });
-    it('devuelve 200 y array para un id valido', async () => {
-      const res = await client.get('/api/chats/120363000000000@g.us/mensajes');
-      expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-    });
+  it('no permite consultar mensajes sin credenciales', async () => {
+    const res = await client.get('/api/chats/120363000000000@g.us/mensajes');
+    expect(res.status).toBe(401);
   });
 
-  describe('GET /api/chats/:id/mensajes/latest', () => {
-    it('devuelve 200 y array cuando no hay since', async () => {
-      const res = await client.get('/api/chats/120363000000000@g.us/mensajes/latest?since=');
-      expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-    });
+  it('no permite generar IA sin credenciales', async () => {
+    const [summaryResponse, replyResponse] = await Promise.all([
+      client.post('/api/chat/summary').send({ chatId: '120363000000000@g.us' }),
+      client.post('/api/chat/reply').send({ chatId: '120363000000000@g.us' }),
+    ]);
+
+    expect(summaryResponse.status).toBe(401);
+    expect(replyResponse.status).toBe(401);
   });
 
-  describe('GET /api/mensajes/changes', () => {
-    it('requiere un cursor ISO para sincronización incremental', async () => {
-      const res = await client.get('/api/mensajes/changes');
-      expect(res.status).toBe(400);
-      expect(res.body.error).toContain('since');
-    });
-  });
-  describe('POST /api/chat/summary y /api/chat/reply', () => {
-    it('rechaza generación de IA para chats individuales', async () => {
-      const individualChatId = '5491111111111@s.whatsapp.net';
-      const [summaryResponse, replyResponse] = await Promise.all([
-        client.post('/api/chat/summary').send({ chatId: individualChatId }),
-        client.post('/api/chat/reply').send({ chatId: individualChatId }),
-      ]);
-
-      expect(summaryResponse.status).toBe(400);
-      expect(summaryResponse.body.error).toContain('grupales');
-      expect(replyResponse.status).toBe(400);
-      expect(replyResponse.body.error).toContain('grupales');
-    });
-  });
-  describe('POST /api/enviar', () => {
-    it('devuelve 400 si falta chatId o texto', async () => {
-      const res = await client.post('/api/enviar').send({ chatId: '', texto: '' });
-      expect(res.status).toBe(400);
-    });
+  it('bloquea rutas legacy de Evolution sin sesión CEO', async () => {
+    const res = await client.delete('/api/instance/logout');
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/sesión CEO|activación válida/i);
   });
 
-  describe('POST /webhook/evolution', () => {
-    it('devuelve 200 para un evento de mensaje', async () => {
-      const payload = {
-        event: 'MESSAGES_UPSERT',
-        data: {
-          key: { remoteJid: '120363000000000@g.us', fromMe: false, id: 'msg-1' },
-          message: { conversation: 'Hola' },
-          messageTimestamp: Math.floor(Date.now() / 1000),
-        },
-      };
+  it('no concede CORS a un sitio web ajeno', async () => {
+    const res = await client.get('/api/chats').set('Origin', 'https://attacker.example');
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    expect(res.status).toBe(401);
+  });
+});
 
-      const res = await client.post('/webhook/evolution').send(payload).timeout(20000);
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual({ ok: true });
-    });
+describe('Server - webhook', () => {
+  it('acepta un evento de mensaje en pruebas', async () => {
+    const payload = {
+      event: 'MESSAGES_UPSERT',
+      data: {
+        key: { remoteJid: '120363000000000@g.us', fromMe: false, id: 'msg-1' },
+        message: { conversation: 'Hola' },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      },
+    };
+
+    const res = await client.post('/webhook/evolution').send(payload).timeout(20000);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
   });
 });

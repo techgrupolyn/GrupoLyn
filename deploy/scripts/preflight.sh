@@ -26,7 +26,7 @@ check_instance() {
     echo "Hay valores REEMPLAZA_ sin configurar." >&2
     return 1
   fi
-  local backend_keys=(NODE_ENV PORT BIND_HOST DATABASE_URL EVOLUTION_API_URL EVOLUTION_API_KEY INSTANCE_NAME WEBHOOK_URL PUBLIC_APP_URL WEBHOOK_SECRET CEO_INITIAL_PASSWORD CEO_SESSION_SECRET CORS_ALLOWED_ORIGINS GOOGLE_GEMINI_API_KEY)
+  local backend_keys=(NODE_ENV PORT BIND_HOST DATABASE_URL EVOLUTION_API_URL EVOLUTION_API_KEY INSTANCE_NAME WEBHOOK_URL PUBLIC_APP_URL WEBHOOK_SECRET CEO_INITIAL_PASSWORD CEO_SESSION_SECRET CORS_ALLOWED_ORIGINS CHROME_EXTENSION_IDS GOOGLE_GEMINI_API_KEY)
   local evolution_keys=(SERVER_PORT DATABASE_CONNECTION_URI AUTHENTICATION_API_KEY)
   for key in "${backend_keys[@]}"; do require_value "$backend_env" "$key"; done
   for key in "${evolution_keys[@]}"; do require_value "$evolution_env" "$key"; done
@@ -34,6 +34,7 @@ check_instance() {
   [[ "$(value_of "$backend_env" WEBHOOK_URL)" == https://* ]] || { echo 'WEBHOOK_URL debe usar HTTPS.' >&2; return 1; }
   [[ "$(value_of "$backend_env" PUBLIC_APP_URL)" == https://* ]] || { echo 'PUBLIC_APP_URL debe usar HTTPS.' >&2; return 1; }
   [[ "$(value_of "$backend_env" CORS_ALLOWED_ORIGINS)" == https://* ]] || { echo 'CORS_ALLOWED_ORIGINS debe usar HTTPS.' >&2; return 1; }
+  [[ "$(value_of "$backend_env" CHROME_EXTENSION_IDS)" =~ ^[a-z]{32}(,[a-z]{32})*$ ]] || { echo 'CHROME_EXTENSION_IDS debe contener uno o más IDs válidos de Chrome.' >&2; return 1; }
   [[ "$(value_of "$backend_env" EVOLUTION_API_KEY)" == "$(value_of "$evolution_env" AUTHENTICATION_API_KEY)" ]] || { echo 'EVOLUTION_API_KEY y AUTHENTICATION_API_KEY deben coincidir.' >&2; return 1; }
 }
 
