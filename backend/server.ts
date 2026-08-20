@@ -3459,8 +3459,10 @@ app.get('/api/pendientes', async (req: Request, res: Response) => {
     }
     query += ' ORDER BY m.chat_id, m.timestamp DESC';
     const { rows } = await pool.query<Mensaje & { chat_nombre?: string; unread_count?: number }>(query, params);
-    const mapped = rows.map((r) => ({ ...r, nombre: r.chat_nombre || r.chat_id, unread_count: Number(r.unread_count || 0) }));
-    res.json(mapped);
+    const mapped = rows.map((r) => {
+      const chatId = unscopedAccountValue(String(r.chat_id || ''));
+      return { ...r, chat_id: chatId, nombre: r.chat_nombre || chatId, unread_count: Number(r.unread_count || 0) };
+    });    res.json(mapped);
   } catch (error) {
     console.error('[pendientes] Error:', (error as Error).message);
     res.status(500).json({ error: (error as Error).message });

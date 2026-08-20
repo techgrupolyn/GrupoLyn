@@ -16,6 +16,7 @@ const state = {
   reviewedChats: {},
   selectedChatIds: new Set(),
   replyInFlight: new Set(),
+  summaryInFlight: new Set(),
   selectedSendInFlight: false,
   chatOrder: [],
   openChatId: null,
@@ -485,27 +486,58 @@ function renderChatDetails(body, chat) {
   `;
 }
 
-async function openChatDetails(body, chat) {
-  const specialistId = $('specialist-select')?.value || '';
-  renderChatDetails(body, chat);
-  if (!specialistId) return;
-  if (getReplyForChat(String(chat.id), specialistId) || state.replyInFlight.has(String(chat.id))) return;
-
-  state.replyInFlight.add(String(chat.id));
+async function hydrateSummaryForChat(chatId, specialistId) {
+  const id = String(chatId);
+  if (state.summaryInFlight.has(id)) return;
+  state.summaryInFlight.add(id);
   try {
-    const data = await directBackendRequest('/ai/auto-reply', {
-      method: 'POST',
-      body: JSON.stringify({ chatId: chat.id, specialistId }),
-    });
-    state.replies[chat.id] = { specialistId, data };
+    const summaries = await directBackendRequest(`/chat/${encodeURIComponent(id)}/summaries`);
+    const latest = (Array.isArray(summaries) ? summaries : [])
+      .find((summary) => String(summary?.especialista_id || '') === String(specialistId));
+    if (latest?.resumen) {
+      state.summaries[id] = {
+        specialistId: String(latest.especialista_id),
+        data: { resumen: latest.resumen, summaryId: latest.id, specialistId: latest.especialista_id },
+      };
+    }
   } catch (error) {
-    state.replies[chat.id] = { specialistId, data: { error: error?.message || 'No se pudo generar la respuesta' } };
+    console.warn('[sidepanel] No se pudo recuperar el resumen:', error);
   } finally {
-    state.replyInFlight.delete(String(chat.id));
-    if (body.classList.contains('open')) renderChatDetails(body, chat);
+    state.summaryInFlight.delete(id);
   }
 }
 
+async function openChatDetails(body, chat) {
+  const chatId = String(chat.id);
+  const specialistId = $('specialist-select')?.value || '';
+  renderChatDetails(body, chat);
+  if (!specialistId) return;
+
+  const summaryTask = !getSummaryForChat(chatId, specialistId) && !state.summaryInFlight.has(chatId)
+    ? hydrateSummaryForChat(chatId, specialistId)
+    : Promise.resolve();
+
+  if (getReplyForChat(chatId, specialistId) || state.replyInFlight.has(chatId)) {
+    await summaryTask;
+    if (body.classList.contains('open')) renderChatDetails(body, chat);
+    return;
+  }
+
+  state.replyInFlight.add(chatId);
+  try {
+    const data = await directBackendRequest('/ai/auto-reply', {
+      method: 'POST',
+      body: JSON.stringify({ chatId, specialistId }),
+    });
+    state.replies[chatId] = { specialistId, data };
+  } catch (error) {
+    state.replies[chatId] = { specialistId, data: { error: error?.message || 'No se pudo generar la respuesta' } };
+  } finally {
+    state.replyInFlight.delete(chatId);
+    await summaryTask;
+    if (body.classList.contains('open')) renderChatDetails(body, chat);
+  }
+}
 async function sendSelectedReplies() {
   if (state.selectedSendInFlight || !state.selectedChatIds.size) return;
   const specialistId = $('specialist-select')?.value || '';
@@ -692,16 +724,18 @@ async function generateAllSummaries({ pending: suppliedPending, specialistId: se
         method: 'POST',
         body: JSON.stringify({ chatId: chat.chat_id, specialistId }),
       });
-      state.summaries[chat.chat_id] = { specialistId, data };
-      const visibleChat = state.chats.find((item) => String(item.id) === String(chat.chat_id));
-      state.reviewedChats[chat.chat_id] = visibleChat || {
-        id: chat.chat_id,
-        nombre: chat.nombre || chat.chat_nombre || chat.chat_id,
+      const resolvedChatId = String(data?.chatId || chat.chat_id);
+      const resolvedSpecialistId = String(data?.specialistId || specialistId);
+      state.summaries[resolvedChatId] = { specialistId: resolvedSpecialistId, data };
+      const visibleChat = state.chats.find((item) => String(item.id) === resolvedChatId);
+      state.reviewedChats[resolvedChatId] = visibleChat || {
+        id: resolvedChatId,
+        nombre: chat.nombre || chat.chat_nombre || resolvedChatId,
         ultimo_mensaje: chat.texto || '',
         unread_count: 0,
         updated_at: chat.timestamp,
       };
-      results.push({ chatId: chat.chat_id, nombre: chat.nombre || chat.chat_id || 'Sin nombre', ok: true, resumen: data?.resumen || '', contexto: contextDescription(data) });
+      results.push({ chatId: resolvedChatId, nombre: chat.nombre || resolvedChatId || 'Sin nombre', ok: true, resumen: data?.resumen || '', contexto: contextDescription(data) });
     } catch (error) {
       results.push({ chatId: chat.chat_id, nombre: chat.nombre || chat.chat_id || 'Sin nombre', ok: false, error: error?.message || 'Error' });
     }
