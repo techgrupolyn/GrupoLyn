@@ -1604,7 +1604,8 @@ async function getUnreadMessageContext(chatId: string, account: WhatsAppAccount 
     `SELECT id, chat_id, remitente, remitente_jid, texto, timestamp, tipo, media, raw, enviado_por_mi,
             COUNT(*) OVER()::int AS pending_count
      FROM mensajes
-     WHERE chat_id = ANY($1::text[])
+     WHERE account_id = $1::varchar
+       AND chat_id = ANY($2::text[])
        AND enviado_por_mi = FALSE
        AND estado = 'pendiente'
      ORDER BY timestamp DESC
@@ -2737,9 +2738,9 @@ ${historial}`;
                  GREATEST(0, reviewed_unread_baseline) + $2::integer
                )
              )
-         WHERE account_id = $1::varchar AND id = ANY($2::text[])
+         WHERE account_id = $1::varchar AND id = ANY($3::text[])
          RETURNING unread_count`,
-         [account.id, variants, reviewedCount],
+         [account.id, reviewedCount, variants],
       );
       pendingRemaining = Math.max(0, ...updatedChats.map((chat) => Number(chat.unread_count || 0)));
       publish('chats-updated', { source: 'summary-reviewed', accountId: account.id, chatId: unscopedAccountValue(finalChatId), pendingRemaining });
@@ -3410,13 +3411,14 @@ app.get('/api/resumen/rol', async (req: Request, res: Response) => {
 
 app.get('/api/pendientes', async (req: Request, res: Response) => {
   try {
+    const account = await getRequestWhatsappAccount(res);
+    if (!account) return res.status(404).json({ error: 'Cuenta de WhatsApp no disponible' });
     const usuarioId = String(req.query.usuario_id || '').trim();
     const esDireccion = String(req.query.es_direccion || '').trim() === 'true';
-    let query = `SELECT DISTINCT ON (m.chat_id) m.id, m.chat_id, m.remitente, m.texto, m.timestamp, m.estado, c.nombre AS chat_nombre, COALESCE((SELECT COUNT(*) FROM mensajes WHERE chat_id = m.chat_id AND enviado_por_mi = FALSE AND estado IN ('pendiente','enviado','entregado')), 0) AS unread_count FROM mensajes m INNER JOIN chats c ON c.id = m.chat_id WHERE m.enviado_por_mi = FALSE AND m.estado IN ('pendiente', 'enviado', 'entregado')`;
-    query = `SELECT DISTINCT ON (m.chat_id) m.id, m.chat_id, m.remitente, m.texto, m.timestamp, m.estado, c.nombre AS chat_nombre, COALESCE(c.unread_count, 0) AS unread_count FROM mensajes m INNER JOIN chats c ON c.id = m.chat_id WHERE m.enviado_por_mi = FALSE AND m.chat_id LIKE '%@g.us' AND COALESCE(c.unread_count, 0) > 0`;
-    const params = [];
+    let query = `SELECT DISTINCT ON (m.chat_id) m.id, m.chat_id, m.remitente, m.texto, m.timestamp, m.estado, c.nombre AS chat_nombre, COALESCE(c.unread_count, 0) AS unread_count FROM mensajes m INNER JOIN chats c ON c.id = m.chat_id AND c.account_id = m.account_id WHERE m.account_id = $1::varchar AND m.enviado_por_mi = FALSE AND m.chat_id LIKE '%@g.us' AND COALESCE(c.unread_count, 0) > 0`;
+    const params: string[] = [account.id];
     if (usuarioId && !esDireccion) {
-      query += ` AND m.id IN (SELECT mensaje_id FROM mensaje_usuario WHERE usuario_id = $1)`;
+      query += ` AND m.id IN (SELECT mensaje_id FROM mensaje_usuario WHERE usuario_id = $2::varchar)`;
       params.push(usuarioId);
     }
     query += ' ORDER BY m.chat_id, m.timestamp DESC';
