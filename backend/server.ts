@@ -3740,6 +3740,7 @@ app.get('/api/extension/invitations', requireCeoAuth, async (_req: Request, res:
       `SELECT i.id, i.label, i.account_id, wa.nombre AS account_name, i.expires_at, i.redeemed_at, i.revoked_at, i.created_by, i.created_at,
               a.id AS activation_id, a.activated_at, a.last_seen_at, a.revoked_at AS activation_revoked_at
        FROM extension_invitations i
+       LEFT JOIN whatsapp_accounts wa ON wa.id = i.account_id
        LEFT JOIN extension_activations a ON a.invitation_id = i.id
        ORDER BY i.created_at DESC`,
     );
