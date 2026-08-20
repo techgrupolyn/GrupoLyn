@@ -3,7 +3,7 @@ const SYNC_CHATS_ALARM = 'lyn-sync-chats';
 const SYNC_MESSAGES_ALARM = 'lyn-sync-messages';
 const MAX_MESSAGES_PER_CHAT = 200;
 const EXTENSION_API_PATHS = [
-  /^\/auth\/(status|qr|authorize)$/, /^\/chats$/, /^\/chats\/ensure$/, /^\/chats\/unread-reconcile$/, /^\/chats\/[^/]+\/mensajes(?:\/latest)?$/, /^\/chats\/[^/]+\/(read|name|resolve-name$/,
+  /^\/auth\/(status|qr|authorize)$/, /^\/chats$/, /^\/chats\/ensure$/, /^\/chats\/unread-reconcile$/, /^\/chats\/[^/]+\/mensajes(?:\/latest)?$/, /^\/chats\/[^/]+\/(read|name|resolve-name)$/,
   /^\/mensajes\/changes$/, /^\/enviar$/, /^\/classify$/, /^\/specialists(?:\/[^/]+)?$/, /^\/chat\/summary$/, /^\/chat\/reply$/, /^\/chat\/[^/]+\/(summaries|replies)$/, /^\/ai\/auto-reply$/, /^\/sincronizar$/, /^\/pendientes$/,
 ];
 
@@ -180,6 +180,10 @@ async function ensureAlarms() {
 async function activateRealtimeBridge() {
   await chrome.storage.local.remove('realtimeOwner');
 }
+
+async function configureSidePanel() {
+  await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+}
 // Inicialización: esperar storage listo antes de abrir conexiones
 async function startActivatedWorkspace() {
   if (!(await isWorkspaceActivated())) return false;
@@ -195,6 +199,7 @@ async function startActivatedWorkspace() {
   const storage = await getStorage(['backendUrl', 'extensionActivationId'], defaults);
   if (!storage.backendUrl) await chrome.storage.local.set({ backendUrl: defaults.backendUrl });
   initialized = true;
+  await configureSidePanel();
   await startActivatedWorkspace();
 })();
 
@@ -332,8 +337,8 @@ chrome.runtime.onInstalled.addListener(async () => {
     // En una actualización se conserva la sesión, configuración y caché del usuario.
     const existing = await chrome.storage.local.get(defaults);
     await chrome.storage.local.set(existing);
+    await configureSidePanel();
     await startActivatedWorkspace();
-    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
   } catch (error) {
     console.error('[bg] onInstalled error:', error);
   }
@@ -357,6 +362,7 @@ chrome.runtime.onStartup.addListener(async () => {
       await getStorage(['backendUrl', 'extensionActivationId'], defaults);
       initialized = true;
     }
+    await configureSidePanel();
     await startActivatedWorkspace();
   } catch (error) {
     console.error('[bg] onStartup error:', error);
