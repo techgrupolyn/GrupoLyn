@@ -10,5 +10,7 @@ test('el manifiesto de distribución limita los hosts al servicio y WhatsApp Web
     'https://web.whatsapp.com/*',
   ]);
   assert.match(manifest.content_security_policy.extension_pages, /https:\/\/ceo\.grupolyn\.com/);
+  assert.ok(manifest.permissions.includes('sidePanel'));
+  assert.equal(manifest.side_panel.default_path, 'src/sidepanel/sidepanel.html');
   assert.doesNotMatch(JSON.stringify(manifest.host_permissions), /https:\/\/\*\//);
 });

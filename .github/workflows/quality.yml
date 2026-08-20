@@ -1,0 +1,86 @@
+name: Quality Gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+        working-directory: backend
+      - run: npm run typecheck
+        working-directory: backend
+      - run: npm test
+        working-directory: backend
+
+  dashboard:
+    name: Dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+
+  extension:
+    name: Extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run check
+        working-directory: extension
+      - run: npm test
+        working-directory: extension
+      - name: Package and verify extension
+        shell: pwsh
+        run: |
+          ./extension/scripts/package-extension.ps1
+          $package = 'extension/dist/lyn-superagente-extension.zip'
+          if (!(Test-Path $package)) {
+            throw 'No se generó el paquete de extensión.'
+          }
+          $verificationDirectory = Join-Path $env:RUNNER_TEMP 'lyn-extension-verification'
+          Expand-Archive -LiteralPath $package -DestinationPath $verificationDirectory -Force
+          foreach ($requiredFile in @('manifest.json', 'src/background/service-worker.js', 'src/sidepanel/sidepanel.html', 'scripts/icons/icon128.png')) {
+            if (!(Test-Path (Join-Path $verificationDirectory $requiredFile))) {
+              throw "El paquete no contiene $requiredFile."
+            }
+          }
+          node --check (Join-Path $verificationDirectory 'src/background/service-worker.js')
+          $manifest = Get-Content -Raw (Join-Path $verificationDirectory 'manifest.json') | ConvertFrom-Json
+          if ($manifest.version -notmatch '^\d+\.\d+\.\d+$' -or !$manifest.permissions.Contains('sidePanel')) {
+            throw 'El manifiesto empaquetado no cumple la configuración de panel lateral esperada.'
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lyn-superagente-extension
+          path: extension/dist/lyn-superagente-extension.zip
+          if-no-files-found: error

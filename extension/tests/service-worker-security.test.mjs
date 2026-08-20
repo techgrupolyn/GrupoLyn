@@ -10,3 +10,9 @@ test('la lista blanca incluye rutas necesarias y excluye administración CEO', (
   assert.doesNotMatch(worker, /\/ceo\/metrics/);
   assert.doesNotMatch(worker, /\/instance\/logout/);
 });
+
+test('el icono de la extensión abre el panel lateral en cada ciclo de inicio', () => {
+  assert.match(worker, /async function configureSidePanel\(\) \{\s+await chrome\.sidePanel\.setPanelBehavior\(\{ openPanelOnActionClick: true \}\);\s+\}/);
+  assert.match(worker, /initialized = true;\s+await configureSidePanel\(\);\s+await startActivatedWorkspace\(\);/);
+  assert.match(worker, /chrome\.runtime\.onStartup\.addListener[\s\S]*?await configureSidePanel\(\);\s+await startActivatedWorkspace\(\);/);
+});
