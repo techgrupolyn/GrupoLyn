@@ -18,8 +18,14 @@ const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || '';
 const INSTANCE_NAME = process.env.INSTANCE_NAME || 'lyn-local';
 const WEBHOOK_URL = process.env.WEBHOOK_URL || `http://localhost:${PORT}/webhook/evolution`;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET?.trim() || '';
-const SYNC_INTERVAL_MS = Number(process.env.SYNC_INTERVAL_MS || 30000);
-const FULL_SYNC_INTERVAL_MS = Number(process.env.FULL_SYNC_INTERVAL_MS || 5 * 60 * 1000);
+function boundedInterval(value: string | undefined, fallback: number, minimum: number, maximum: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(minimum, Math.min(Math.floor(parsed), maximum));
+}
+
+const SYNC_INTERVAL_MS = boundedInterval(process.env.SYNC_INTERVAL_MS, 15_000, 10_000, 5 * 60 * 1000);
+const FULL_SYNC_INTERVAL_MS = boundedInterval(process.env.FULL_SYNC_INTERVAL_MS, 5 * 60 * 1000, 60_000, 60 * 60 * 1000);
 const CEO_SESSION_SECRET = process.env.CEO_SESSION_SECRET || randomBytes(32).toString('hex');
 const CEO_SESSION_TTL_MS = Number(process.env.CEO_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
 const SUMMARY_HISTORY_MAX_CHARS = Math.max(10_000, Math.min(Number(process.env.SUMMARY_HISTORY_MAX_CHARS || 45_000), 100_000));
@@ -2491,12 +2497,33 @@ app.post('/api/chats/unread-reconcile', async (req: Request, res: Response) => {
     const account = await getRequestWhatsappAccount(res);
     if (!account) return res.status(404).json({ error: 'Cuenta de WhatsApp no disponible' });
     const entries = Array.isArray(req.body?.chats) ? req.body.chats.slice(0, 250) : [];
+    const observedChatIds = Array.isArray(req.body?.observedChatIds) ? req.body.observedChatIds.slice(0, 250) : [];
+    const observedGroups = new Set<string>(
+      observedChatIds
+        .map((chatId: unknown) => String(chatId || '').trim())
+        .filter((chatId: string) => chatId.includes('@g.us')),
+    );
+    const unreadGroups = new Set<string>();
     let updated = 0;
     for (const entry of entries) {
       const chatId = String(entry?.chatId || '').trim();
       const unreadCount = Number(entry?.unreadCount);
       if (!chatId.includes('@g.us') || !Number.isInteger(unreadCount) || unreadCount < 0 || unreadCount > 9999) continue;
+      observedGroups.add(chatId);
+      unreadGroups.add(chatId);
       const result = await pool.query(`UPDATE chats SET whatsapp_unread_count = $3::integer, reviewed_unread_baseline = LEAST(reviewed_unread_baseline, $3::integer), unread_count = GREATEST(0, $3::integer - LEAST(reviewed_unread_baseline, $3::integer)) WHERE account_id = $1 AND id = ANY($2::text[])`, [account.id, scopedChatIdVariants(account.id, chatId), unreadCount]);
+      updated += result.rowCount || 0;
+    }
+    const readVariants = Array.from(observedGroups)
+      .filter((chatId) => !unreadGroups.has(chatId))
+      .flatMap((chatId) => scopedChatIdVariants(account.id, chatId));
+    if (readVariants.length) {
+      const result = await pool.query(
+        `UPDATE chats
+         SET whatsapp_unread_count = 0, reviewed_unread_baseline = 0, unread_count = 0
+         WHERE account_id = $1 AND id = ANY($2::text[])`,
+        [account.id, Array.from(new Set(readVariants))],
+      );
       updated += result.rowCount || 0;
     }
     if (updated) publish('chats-updated', { source: 'whatsapp-web', accountId: account.id, updated });

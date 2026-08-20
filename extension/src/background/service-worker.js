@@ -169,9 +169,11 @@ async function reconcileWhatsAppWebUnreadChats() {
     try { return await chrome.tabs.sendMessage(tab.id, { type: 'GET_WHATSAPP_UNREADS' }); } catch { return null; }
   }));
   const chats = responses.flatMap((response) => Array.isArray(response?.chats) ? response.chats : []);
-  if (chats.length) await backendRequest('/chats/unread-reconcile', { method: 'POST', body: JSON.stringify({ chats }) });
+  const observedChatIds = responses.flatMap((response) => Array.isArray(response?.observedChatIds) ? response.observedChatIds : []);
+  if (chats.length || observedChatIds.length) {
+    await backendRequest('/chats/unread-reconcile', { method: 'POST', body: JSON.stringify({ chats, observedChatIds }) });
+  }
 }
-
 async function ensureAlarms() {
   await chrome.alarms.create(SYNC_CHATS_ALARM, { periodInMinutes: 0.5, delayInMinutes: 0.1 });
   await chrome.alarms.create(SYNC_MESSAGES_ALARM, { periodInMinutes: 0.5, delayInMinutes: 0.1 });
@@ -270,10 +272,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await syncChats();
         await syncMessages();
         result = { ok: true };
+      } else if (message.type === 'SYNC_LIVE') {
+        await Promise.all([syncChats(), syncMessages()]);
+        result = { ok: true };
       } else if (message.type === 'RECONCILE_UNREADS') {
         result = await backendRequest('/chats/unread-reconcile', {
           method: 'POST',
-          body: JSON.stringify({ chats: message.chats })
+          body: JSON.stringify({ chats: message.chats, observedChatIds: message.observedChatIds })
         });
         await syncChats();
       } else if (message.type === 'MARK_CHAT_READ') {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LYN Superagente",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Asistente interno para analizar chats grupales de WhatsApp Web y preparar resúmenes y respuestas con IA.",
   "permissions": [
     "storage",

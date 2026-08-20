@@ -33,8 +33,16 @@
     refreshButton: null
   };
 
+  const LIVE_SYNC_VISIBLE_INTERVAL_MS = 5_000;
+  const LIVE_SYNC_HIDDEN_INTERVAL_MS = 15_000;
   let realtimeSource = null;
+  let realtimeConnectionKey = '';
+  let realtimeReconnectTimer = null;
   let unreadReconcileTimer = null;
+  let unreadObserver = null;
+  let unreadPollingTimer = null;
+  let liveSyncInFlight = false;
+  let lastLiveSyncAt = 0;
   let lastUnreadSnapshot = '';
 
   function normalizeWhatsappText(value) {
@@ -75,33 +83,60 @@
     return 0;
   }
 
-  function collectWhatsappUnreadChats() {
+  function collectWhatsappUnreadState() {
     const byChatId = new Map();
+    const observedChatIds = new Set();
     for (const row of $$('#pane-side [role="listitem"], #pane-side [data-id], #pane-side [data-testid="cell-frame-container"]')) {
       const chatId = extractWhatsappChatId(row);
       if (!chatId) continue;
       if (!chatId.includes('@g.us')) continue;
+      observedChatIds.add(chatId);
       const unreadCount = detectWhatsappUnreadCount(row);
       if (!unreadCount) continue;
       byChatId.set(chatId, Math.max(byChatId.get(chatId) || 0, unreadCount));
     }
-    return Array.from(byChatId, ([chatId, unreadCount]) => ({ chatId, unreadCount }));
+    return {
+      chats: Array.from(byChatId, ([chatId, unreadCount]) => ({ chatId, unreadCount })),
+      observedChatIds: Array.from(observedChatIds),
+    };
+  }
+
+  function collectWhatsappUnreadChats() {
+    return collectWhatsappUnreadState().chats;
   }
 
   async function reconcileWhatsappUnreadChats() {
-    const chats = collectWhatsappUnreadChats();
-    if (!chats.length) return;
-    const snapshot = chats
-      .map((chat) => `${chat.chatId}:${chat.unreadCount}`)
+    const unreadState = collectWhatsappUnreadState();
+    if (!unreadState.observedChatIds.length) return;
+    const unreadCounts = new Map(unreadState.chats.map((chat) => [chat.chatId, chat.unreadCount]));
+    const snapshot = unreadState.observedChatIds
+      .map((chatId) => `${chatId}:${unreadCounts.get(chatId) || 0}`)
       .sort()
       .join('|');
     if (snapshot === lastUnreadSnapshot) return;
     lastUnreadSnapshot = snapshot;
     try {
-      await backendMessage('RECONCILE_UNREADS', { chats });
+      await backendMessage('RECONCILE_UNREADS', unreadState);
     } catch (error) {
       lastUnreadSnapshot = '';
       console.warn('[LYN] No se pudieron reconciliar los no leídos:', error);
+    }
+  }
+
+  async function requestLiveSync({ force = false } = {}) {
+    const interval = document.visibilityState === 'visible'
+      ? LIVE_SYNC_VISIBLE_INTERVAL_MS
+      : LIVE_SYNC_HIDDEN_INTERVAL_MS;
+    const now = Date.now();
+    if (liveSyncInFlight || (!force && now - lastLiveSyncAt < interval)) return;
+    liveSyncInFlight = true;
+    lastLiveSyncAt = now;
+    try {
+      await backendMessage('SYNC_LIVE');
+    } catch (error) {
+      console.warn('[LYN] No se pudo actualizar en vivo:', error);
+    } finally {
+      liveSyncInFlight = false;
     }
   }
 
@@ -109,47 +144,78 @@
     clearTimeout(unreadReconcileTimer);
     unreadReconcileTimer = setTimeout(() => {
       reconcileWhatsappUnreadChats().catch(() => {});
+      requestLiveSync().catch(() => {});
     }, 600);
   }
 
   function observeWhatsappUnreadChats() {
     waitForElement('#pane-side', 20000).then((pane) => {
       scheduleWhatsappUnreadReconciliation();
-      const observer = new MutationObserver(scheduleWhatsappUnreadReconciliation);
-      observer.observe(pane, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-label', 'data-testid', 'data-id'] });
-      setInterval(scheduleWhatsappUnreadReconciliation, 15000);
+      unreadObserver?.disconnect();
+      unreadObserver = new MutationObserver(scheduleWhatsappUnreadReconciliation);
+      unreadObserver.observe(pane, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-label', 'data-testid', 'data-id'] });
+      clearInterval(unreadPollingTimer);
+      unreadPollingTimer = setInterval(scheduleWhatsappUnreadReconciliation, LIVE_SYNC_VISIBLE_INTERVAL_MS);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          scheduleWhatsappUnreadReconciliation();
+          requestLiveSync({ force: true }).catch(() => {});
+        }
+      });
     }).catch(() => {});
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== 'GET_WHATSAPP_UNREADS') return;
-    sendResponse({ chats: collectWhatsappUnreadChats() });
+    sendResponse(collectWhatsappUnreadState());
   });
+
+  function scheduleRealtimeReconnect() {
+    clearTimeout(realtimeReconnectTimer);
+    realtimeReconnectTimer = setTimeout(() => {
+      realtimeReconnectTimer = null;
+      startRealtimeUpdates();
+    }, 5_000);
+  }
 
   async function startRealtimeUpdates() {
     try {
       const { backendUrl = 'http://127.0.0.1:3003', extensionActivationId = '' } = await chrome.storage.local.get({ backendUrl: 'http://127.0.0.1:3003', extensionActivationId: '' });
-      if (!String(extensionActivationId || '').trim()) return;
+      const activationId = String(extensionActivationId || '').trim();
+      if (!activationId) {
+        realtimeSource?.close();
+        realtimeSource = null;
+        realtimeConnectionKey = '';
+        return;
+      }
       const base = String(backendUrl).replace(/\/$/, '');
+      const connectionKey = `${base}|${activationId}`;
+      if (realtimeSource && realtimeConnectionKey === connectionKey) return;
       realtimeSource?.close();
-      realtimeSource = new EventSource(`${base}/api/events?activation_id=${encodeURIComponent(String(extensionActivationId))}`);
+      const source = new EventSource(`${base}/api/events?activation_id=${encodeURIComponent(activationId)}`);
+      realtimeSource = source;
+      realtimeConnectionKey = connectionKey;
       for (const eventName of ['message-upsert', 'message-status-update', 'chats-updated']) {
-        realtimeSource.addEventListener(eventName, (event) => {
+        source.addEventListener(eventName, (event) => {
           let data = {};
           try { data = JSON.parse(event.data || '{}'); } catch { return; }
           chrome.runtime.sendMessage({ type: 'REALTIME_EVENT', event: eventName, data }).catch(() => {});
+          scheduleWhatsappUnreadReconciliation();
         });
       }
-      realtimeSource.onerror = () => {
-        realtimeSource?.close();
+      source.onerror = () => {
+        if (realtimeSource !== source) return;
+        source.close();
         realtimeSource = null;
-        setTimeout(startRealtimeUpdates, 5000);
+        realtimeConnectionKey = '';
+        scheduleRealtimeReconnect();
       };
     } catch (error) {
       console.warn('[LYN] No se pudo iniciar tiempo real:', error);
-      setTimeout(startRealtimeUpdates, 5000);
+      scheduleRealtimeReconnect();
     }
   }
+
   function $(selector, parent = document) {
     return parent.querySelector(selector);
   }
@@ -815,12 +881,16 @@
           applyPrivacyMode(true);
         }
       }
-      if (changes.extensionActivationId?.newValue && !realtimeSource) {
+      if (changes.extensionActivationId) {
+        realtimeSource?.close();
+        realtimeSource = null;
+        realtimeConnectionKey = '';
         startRealtimeUpdates();
       }
-      if (changes.backendUrl && realtimeSource) {
-        realtimeSource.close();
+      if (changes.backendUrl) {
+        realtimeSource?.close();
         realtimeSource = null;
+        realtimeConnectionKey = '';
         startRealtimeUpdates();
       }
     });

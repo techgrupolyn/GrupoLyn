@@ -23,7 +23,7 @@ Backend Express ── PostgreSQL (superagente)
 
 - `backend/`: API, sincronización, persistencia PostgreSQL, IA, SSE, autenticación y proxy controlado a Evolution.
 - `frontend/`: dashboard operativo y vista CEO bajo `/?view=ceo`.
-- `extension/`: extensión Manifest V3 para navegadores Chromium; sincroniza mediante service worker, caché local y SSE.
+- `extension/`: extensión Manifest V3 para navegadores Chromium; sincroniza por webhook/SSE, caché local y reconciliación de WhatsApp Web.
 - `schema.sql`: esquema idempotente para instalaciones nuevas. `backend/server.ts` aplica además actualizaciones compatibles al iniciar.
 - `deploy/`: Nginx, systemd, scripts de despliegue y respaldo.
 
@@ -31,7 +31,7 @@ Backend Express ── PostgreSQL (superagente)
 
 1. Solo los JID terminados en `@g.us` entran en la lista operativa, sincronización, mensajes pendientes, resúmenes y respuestas IA.
 2. Los resúmenes y sugerencias usan únicamente mensajes entrantes con `estado = 'pendiente'` y conservan su rol, mensajes origen, modelo y proveedor en base de datos.
-3. Al marcar un chat como revisado, el contador pendiente se actualiza en base de datos; el contador de WhatsApp se reconcilia desde la extensión cuando WhatsApp Web está abierto.
+3. Al marcar un chat como revisado, el contador pendiente se actualiza en base de datos. Con WhatsApp Web abierto, la extensión detecta cambios de la lista, reconcilia los chats grupales visibles y actualiza también a cero los que ya no tienen indicador.
 4. El Dashboard CEO consulta datos persistidos y no crea notificaciones del navegador ni paneles de alertas de chat.
 
 ## Datos persistidos
@@ -51,6 +51,12 @@ No borres tablas o mensajes manualmente. Para un reinicio controlado usa `docs/R
 - Extensión: el CEO genera un código de un solo uso en **Configuración**. Al canjearlo, la extensión recibe una activación. Toda petición originada por la extensión debe incluir `X-Extension-Activation`; SSE usa `activation_id`. Revocar el código invalida inmediatamente las peticiones de esa instalación.
 - Red: Nginx es el único servicio público. PostgreSQL, Evolution y backend se enlazan a `127.0.0.1`.
 - IA: `GOOGLE_GEMINI_API_KEY` nunca se expone al frontend o extensión. Los límites de mensajes y medios se configuran con `PENDING_CONTEXT_MESSAGE_LIMIT`, `SUMMARY_HISTORY_MAX_CHARS`, `MAX_MEDIA_ANALYSIS_ITEMS` y `MAX_MEDIA_ANALYSIS_BYTES`.
+
+## Sincronización en vivo
+
+- El webhook de Evolution persiste cada evento entrante y lo publica por SSE de forma aislada por `account_id`; la extensión actualiza inmediatamente el chat afectado.
+- Como respaldo, con WhatsApp Web abierto la extensión reconcilia el DOM y solicita cambios cada 5 segundos en primer plano o 15 segundos en segundo plano. Chrome limita sus alarmas del service worker a 30 segundos, que quedan como tercera capa.
+- El backend consulta Evolution cada 15 segundos por defecto (`SYNC_INTERVAL_MS`) y realiza una sincronización histórica cada 5 minutos (`FULL_SYNC_INTERVAL_MS`). Los valores se validan entre límites seguros para evitar configuraciones erróneas.
 
 ## Desarrollo local
 
