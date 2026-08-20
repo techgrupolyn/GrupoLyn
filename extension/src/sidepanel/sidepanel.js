@@ -552,33 +552,47 @@ async function sendSelectedReplies() {
   state.selectedSendInFlight = true;
   renderSelectedActions();
   if (status) status.textContent = 'Enviando respuestas seleccionadas…';
+  const results = [];
   try {
-    const replies = selectedIds.map((chatId) => {
+    for (const [index, chatId] of selectedIds.entries()) {
       const data = getReplyForChat(chatId, specialistId);
-      return { chatId, texto: data.respuesta, respuestaId: data.respuestaId, quedaRespondido: true };
-    });
-    const result = await directBackendRequest('/batch/reply', {
-      method: 'POST',
-      body: JSON.stringify({ replies, intervalo_ms: 1200 }),
-    });
-    const sentIds = new Set((result?.results || []).filter((item) => item?.ok).map((item) => String(item.chatId)));
+      try {
+        const result = await backendMessage('SEND_TEXT', {
+          chatId,
+          text: data.respuesta,
+          respuestaId: data.respuestaId,
+        });
+        results.push({ chatId, ok: true, duplicate: Boolean(result?.duplicate) });
+      } catch (error) {
+        results.push({ chatId, ok: false, error: error?.message || 'No se pudo enviar' });
+      }
+      if (index < selectedIds.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
+      }
+    }
+
+    const sentIds = new Set(results.filter((item) => item.ok).map((item) => String(item.chatId)));
     sentIds.forEach((chatId) => {
       state.selectedChatIds.delete(chatId);
       delete state.summaries[chatId];
       delete state.replies[chatId];
       delete state.reviewedChats[chatId];
     });
-    if (status) status.textContent = `${Number(result?.success || 0)} de ${replies.length} respuestas enviadas.`;
+    const failed = results.filter((item) => !item.ok);
+    if (status) {
+      if (failed.length) {
+        status.innerHTML = `<span class="error">${sentIds.size}/${selectedIds.length} enviadas. ${escapeHtml(failed[0].error || 'Revisa los chats pendientes.')}</span>`;
+      } else {
+        status.textContent = `${sentIds.size}/${selectedIds.length} respuestas enviadas.`;
+      }
+    }
     await backendMessage('SYNC_NOW').catch(() => undefined);
     await loadChats();
-  } catch (error) {
-    if (status) status.innerHTML = `<span class="error">Error enviando: ${escapeHtml(error?.message || 'Error')}</span>`;
   } finally {
     state.selectedSendInFlight = false;
     renderSelectedActions();
   }
 }
-
 async function generateSummary() {
   const specialistId = $('specialist-select')?.value;
   const output = $('summary-output');
