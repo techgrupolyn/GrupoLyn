@@ -3,8 +3,8 @@ const SYNC_CHATS_ALARM = 'lyn-sync-chats';
 const SYNC_MESSAGES_ALARM = 'lyn-sync-messages';
 const MAX_MESSAGES_PER_CHAT = 200;
 const EXTENSION_API_PATHS = [
-  /^\/auth\/(status|qr|authorize)$/, /^\/chats$/, /^\/chats\/unread-reconcile$/, /^\/chats\/[^/]+\/mensajes\/latest$/, /^\/chats\/[^/]+\/mensajes$/, /^\/chats\/[^/]+\/read$/,
-  /^\/mensajes\/changes$/, /^\/enviar$/, /^\/classify$/, /^\/specialists(?:\/[^/]+)?$/, /^\/chat\/summary$/, /^\/chat\/reply$/, /^\/chat\/[^/]+\/(summaries|replies)$/, /^\/ai\/auto-reply$/, /^\/sincronizar$/,
+  /^\/auth\/(status|qr|authorize)$/, /^\/chats$/, /^\/chats\/ensure$/, /^\/chats\/unread-reconcile$/, /^\/chats\/[^/]+\/mensajes(?:\/latest)?$/, /^\/chats\/[^/]+\/(read|name|resolve-name$/,
+  /^\/mensajes\/changes$/, /^\/enviar$/, /^\/classify$/, /^\/specialists(?:\/[^/]+)?$/, /^\/chat\/summary$/, /^\/chat\/reply$/, /^\/chat\/[^/]+\/(summaries|replies)$/, /^\/ai\/auto-reply$/, /^\/sincronizar$/, /^\/pendientes$/,
 ];
 
 function isAllowedExtensionApiPath(path) {
