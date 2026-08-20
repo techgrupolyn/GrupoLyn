@@ -1487,7 +1487,7 @@ async function persistMessage(messageItem: MessageItem, account: WhatsAppAccount
          WHEN $5::boolean THEN unread_count + 1
          ELSE unread_count
        END
-       WHERE id = $1::varchar
+       WHERE id = $1::varchar AND account_id = $2::varchar
        RETURNING unread_count`,
       [String(chatId), account.id, !fromMe && hasExactUnreadCount, Math.max(0, Math.floor(parsedUnreadCount || 0)), !fromMe && inserted],
     );
