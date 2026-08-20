@@ -17,7 +17,7 @@ En producción se debe definir `CHROME_EXTENSION_IDS` con el identificador de 32
 CHROME_EXTENSION_IDS=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ```
 
-El backend rechaza orígenes de extensiones que no estén en esa lista. No uses un comodín ni agregues IDs de extensiones de desarrollo en producción.
+El backend rechaza cualquier origen de extensión presente que no esté en esa lista. Las solicitudes sin encabezado `Origin` siguen requiriendo una activación válida; CORS no concede acceso a sitios externos. No uses un comodín ni agregues IDs de extensiones de desarrollo en producción.
 
 ## Activaciones
 

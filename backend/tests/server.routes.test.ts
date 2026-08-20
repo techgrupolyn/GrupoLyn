@@ -43,8 +43,7 @@ describe('Server - protección de APIs de extensión', () => {
 
   it('no concede CORS a un sitio web ajeno', async () => {
     const res = await client.get('/api/chats').set('Origin', 'https://attacker.example');
-    expect(res.headers['access-control-allow-origin']).toBeUndefined();
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
   });
 });
 

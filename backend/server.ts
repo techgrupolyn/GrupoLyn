@@ -764,7 +764,7 @@ function requireApiAccess(req: Request, res: Response, next: NextFunction): void
 
 async function requireExtensionActivation(req: Request, res: Response, next: NextFunction): Promise<void> {
   const origin = String(req.header('origin') || '');
-  if (process.env.NODE_ENV === 'production' && !isAllowedExtensionOrigin(origin)) {
+  if (origin && !isAllowedExtensionOrigin(origin)) {
     res.status(403).json({ error: 'Origen de extensión no autorizado' });
     return;
   }
