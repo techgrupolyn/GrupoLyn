@@ -1600,19 +1600,28 @@ async function getUnreadMessageContext(chatId: string, account: WhatsAppAccount 
   const variants = scopedChatIdVariants(account.id, chatId);
   if (!variants.length) return { variants, pendingCount: 0, rows: [] };
 
-  const { rows } = await pool.query<Mensaje & { pending_count: number }>(
-    `SELECT id, chat_id, remitente, remitente_jid, texto, timestamp, tipo, media, raw, enviado_por_mi,
-            COUNT(*) OVER()::int AS pending_count
+  const { rows: chatRows } = await pool.query<{ unread_count: number }>(
+    `SELECT unread_count
+     FROM chats
+     WHERE account_id = $1::varchar AND id = ANY($2::text[])
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+    [account.id, variants],
+  );
+  const pendingCount = Math.max(0, Number(chatRows[0]?.unread_count || 0));
+  if (!pendingCount) return { variants, pendingCount: 0, rows: [] };
+
+  const contextLimit = Math.min(pendingCount, PENDING_CONTEXT_MESSAGE_LIMIT);
+  const { rows } = await pool.query<Mensaje>(
+    `SELECT id, chat_id, remitente, remitente_jid, texto, timestamp, tipo, media, raw, enviado_por_mi
      FROM mensajes
      WHERE account_id = $1::varchar
        AND chat_id = ANY($2::text[])
        AND enviado_por_mi = FALSE
-       AND estado = 'pendiente'
      ORDER BY timestamp DESC
-     LIMIT $3`,
-    [account.id, variants, PENDING_CONTEXT_MESSAGE_LIMIT],
+     LIMIT $3::integer`,
+    [account.id, variants, contextLimit],
   );
-  const pendingCount = Math.max(0, Number(rows[0]?.pending_count || 0));
   return { variants, pendingCount, rows };
 }
 
@@ -4926,4 +4935,4 @@ if (!isTestEnv) {
   });
 }
 
-export { app, pool, ensureRemoteJid, resolveChatIdVariants, normalizeRemoteJid, toDate, ensureDatabaseSchema, evolutionFetch, getConnectionStatus };
+export { app, pool, ensureRemoteJid, resolveChatIdVariants, normalizeRemoteJid, toDate, ensureDatabaseSchema, evolutionFetch, getConnectionStatus, getUnreadMessageContext };
