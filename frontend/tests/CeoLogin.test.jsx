@@ -33,7 +33,7 @@ describe('Acceso del panel CEO', () => {
   it('no revela credenciales iniciales y conserva el formulario de acceso', () => {
     render(<CeoLogin onSubmit={vi.fn()} />);
 
-    expect(screen.getByRole('heading', { name: 'Panel CEO' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Usuario')).toBeRequired();
     expect(screen.getByPlaceholderText('Contraseña')).toBeRequired();
     expect(screen.queryByText(/superadmin/i)).not.toBeInTheDocument();
