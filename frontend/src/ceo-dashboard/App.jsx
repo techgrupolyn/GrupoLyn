@@ -234,7 +234,7 @@ export default function CEOApp({ user, onLogout }) {
       <aside className="flex w-72 flex-col border-r border-[#2E2E2E] bg-[#141414]">
         <div className="border-b border-[#2E2E2E] px-6 py-8">
           <p className="text-[11px] font-semibold uppercase tracking-[0.4em] text-[#737373]">LYN</p>
-          <h1 className="mt-4 font-display text-2xl font-medium text-[#F2F2F2] tracking-wide">Dashboard CEO</h1>
+          <h1 className="mt-4 font-display text-2xl font-medium text-[#F2F2F2] tracking-wide">Dashboard</h1>
           <div className="mt-4 h-px w-12 bg-[#BFBFBF]/60" />
           <p className="mt-4 text-xs text-[#737373] leading-relaxed">Panel ejecutivo para monitoreo de operaciones y métricas.</p>
         </div>
