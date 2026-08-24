@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import ConsultaIAPanel from './components/ConsultaIAPanel';
+import { isConsultationOnlyCeoUser } from './CeoLogin';
 import api from './api';
 import BackofficeView from './views/BackofficeView';
 import BusinessView from './views/BusinessView';
@@ -112,15 +113,20 @@ const NAV_ITEMS = [
   { key: 'backoffice', label: 'Backoffice', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg> },
 ];
 
-export default function CEOApp() {
+export default function CEOApp({ user }) {
+  const consultationOnly = isConsultationOnlyCeoUser(user);
   const [metrics, setMetrics] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [currentTime, setCurrentTime] = useState(new Date());
   const [view, setView] = useState(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get('view') || 'dashboard';
+    return consultationOnly ? 'ai' : (params.get('view') || 'dashboard');
   });
+
+  useEffect(() => {
+    if (consultationOnly && view !== 'ai') setView('ai');
+  }, [consultationOnly, view]);
 
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -146,8 +152,8 @@ export default function CEOApp() {
   };
 
   useEffect(() => {
-    if (view === 'dashboard') loadMetrics();
-  }, [view]);
+    if (!consultationOnly && view === 'dashboard') loadMetrics();
+  }, [consultationOnly, view]);
 
   const MessageIcon = () => (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
@@ -187,6 +193,8 @@ export default function CEOApp() {
   };
 
   const renderView = () => {
+    if (consultationOnly) return <ConsultaIAPanel />;
+
     switch (view) {
       case 'groups': return <GroupsView />;
       case 'labels': return <LabelsView />;
@@ -234,7 +242,7 @@ export default function CEOApp() {
         <div className="flex-1 overflow-y-auto px-6 py-8">
           <p className="text-[10px] font-semibold uppercase tracking-[0.4em] text-[#737373]">Navegación</p>
           <nav className="mt-6 space-y-1.5">
-            {NAV_ITEMS.map((item) => (
+            {(consultationOnly ? NAV_ITEMS.filter((item) => item.key === 'ai') : NAV_ITEMS).map((item) => (
               <button
                 key={item.key}
                 type="button"
@@ -266,10 +274,10 @@ export default function CEOApp() {
           <div>
             <h2 className="font-display text-2xl font-medium text-[#F2F2F2] tracking-wide">{viewTitles[view] || 'Dashboard'}</h2>
             <p className="mt-2 text-xs text-[#737373]">
-              Actualizado: {currentTime.toLocaleString('es-ES')} — Indicadores clave derivados de la base de datos.
+              {consultationOnly ? 'Acceso restringido a consultas asistidas por IA.' : `Actualizado: ${currentTime.toLocaleString('es-ES')} — Indicadores clave derivados de la base de datos.`}
             </p>
           </div>
-          {view === 'dashboard' && (
+          {!consultationOnly && view === 'dashboard' && (
             <>
               <button
                 type="button"
@@ -297,7 +305,7 @@ export default function CEOApp() {
 
 
 
-        {error && view === 'dashboard' && (
+        {!consultationOnly && error && view === 'dashboard' && (
           <div className="mx-10 mt-10 rounded-sm border border-[#2E2E2E] bg-[#141414] p-5 text-xs text-[#737373]">{error}</div>
         )}
 

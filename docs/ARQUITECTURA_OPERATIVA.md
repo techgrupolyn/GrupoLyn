@@ -47,7 +47,7 @@ No borres tablas o mensajes manualmente. Para un reinicio controlado usa `docs/R
 
 ## Seguridad y accesos
 
-- CEO: `POST /api/auth/ceo-login` entrega una sesión firmada. En producción define siempre `CEO_SESSION_SECRET` y `CEO_INITIAL_PASSWORD` en `backend/.env` o en el archivo de entorno de systemd.
+- CEO: `POST /api/auth/ceo-login` entrega una sesión firmada. En producción define siempre `CEO_SESSION_SECRET` y `CEO_INITIAL_PASSWORD` en `backend/.env` o en el archivo de entorno de systemd. Si se define `CEO_PUBLIC_INITIAL_PASSWORD`, el arranque crea la cuenta `Publico` con rol `consulta_publica`. Este rol se limita en servidor a `POST /api/ceo/ask`; no puede leer métricas, chats, configuraciones, especialistas ni administrar activaciones, aunque se manipule la interfaz o la URL.
 - Extensión: el CEO genera un código de un solo uso en **Configuración**. Al canjearlo, la extensión recibe una activación. Toda petición originada por la extensión debe incluir `X-Extension-Activation`; SSE usa `activation_id`. Revocar el código invalida inmediatamente las peticiones de esa instalación.
 - Red: Nginx es el único servicio público. PostgreSQL, Evolution y backend se enlazan a `127.0.0.1`.
 - IA: `GOOGLE_GEMINI_API_KEY` nunca se expone al frontend o extensión. Los límites de mensajes y medios se configuran con `PENDING_CONTEXT_MESSAGE_LIMIT`, `SUMMARY_HISTORY_MAX_CHARS`, `MAX_MEDIA_ANALYSIS_ITEMS` y `MAX_MEDIA_ANALYSIS_BYTES`.

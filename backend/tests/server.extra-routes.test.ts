@@ -1,6 +1,6 @@
 import request from 'supertest';
 import { describe, it, expect } from 'vitest';
-import { app } from '../server.ts';
+import { app, isCeoAdministratorRole, isCeoConsultationRoute } from '../server.ts';
 
 const client = request(app);
 
@@ -17,6 +17,13 @@ describe('Server - rutas adicionales protegidas', () => {
 });
 
 describe('Server - seguridad CEO', () => {
+  it('limita el rol público a consultas y lo excluye de permisos administrativos', () => {
+    expect(isCeoConsultationRoute('/ceo/ask')).toBe(true);
+    expect(isCeoConsultationRoute('/ceo/metrics')).toBe(false);
+    expect(isCeoAdministratorRole('consulta_publica')).toBe(false);
+    expect(isCeoAdministratorRole('superadmin')).toBe(true);
+  });
+
   it('rechaza un login CEO sin credenciales antes de consultar datos', async () => {
     const res = await client.post('/api/auth/ceo-login').send({});
     expect(res.status).toBe(400);

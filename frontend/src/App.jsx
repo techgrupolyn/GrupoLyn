@@ -2414,7 +2414,7 @@ const handleBatchRespondidoChange = useCallback((chatId, value) => {
 
   // La sesión CEO es independiente del estado de WhatsApp.
   if (shouldShowCeoDashboard(view, ceoUser)) {
-    return <CEODashboard />;
+    return <CEODashboard user={ceoUser} />;
   }
 
   if (shouldShowCeoLogin(view, ceoUser)) {

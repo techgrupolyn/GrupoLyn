@@ -33,6 +33,10 @@ export function shouldShowCeoLogin(view, ceoUser) {
   return isCeoView(view) && !ceoUser;
 }
 
+export function isConsultationOnlyCeoUser(user) {
+  return String(user?.rol || '').toLowerCase() === 'consulta_publica';
+}
+
 export function CeoLogin({ onSubmit, submitting = false, error = '' }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#0d0f12] px-6">

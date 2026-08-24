@@ -577,6 +577,20 @@ async function ensureDatabaseSchema(): Promise<void> {
       );
     }
   }
+
+  const publicConsultationPassword = process.env.CEO_PUBLIC_INITIAL_PASSWORD?.trim();
+  if (publicConsultationPassword) {
+    await pool.query(
+      `INSERT INTO usuarios (usuario, contraseña, password_hash, nombre, rol, activo)
+       VALUES ('Publico', '', $1, 'Consultas públicas', 'consulta_publica', TRUE)
+       ON CONFLICT (usuario) DO UPDATE
+         SET nombre = EXCLUDED.nombre,
+             rol = EXCLUDED.rol,
+             activo = TRUE,
+             contraseña = ''`,
+      [hashPassword(publicConsultationPassword)],
+    );
+  }
 }
 
 async function getWhatsappAccount(accountId: string, requireActive = true): Promise<WhatsAppAccount | null> {
@@ -722,12 +736,20 @@ function requireCeoAuth(req: Request, res: Response, next: NextFunction): void {
     res.status(401).json({ error: 'Sesión de CEO inválida o vencida' });
     return;
   }
-  if (!['superadmin', 'admin', 'CEO'].includes(String(session.rol))) {
+  if (!isCeoAdministratorRole(session.rol)) {
     res.status(403).json({ error: 'No tienes permisos para esta operación' });
     return;
   }
   res.locals.ceoSession = session;
   next();
+}
+
+export function isCeoAdministratorRole(role: unknown): boolean {
+  return ['superadmin', 'admin', 'CEO'].includes(String(role));
+}
+
+export function isCeoConsultationRoute(path: string): boolean {
+  return path === '/ceo/ask';
 }
 
 function requireCeoSession(req: Request, res: Response, next: NextFunction): void {
@@ -758,7 +780,11 @@ function requireApiAccess(req: Request, res: Response, next: NextFunction): void
     return;
   }
   if (req.header('authorization')) {
-    requireCeoAuth(req, res, next);
+    if (isCeoConsultationRoute(req.path)) {
+      requireCeoSession(req, res, next);
+    } else {
+      requireCeoAuth(req, res, next);
+    }
     return;
   }
   if (!isExtensionAccountRoute(req.path)) {
