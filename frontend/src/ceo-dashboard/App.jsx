@@ -113,7 +113,7 @@ const NAV_ITEMS = [
   { key: 'backoffice', label: 'Backoffice', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg> },
 ];
 
-export default function CEOApp({ user }) {
+export default function CEOApp({ user, onLogout }) {
   const consultationOnly = isConsultationOnlyCeoUser(user);
   const [metrics, setMetrics] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -277,7 +277,8 @@ export default function CEOApp({ user }) {
               {consultationOnly ? 'Acceso restringido a consultas asistidas por IA.' : `Actualizado: ${currentTime.toLocaleString('es-ES')} — Indicadores clave derivados de la base de datos.`}
             </p>
           </div>
-          {!consultationOnly && view === 'dashboard' && (
+          <div className="flex items-center gap-3">
+            {!consultationOnly && view === 'dashboard' && (
             <>
               <button
                 type="button"
@@ -300,7 +301,15 @@ export default function CEOApp({ user }) {
                 )}
               </button>
             </>
-          )}
+            )}
+            <button
+              type="button"
+              onClick={onLogout}
+              className="rounded-sm border border-[#2E2E2E] px-4 py-3 text-xs font-semibold uppercase tracking-widest text-[#BFBFBF] transition-colors hover:border-[#737373] hover:text-[#F2F2F2]"
+            >
+              Cerrar sesión
+            </button>
+          </div>
         </header>
 
 

@@ -2412,9 +2412,16 @@ const handleBatchRespondidoChange = useCallback((chatId, value) => {
     }
   }, []);
 
+  const handleCeoLogout = useCallback(() => {
+    localStorage.removeItem('lyn_ceo_user');
+    localStorage.removeItem('ceo_token');
+    setCeoUser(null);
+    setCeoLoginError('');
+  }, []);
+
   // La sesión CEO es independiente del estado de WhatsApp.
   if (shouldShowCeoDashboard(view, ceoUser)) {
-    return <CEODashboard user={ceoUser} />;
+    return <CEODashboard user={ceoUser} onLogout={handleCeoLogout} />;
   }
 
   if (shouldShowCeoLogin(view, ceoUser)) {
