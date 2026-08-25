@@ -28,7 +28,8 @@ El backend rechaza cualquier origen de extensión presente que no esté en esa l
 
 ## Secretos y red
 
-- `GOOGLE_GEMINI_API_KEY`, `EVOLUTION_API_KEY`, `DATABASE_URL`, `WEBHOOK_SECRET` y `CEO_SESSION_SECRET` viven exclusivamente en `/etc/lyn/*.env`; nunca en la extensión, el frontend ni Git.
+- `GOOGLE_GEMINI_API_KEY`, `GOOGLE_DRIVE_CLIENT_SECRET`, `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY`, `EVOLUTION_API_KEY`, `DATABASE_URL`, `WEBHOOK_SECRET` y `CEO_SESSION_SECRET` viven exclusivamente en `/etc/lyn/*.env`; nunca en la extensión, el frontend ni Git.
+- Google Drive usa OAuth con `drive.readonly`. Los tokens de acceso y renovación se cifran con AES-256-GCM antes de persistirse. Rotar `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` invalida las conexiones existentes, que deberán autorizarse de nuevo.
 - El backend y PostgreSQL deben permanecer en `127.0.0.1`; Nginx es el único servicio expuesto a Internet.
 - `CORS_ALLOWED_ORIGINS` debe contener únicamente el dominio HTTPS del Dashboard CEO.
 - Rota inmediatamente cualquier secreto que se haya pegado en un chat, consola compartida o repositorio.

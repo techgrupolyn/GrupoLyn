@@ -9,6 +9,7 @@ import rateLimit from 'express-rate-limit';
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'crypto';
 import type { EvolutionInstance, MessageItem, Chat, ConnectionStatus, Mensaje, ResumenRequest, ResumenResponse, RoleClassification, Specialist } from './types/index.ts';
 import { callGeminiWithPrompt, callGeminiWithPromptResult, callGeminiWithMediaResult, resolveSpecialist, setSpecialists, specialists, type GeminiMediaItem } from './geminiService.ts';
+import { canExtractGoogleDriveText, classifyGoogleDriveArtifact, decryptGoogleDriveSecret, encryptGoogleDriveSecret, parseGoogleDriveFolderId } from './google-drive.ts';
 import { Readable } from 'stream';
 
 const PORT = Number(process.env.PORT || 3003);
@@ -34,6 +35,12 @@ const MAX_MEDIA_ANALYSIS_ITEMS = Math.max(1, Math.min(Number(process.env.MAX_MED
 const MAX_MEDIA_ANALYSIS_BYTES = Math.max(1_048_576, Math.min(Number(process.env.MAX_MEDIA_ANALYSIS_BYTES || 20 * 1024 * 1024), 50 * 1024 * 1024));
 const AUTO_CLASSIFY_MESSAGES = process.env.AUTO_CLASSIFY_MESSAGES?.trim().toLowerCase() === 'true';
 const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL?.trim() || (() => { try { return new URL(WEBHOOK_URL).origin; } catch { return ''; } })();
+const GOOGLE_DRIVE_CLIENT_ID = process.env.GOOGLE_DRIVE_CLIENT_ID?.trim() || '';
+const GOOGLE_DRIVE_CLIENT_SECRET = process.env.GOOGLE_DRIVE_CLIENT_SECRET?.trim() || '';
+const GOOGLE_DRIVE_OAUTH_REDIRECT_URI = process.env.GOOGLE_DRIVE_OAUTH_REDIRECT_URI?.trim() || (PUBLIC_APP_URL ? `${PUBLIC_APP_URL}/api/integrations/google-drive/oauth/callback` : '');
+const GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY = process.env.GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY?.trim() || '';
+const GOOGLE_DRIVE_SYNC_MAX_FILES = boundedInterval(process.env.GOOGLE_DRIVE_SYNC_MAX_FILES, 1_000, 10, 5_000);
+const GOOGLE_DRIVE_TEXT_MAX_CHARS = boundedInterval(process.env.GOOGLE_DRIVE_TEXT_MAX_CHARS, 200_000, 10_000, 500_000);
 const INVITATION_TTL_MAX_HOURS = 30 * 24;
 const DEFAULT_WHATSAPP_ACCOUNT_ID = 'default';
 const ACCOUNT_SCOPE_SEPARATOR = '::';
@@ -492,6 +499,56 @@ async function ensureDatabaseSchema(): Promise<void> {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+    CREATE TABLE IF NOT EXISTS google_drive_connections (
+      id UUID PRIMARY KEY,
+      google_email VARCHAR(320) NOT NULL UNIQUE,
+      display_name VARCHAR(255),
+      access_token_encrypted TEXT NOT NULL,
+      refresh_token_encrypted TEXT NOT NULL,
+      expires_at TIMESTAMPTZ,
+      scope TEXT,
+      created_by VARCHAR(120) NOT NULL,
+      revoked_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_google_drive_connections_active ON google_drive_connections(created_at DESC) WHERE revoked_at IS NULL;
+    CREATE TABLE IF NOT EXISTS google_drive_folders (
+      id UUID PRIMARY KEY,
+      connection_id UUID NOT NULL REFERENCES google_drive_connections(id) ON DELETE CASCADE,
+      google_folder_id VARCHAR(255) NOT NULL,
+      label VARCHAR(255) NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      last_synced_at TIMESTAMPTZ,
+      last_sync_error TEXT,
+      created_by VARCHAR(120) NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(connection_id, google_folder_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_google_drive_folders_connection ON google_drive_folders(connection_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS google_drive_artifacts (
+      id UUID PRIMARY KEY,
+      connection_id UUID NOT NULL REFERENCES google_drive_connections(id) ON DELETE CASCADE,
+      folder_id UUID REFERENCES google_drive_folders(id) ON DELETE SET NULL,
+      google_file_id VARCHAR(255) NOT NULL,
+      name VARCHAR(1024) NOT NULL,
+      mime_type VARCHAR(255) NOT NULL,
+      artifact_type VARCHAR(40) NOT NULL,
+      web_view_link TEXT,
+      source_modified_at TIMESTAMPTZ,
+      size_bytes BIGINT,
+      checksum VARCHAR(255),
+      content_text TEXT,
+      content_truncated BOOLEAN NOT NULL DEFAULT FALSE,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(connection_id, google_file_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_google_drive_artifacts_folder_updated ON google_drive_artifacts(folder_id, source_modified_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_google_drive_artifacts_type ON google_drive_artifacts(artifact_type, source_modified_at DESC);
     ALTER TABLE chats ADD COLUMN IF NOT EXISTS account_id VARCHAR(120) NOT NULL DEFAULT 'default';
     ALTER TABLE grupos ADD COLUMN IF NOT EXISTS account_id VARCHAR(120) NOT NULL DEFAULT 'default';
     ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS account_id VARCHAR(120) NOT NULL DEFAULT 'default';
@@ -762,8 +819,259 @@ function requireCeoSession(req: Request, res: Response, next: NextFunction): voi
   next();
 }
 
+type GoogleDriveConnectionRow = {
+  id: string;
+  google_email: string;
+  display_name: string | null;
+  access_token_encrypted: string;
+  refresh_token_encrypted: string;
+  expires_at: Date | null;
+  scope: string | null;
+};
+
+type GoogleDriveFile = {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime?: string;
+  createdTime?: string;
+  size?: string;
+  md5Checksum?: string;
+  webViewLink?: string;
+  parents?: string[];
+  description?: string;
+};
+
+type GoogleDriveOAuthState = { usuario: string; exp: number; nonce: string };
+
+function isGoogleDriveConfigured(): boolean {
+  return Boolean(
+    GOOGLE_DRIVE_CLIENT_ID
+    && GOOGLE_DRIVE_CLIENT_SECRET
+    && GOOGLE_DRIVE_OAUTH_REDIRECT_URI
+    && /^[a-f0-9]{64}$/i.test(GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY),
+  );
+}
+
+function createGoogleDriveOAuthState(session: CeoSession): string {
+  const payload = Buffer.from(JSON.stringify({
+    usuario: String(session.usuario || ''),
+    exp: Date.now() + 10 * 60_000,
+    nonce: randomBytes(16).toString('base64url'),
+  } satisfies GoogleDriveOAuthState)).toString('base64url');
+  const signature = createHmac('sha256', CEO_SESSION_SECRET).update(`google-drive:${payload}`).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function readGoogleDriveOAuthState(value: unknown): GoogleDriveOAuthState | null {
+  const [payload, signature] = String(value || '').split('.');
+  const expected = payload ? createHmac('sha256', CEO_SESSION_SECRET).update(`google-drive:${payload}`).digest('base64url') : '';
+  if (!payload || !signature || signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as GoogleDriveOAuthState;
+    return parsed.usuario && parsed.exp > Date.now() ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function googleDriveAuthorizationUrl(session: CeoSession): string {
+  if (!isGoogleDriveConfigured()) throw new Error('Google Drive no está configurado en el servidor');
+  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  url.searchParams.set('client_id', GOOGLE_DRIVE_CLIENT_ID);
+  url.searchParams.set('redirect_uri', GOOGLE_DRIVE_OAUTH_REDIRECT_URI);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('access_type', 'offline');
+  url.searchParams.set('prompt', 'consent');
+  url.searchParams.set('include_granted_scopes', 'true');
+  url.searchParams.set('scope', [
+    'openid',
+    'email',
+    'profile',
+    'https://www.googleapis.com/auth/drive.readonly',
+    'https://www.googleapis.com/auth/calendar.events.readonly',
+  ].join(' '));
+  url.searchParams.set('state', createGoogleDriveOAuthState(session));
+  return url.toString();
+}
+
+async function exchangeGoogleDriveAuthorizationCode(code: string): Promise<{ access_token: string; refresh_token?: string; expires_in?: number; scope?: string }> {
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: GOOGLE_DRIVE_CLIENT_ID,
+      client_secret: GOOGLE_DRIVE_CLIENT_SECRET,
+      redirect_uri: GOOGLE_DRIVE_OAUTH_REDIRECT_URI,
+      grant_type: 'authorization_code',
+    }),
+  });
+  const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok || !payload.access_token) throw new Error(String(payload.error_description || payload.error || 'No se pudo autorizar Google Drive'));
+  return payload as { access_token: string; refresh_token?: string; expires_in?: number; scope?: string };
+}
+
+async function getGoogleDriveProfile(accessToken: string): Promise<{ email: string; name?: string }> {
+  const response = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok || !payload.email) throw new Error('No se pudo identificar la cuenta de Google autorizada');
+  return { email: String(payload.email).toLowerCase(), name: payload.name ? String(payload.name) : undefined };
+}
+
+async function googleDriveAccessToken(connectionId: string): Promise<string> {
+  if (!isGoogleDriveConfigured()) throw new Error('Google Drive no está configurado en el servidor');
+  const { rows } = await pool.query<GoogleDriveConnectionRow>(
+    `SELECT id, google_email, display_name, access_token_encrypted, refresh_token_encrypted, expires_at, scope
+     FROM google_drive_connections
+     WHERE id = $1 AND revoked_at IS NULL`,
+    [connectionId],
+  );
+  const connection = rows[0];
+  if (!connection) throw new Error('Conexión de Google Drive no disponible');
+  if (connection.expires_at && connection.expires_at.getTime() > Date.now() + 60_000) {
+    return decryptGoogleDriveSecret(connection.access_token_encrypted, GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY);
+  }
+
+  const refreshToken = decryptGoogleDriveSecret(connection.refresh_token_encrypted, GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY);
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: GOOGLE_DRIVE_CLIENT_ID,
+      client_secret: GOOGLE_DRIVE_CLIENT_SECRET,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  });
+  const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok || !payload.access_token) throw new Error(String(payload.error_description || payload.error || 'No se pudo renovar la conexión de Google Drive'));
+  const expiresAt = new Date(Date.now() + Math.max(60, Number(payload.expires_in || 3600)) * 1000);
+  await pool.query(
+    `UPDATE google_drive_connections
+     SET access_token_encrypted = $2, expires_at = $3, updated_at = NOW()
+     WHERE id = $1`,
+    [connection.id, encryptGoogleDriveSecret(String(payload.access_token), GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY), expiresAt],
+  );
+  return String(payload.access_token);
+}
+
+async function googleDriveFetch(path: string, accessToken: string): Promise<globalThis.Response> {
+  const response = await fetch(`https://www.googleapis.com/drive/v3${path}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!response.ok) {
+    await response.text().catch(() => '');
+    throw new Error(`Google Drive respondió ${response.status}`);
+  }
+  return response;
+}
+
+async function readGoogleDriveText(file: GoogleDriveFile, accessToken: string): Promise<{ text: string | null; truncated: boolean }> {
+  if (!canExtractGoogleDriveText(file.mimeType, file.name)) return { text: null, truncated: false };
+  const encodedId = encodeURIComponent(file.id);
+  const path = file.mimeType === 'application/vnd.google-apps.document'
+    ? `/files/${encodedId}/export?mimeType=text%2Fplain&supportsAllDrives=true`
+    : `/files/${encodedId}?alt=media&supportsAllDrives=true`;
+  const response = await googleDriveFetch(path, accessToken);
+  const text = await response.text();
+  return { text: text.slice(0, GOOGLE_DRIVE_TEXT_MAX_CHARS), truncated: text.length > GOOGLE_DRIVE_TEXT_MAX_CHARS };
+}
+
+async function listGoogleDriveFolderFiles(folderId: string, accessToken: string): Promise<GoogleDriveFile[]> {
+  const pendingFolders = [folderId];
+  const visitedFolders = new Set<string>();
+  const files: GoogleDriveFile[] = [];
+  while (pendingFolders.length && files.length < GOOGLE_DRIVE_SYNC_MAX_FILES) {
+    const currentFolder = pendingFolders.shift() || '';
+    if (!currentFolder || visitedFolders.has(currentFolder)) continue;
+    visitedFolders.add(currentFolder);
+    let pageToken = '';
+    do {
+      const params = new URLSearchParams({
+        q: `'${currentFolder}' in parents and trashed = false`,
+        pageSize: String(Math.min(1000, GOOGLE_DRIVE_SYNC_MAX_FILES - files.length)),
+        fields: 'nextPageToken,files(id,name,mimeType,modifiedTime,createdTime,size,md5Checksum,webViewLink,parents,description)',
+        supportsAllDrives: 'true',
+        includeItemsFromAllDrives: 'true',
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+      const response = await googleDriveFetch(`/files?${params.toString()}`, accessToken);
+      const payload = await response.json() as { nextPageToken?: string; files?: GoogleDriveFile[] };
+      for (const file of payload.files || []) {
+        if (file.mimeType === 'application/vnd.google-apps.folder') pendingFolders.push(file.id);
+        else if (files.length < GOOGLE_DRIVE_SYNC_MAX_FILES) files.push(file);
+      }
+      pageToken = payload.nextPageToken || '';
+    } while (pageToken && files.length < GOOGLE_DRIVE_SYNC_MAX_FILES);
+  }
+  return files;
+}
+
+async function syncGoogleDriveFolder(folderId: string): Promise<{ imported: number; updated: number; total: number }> {
+  const { rows } = await pool.query<{
+    id: string; connection_id: string; google_folder_id: string; enabled: boolean;
+  }>(`SELECT id, connection_id, google_folder_id, enabled FROM google_drive_folders WHERE id = $1`, [folderId]);
+  const folder = rows[0];
+  if (!folder || !folder.enabled) throw new Error('Carpeta de Google Drive no disponible');
+  try {
+    const accessToken = await googleDriveAccessToken(folder.connection_id);
+    const files = await listGoogleDriveFolderFiles(folder.google_folder_id, accessToken);
+    const existingResult = await pool.query<{ google_file_id: string; source_modified_at: Date | null }>(
+      `SELECT google_file_id, source_modified_at FROM google_drive_artifacts WHERE connection_id = $1`,
+      [folder.connection_id],
+    );
+    const existing = new Map(existingResult.rows.map((row) => [row.google_file_id, row.source_modified_at?.toISOString() || '']));
+    let imported = 0;
+    let updated = 0;
+    for (const file of files) {
+      const modifiedAt = file.modifiedTime ? new Date(file.modifiedTime) : null;
+      const previousModifiedAt = existing.get(file.id);
+      const mustExtractText = canExtractGoogleDriveText(file.mimeType, file.name) && previousModifiedAt !== (modifiedAt?.toISOString() || '');
+      const text = mustExtractText ? await readGoogleDriveText(file, accessToken) : { text: null, truncated: false };
+      const artifactType = classifyGoogleDriveArtifact(file.mimeType, file.name);
+      const isNew = !existing.has(file.id);
+      await pool.query(
+        `INSERT INTO google_drive_artifacts (
+           id, connection_id, folder_id, google_file_id, name, mime_type, artifact_type, web_view_link,
+           source_modified_at, size_bytes, checksum, content_text, content_truncated, metadata
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+         ON CONFLICT (connection_id, google_file_id) DO UPDATE
+           SET folder_id = EXCLUDED.folder_id,
+               name = EXCLUDED.name,
+               mime_type = EXCLUDED.mime_type,
+               artifact_type = EXCLUDED.artifact_type,
+               web_view_link = EXCLUDED.web_view_link,
+               source_modified_at = EXCLUDED.source_modified_at,
+               size_bytes = EXCLUDED.size_bytes,
+               checksum = EXCLUDED.checksum,
+               content_text = COALESCE(EXCLUDED.content_text, google_drive_artifacts.content_text),
+               content_truncated = CASE WHEN EXCLUDED.content_text IS NULL THEN google_drive_artifacts.content_truncated ELSE EXCLUDED.content_truncated END,
+               metadata = EXCLUDED.metadata,
+               last_seen_at = NOW(),
+               updated_at = NOW()`,
+        [
+          randomUUID(), folder.connection_id, folder.id, file.id, file.name || 'Sin nombre', file.mimeType || 'application/octet-stream', artifactType,
+          file.webViewLink || null, modifiedAt, Number.isFinite(Number(file.size)) ? Number(file.size) : null, file.md5Checksum || null,
+          text.text, text.truncated, JSON.stringify({ parents: file.parents || [], created_time: file.createdTime || null, description: file.description || null }),
+        ],
+      );
+      if (isNew) imported += 1;
+      else updated += 1;
+    }
+    await pool.query(`UPDATE google_drive_folders SET last_synced_at = NOW(), last_sync_error = NULL, updated_at = NOW() WHERE id = $1`, [folder.id]);
+    return { imported, updated, total: files.length };
+  } catch (error) {
+    const message = (error as Error).message.slice(0, 1000);
+    await pool.query(`UPDATE google_drive_folders SET last_sync_error = $2, updated_at = NOW() WHERE id = $1`, [folder.id, message]);
+    throw error;
+  }
+}
+
 function isPublicApiRoute(path: string): boolean {
-  return path === '/auth/ceo-login' || path === '/extension/invitations/redeem';
+  return path === '/auth/ceo-login' || path === '/extension/invitations/redeem' || path === '/integrations/google-drive/oauth/callback';
 }
 
 function isExtensionAccountRoute(path: string): boolean {
@@ -3036,6 +3344,184 @@ app.post('/api/mensajes/:chatId/classify', async (req: Request, res: Response) =
   }
 });
 
+function redirectGoogleDriveResult(res: Response, result: 'connected' | 'error'): void {
+  try {
+    const url = new URL(PUBLIC_APP_URL);
+    url.searchParams.set('view', 'meetings');
+    url.searchParams.set('google_drive', result);
+    res.redirect(url.toString());
+  } catch {
+    res.status(result === 'connected' ? 200 : 400).send(result === 'connected' ? 'Google Drive conectado. Puedes volver al Dashboard.' : 'No se pudo conectar Google Drive. Vuelve al Dashboard e inténtalo nuevamente.');
+  }
+}
+
+app.get('/api/integrations/google-drive/oauth/callback', async (req: Request, res: Response) => {
+  const state = readGoogleDriveOAuthState(req.query.state);
+  const code = String(req.query.code || '').trim();
+  if (!state || !code || !isGoogleDriveConfigured()) return redirectGoogleDriveResult(res, 'error');
+  try {
+    const tokens = await exchangeGoogleDriveAuthorizationCode(code);
+    const profile = await getGoogleDriveProfile(tokens.access_token);
+    const previous = await pool.query<Pick<GoogleDriveConnectionRow, 'refresh_token_encrypted'>>(
+      `SELECT refresh_token_encrypted FROM google_drive_connections WHERE google_email = $1 AND revoked_at IS NULL`,
+      [profile.email],
+    );
+    const refreshTokenEncrypted = tokens.refresh_token
+      ? encryptGoogleDriveSecret(tokens.refresh_token, GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY)
+      : previous.rows[0]?.refresh_token_encrypted;
+    if (!refreshTokenEncrypted) throw new Error('Google no devolvió un token de renovación. Revoca el acceso de LYN Dashboard en Google y vuelve a conectar.');
+    const expiresAt = new Date(Date.now() + Math.max(60, Number(tokens.expires_in || 3600)) * 1000);
+    await pool.query(
+      `INSERT INTO google_drive_connections (
+         id, google_email, display_name, access_token_encrypted, refresh_token_encrypted, expires_at, scope, created_by
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (google_email) DO UPDATE
+         SET display_name = EXCLUDED.display_name,
+             access_token_encrypted = EXCLUDED.access_token_encrypted,
+             refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
+             expires_at = EXCLUDED.expires_at,
+             scope = EXCLUDED.scope,
+             revoked_at = NULL,
+             updated_at = NOW()`,
+      [
+        randomUUID(), profile.email, profile.name || null,
+        encryptGoogleDriveSecret(tokens.access_token, GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY), refreshTokenEncrypted,
+        expiresAt, tokens.scope || null, state.usuario,
+      ],
+    );
+    redirectGoogleDriveResult(res, 'connected');
+  } catch (error) {
+    console.error('[google-drive] Error autorizando:', (error as Error).message);
+    redirectGoogleDriveResult(res, 'error');
+  }
+});
+
+app.get('/api/google-drive/status', requireCeoAuth, async (_req: Request, res: Response) => {
+  try {
+    const [connectionsResult, foldersResult, artifactsResult] = await Promise.all([
+      pool.query<{ id: string; google_email: string; display_name: string | null; created_at: Date; updated_at: Date }>(
+        `SELECT id, google_email, display_name, created_at, updated_at
+         FROM google_drive_connections
+         WHERE revoked_at IS NULL
+         ORDER BY created_at DESC`,
+      ),
+      pool.query<{ id: string; connection_id: string; google_folder_id: string; label: string; enabled: boolean; last_synced_at: Date | null; last_sync_error: string | null; artifacts_count: number }>(
+        `SELECT f.id, f.connection_id, f.google_folder_id, f.label, f.enabled, f.last_synced_at, f.last_sync_error, COUNT(a.id)::int AS artifacts_count
+         FROM google_drive_folders f
+         LEFT JOIN google_drive_artifacts a ON a.folder_id = f.id
+         GROUP BY f.id
+         ORDER BY f.created_at DESC`,
+      ),
+      pool.query<{ count: number }>('SELECT COUNT(*)::int AS count FROM google_drive_artifacts'),
+    ]);
+    res.json({
+      configured: isGoogleDriveConfigured(),
+      configuration_error: isGoogleDriveConfigured() ? null : 'Faltan GOOGLE_DRIVE_CLIENT_ID, GOOGLE_DRIVE_CLIENT_SECRET, GOOGLE_DRIVE_OAUTH_REDIRECT_URI o GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY.',
+      connections: connectionsResult.rows,
+      folders: foldersResult.rows,
+      artifacts_count: artifactsResult.rows[0]?.count || 0,
+    });
+  } catch (error) {
+    console.error('[google-drive] Error consultando estado:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudo consultar el estado de Google Drive' });
+  }
+});
+
+app.post('/api/google-drive/connect', requireCeoAuth, (req: Request, res: Response) => {
+  try {
+    res.json({ authorization_url: googleDriveAuthorizationUrl(res.locals.ceoSession as CeoSession) });
+  } catch (error) {
+    res.status(503).json({ error: (error as Error).message });
+  }
+});
+
+app.post('/api/google-drive/folders', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const connectionId = String(req.body?.connection_id || '').trim();
+    const googleFolderId = parseGoogleDriveFolderId(String(req.body?.folder_url || req.body?.google_folder_id || ''));
+    const label = String(req.body?.label || '').trim().slice(0, 255);
+    if (!connectionId || !googleFolderId || !label) return res.status(400).json({ error: 'connection_id, etiqueta y URL o ID de carpeta son obligatorios' });
+    const connection = await pool.query('SELECT id FROM google_drive_connections WHERE id = $1 AND revoked_at IS NULL', [connectionId]);
+    if (!connection.rows.length) return res.status(404).json({ error: 'Conexión de Google Drive no encontrada' });
+    const { rows } = await pool.query(
+      `INSERT INTO google_drive_folders (id, connection_id, google_folder_id, label, created_by)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (connection_id, google_folder_id) DO UPDATE
+         SET label = EXCLUDED.label, enabled = TRUE, updated_at = NOW()
+       RETURNING id, connection_id, google_folder_id, label, enabled, last_synced_at, last_sync_error`,
+      [randomUUID(), connectionId, googleFolderId, label, String((res.locals.ceoSession as CeoSession).usuario || 'ceo')],
+    );
+    res.status(201).json(rows[0]);
+  } catch (error) {
+    console.error('[google-drive] Error guardando carpeta:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudo guardar la carpeta de Google Drive' });
+  }
+});
+
+app.delete('/api/google-drive/folders/:id', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE google_drive_folders SET enabled = FALSE, updated_at = NOW() WHERE id = $1 RETURNING id`,
+      [String(req.params.id || '')],
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Carpeta no encontrada' });
+    res.json({ ok: true, id: rows[0].id });
+  } catch (error) {
+    res.status(500).json({ error: 'No se pudo desactivar la carpeta' });
+  }
+});
+
+app.post('/api/google-drive/folders/:id/sync', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const result = await syncGoogleDriveFolder(String(req.params.id || ''));
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error('[google-drive] Error sincronizando:', (error as Error).message);
+    res.status(502).json({ error: (error as Error).message });
+  }
+});
+
+app.get('/api/google-drive/artifacts', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const folderId = String(req.query.folder_id || '').trim();
+    const params = folderId ? [folderId] : [];
+    const where = folderId ? 'WHERE a.folder_id = $1' : '';
+    const { rows } = await pool.query(
+      `SELECT a.id, a.folder_id, a.google_file_id, a.name, a.mime_type, a.artifact_type, a.web_view_link,
+              a.source_modified_at, a.size_bytes, a.content_truncated, a.created_at, a.updated_at,
+              LEFT(COALESCE(a.content_text, ''), 3000) AS content_preview, f.label AS folder_label, c.google_email
+       FROM google_drive_artifacts a
+       LEFT JOIN google_drive_folders f ON f.id = a.folder_id
+       INNER JOIN google_drive_connections c ON c.id = a.connection_id
+       ${where}
+       ORDER BY a.source_modified_at DESC NULLS LAST, a.created_at DESC
+       LIMIT 300`,
+      params,
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: 'No se pudieron listar los documentos de Google Drive' });
+  }
+});
+
+app.get('/api/google-drive/artifacts/:id', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT a.id, a.folder_id, a.google_file_id, a.name, a.mime_type, a.artifact_type, a.web_view_link,
+              a.source_modified_at, a.size_bytes, a.content_text, a.content_truncated, a.metadata, a.created_at, a.updated_at,
+              f.label AS folder_label, c.google_email
+       FROM google_drive_artifacts a
+       LEFT JOIN google_drive_folders f ON f.id = a.folder_id
+       INNER JOIN google_drive_connections c ON c.id = a.connection_id
+       WHERE a.id = $1`,
+      [String(req.params.id || '')],
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Documento no encontrado' });
+    res.json(rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: 'No se pudo cargar el documento de Google Drive' });
+  }
+});
 app.post('/api/ceo/ask', requireCeoSession, async (req: Request, res: Response) => {
   try {
     const { pregunta } = req.body as { pregunta?: string };

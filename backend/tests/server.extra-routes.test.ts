@@ -39,6 +39,14 @@ describe('Server - seguridad CEO', () => {
     const res = await client.post('/api/ceo/ask').send({ pregunta: 'Reporte semanal' });
     expect(res.status).toBe(401);
   });
+
+  it('protege la administración de Google Drive y permite que Google alcance el callback OAuth', async () => {
+    const protectedResponse = await client.get('/api/google-drive/status');
+    const callbackResponse = await client.get('/api/integrations/google-drive/oauth/callback').query({ error: 'access_denied' });
+
+    expect(protectedResponse.status).toBe(401);
+    expect(callbackResponse.status).toBe(302);
+  });
 });
 
 describe('Server - activación de extensiones', () => {

@@ -342,3 +342,56 @@ BEGIN
   ON CONFLICT (id) DO NOTHING;
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE TABLE IF NOT EXISTS google_drive_connections (
+  id UUID PRIMARY KEY,
+  google_email VARCHAR(320) NOT NULL UNIQUE,
+  display_name VARCHAR(255),
+  access_token_encrypted TEXT NOT NULL,
+  refresh_token_encrypted TEXT NOT NULL,
+  expires_at TIMESTAMPTZ,
+  scope TEXT,
+  created_by VARCHAR(120) NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_google_drive_connections_active ON google_drive_connections(created_at DESC) WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS google_drive_folders (
+  id UUID PRIMARY KEY,
+  connection_id UUID NOT NULL REFERENCES google_drive_connections(id) ON DELETE CASCADE,
+  google_folder_id VARCHAR(255) NOT NULL,
+  label VARCHAR(255) NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  last_synced_at TIMESTAMPTZ,
+  last_sync_error TEXT,
+  created_by VARCHAR(120) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(connection_id, google_folder_id)
+);
+CREATE INDEX IF NOT EXISTS idx_google_drive_folders_connection ON google_drive_folders(connection_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS google_drive_artifacts (
+  id UUID PRIMARY KEY,
+  connection_id UUID NOT NULL REFERENCES google_drive_connections(id) ON DELETE CASCADE,
+  folder_id UUID REFERENCES google_drive_folders(id) ON DELETE SET NULL,
+  google_file_id VARCHAR(255) NOT NULL,
+  name VARCHAR(1024) NOT NULL,
+  mime_type VARCHAR(255) NOT NULL,
+  artifact_type VARCHAR(40) NOT NULL,
+  web_view_link TEXT,
+  source_modified_at TIMESTAMPTZ,
+  size_bytes BIGINT,
+  checksum VARCHAR(255),
+  content_text TEXT,
+  content_truncated BOOLEAN NOT NULL DEFAULT FALSE,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(connection_id, google_file_id)
+);
+CREATE INDEX IF NOT EXISTS idx_google_drive_artifacts_folder_updated ON google_drive_artifacts(folder_id, source_modified_at DESC);
+CREATE INDEX IF NOT EXISTS idx_google_drive_artifacts_type ON google_drive_artifacts(artifact_type, source_modified_at DESC);

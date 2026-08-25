@@ -91,6 +91,15 @@ export const api = {
     create: (payload) => request('/whatsapp-accounts', { method: 'POST', body: JSON.stringify(payload) }),
     update: (id, payload) => request(/whatsapp-accounts/, { method: 'PATCH', body: JSON.stringify(payload) }),
   },
+  googleDrive: {
+    status: () => request('/google-drive/status'),
+    connect: () => request('/google-drive/connect', { method: 'POST' }),
+    addFolder: (payload) => request('/google-drive/folders', { method: 'POST', body: JSON.stringify(payload) }),
+    removeFolder: (id) => request(`/google-drive/folders/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    syncFolder: (id) => request(`/google-drive/folders/${encodeURIComponent(id)}/sync`, { method: 'POST' }),
+    artifacts: (folderId = '') => request(`/google-drive/artifacts${folderId ? `?folder_id=${encodeURIComponent(folderId)}` : ''}`),
+    artifact: (id) => request(`/google-drive/artifacts/${encodeURIComponent(id)}`),
+  },
   extensionInvitations: {
     list: () => request('/extension/invitations'),
     create: (label, accountId, expiresInHours = 24) => request('/extension/invitations', { method: 'POST', body: JSON.stringify({ label, account_id: accountId, expires_in_hours: expiresInHours }) }),

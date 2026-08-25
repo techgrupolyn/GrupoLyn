@@ -21,6 +21,7 @@ describe('Acceso del panel CEO', () => {
   it('reconoce las subrutas internas del CEO y nunca las deriva al QR', () => {
     expect(isCeoView('settings')).toBe(true);
     expect(isCeoView('specialists')).toBe(true);
+    expect(isCeoView('meetings')).toBe(true);
     expect(shouldShowCeoLogin('settings', null)).toBe(true);
     expect(shouldShowCeoDashboard('settings', { usuario: 'superadmin' })).toBe(true);
   });
