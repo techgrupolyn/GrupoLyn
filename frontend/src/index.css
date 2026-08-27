@@ -156,3 +156,85 @@ body {
     font-size: 1.25rem;
   }
 }
+
+/* Dashboard navigation accents */
+.dashboard-nav-item {
+  position: relative;
+  border-left: 2px solid transparent;
+  border-radius: 0.375rem;
+}
+
+.dashboard-nav-item::after {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(125, 211, 252, 0.09), transparent 72%);
+  content: '';
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.dashboard-nav-item:hover {
+  border-left-color: rgba(125, 211, 252, 0.55);
+  background: rgba(13, 13, 13, 0.72);
+  color: #F2F2F2;
+  transform: translateX(2px);
+}
+
+.dashboard-nav-item:hover::after,
+.dashboard-nav-item.is-active::after {
+  opacity: 1;
+}
+
+.dashboard-nav-item.is-active {
+  border-left-color: #7dd3fc;
+  background: linear-gradient(90deg, rgba(30, 58, 78, 0.62), rgba(13, 13, 13, 0.72));
+  box-shadow: inset 0 1px 0 rgba(125, 211, 252, 0.09), 0 6px 18px rgba(0, 0, 0, 0.16);
+}
+
+.dashboard-nav-icon {
+  display: inline-flex;
+  width: 1.65rem;
+  height: 1.65rem;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.375rem;
+  background: rgba(13, 13, 13, 0.78);
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.dashboard-nav-item:hover .dashboard-nav-icon,
+.dashboard-nav-item.is-active .dashboard-nav-icon {
+  border-color: currentColor;
+  box-shadow: 0 0 14px currentColor;
+  transform: scale(1.05);
+}
+
+.dashboard-nav-icon.accent-sky { color: #7dd3fc; }
+.dashboard-nav-icon.accent-violet { color: #c4b5fd; }
+.dashboard-nav-icon.accent-emerald { color: #6ee7b7; }
+.dashboard-nav-icon.accent-amber { color: #fcd34d; }
+.dashboard-nav-icon.accent-blue { color: #93c5fd; }
+.dashboard-nav-icon.accent-cyan { color: #67e8f9; }
+.dashboard-nav-icon.accent-rose { color: #fda4af; }
+.dashboard-nav-icon.accent-slate { color: #cbd5e1; }
+
+.dashboard-nav-badge {
+  border: 1px solid rgba(125, 211, 252, 0.55);
+  border-radius: 0.2rem;
+  padding: 0.08rem 0.28rem;
+  color: #7dd3fc;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.48rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.dashboard-nav-badge.is-active {
+  background: rgba(125, 211, 252, 0.14);
+}

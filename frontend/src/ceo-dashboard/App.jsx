@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Bot, Building2, CalendarDays, FileText, LayoutDashboard, Settings, ShieldCheck, Sparkles, Tags, UsersRound } from 'lucide-react';
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import ConsultaIAPanel from './components/ConsultaIAPanel';
 import { isConsultationOnlyCeoUser } from './CeoLogin';
@@ -15,10 +16,10 @@ import TemplatesView from './views/TemplatesView';
 const CHART_COLORS = ['#BFBFBF', '#F2F2F2', '#737373', '#4A4A4A', '#2E2E2E'];
 
 const NAV_SECTIONS = [
-  { label: 'General', items: [{ key: 'dashboard', label: 'Resumen ejecutivo' }, { key: 'ai', label: 'Consultas IA' }] },
-  { label: 'CRM omnicanal', items: [{ key: 'groups', label: 'Grupos' }, { key: 'labels', label: 'Etiquetas' }, { key: 'templates', label: 'Plantillas' }, { key: 'business', label: 'Business' }] },
-  { label: 'Agente de reuniones', items: [{ key: 'meetings', label: 'Gestión de reuniones', badge: 'Nuevo' }] },
-  { label: 'Administración', items: [{ key: 'specialists', label: 'Especialistas' }, { key: 'backoffice', label: 'Backoffice' }, { key: 'settings', label: 'Configuración' }] },
+  { label: 'General', items: [{ key: 'dashboard', label: 'Resumen ejecutivo', icon: LayoutDashboard, accent: 'sky' }, { key: 'ai', label: 'Consultas IA', icon: Sparkles, accent: 'violet' }] },
+  { label: 'CRM omnicanal', items: [{ key: 'groups', label: 'Grupos', icon: UsersRound, accent: 'emerald' }, { key: 'labels', label: 'Etiquetas', icon: Tags, accent: 'amber' }, { key: 'templates', label: 'Plantillas', icon: FileText, accent: 'blue' }, { key: 'business', label: 'Business', icon: Building2, accent: 'cyan' }] },
+  { label: 'Agente de reuniones', items: [{ key: 'meetings', label: 'Gestión de reuniones', icon: CalendarDays, accent: 'rose', badge: 'Nuevo' }] },
+  { label: 'Administración', items: [{ key: 'specialists', label: 'Especialistas', icon: Bot, accent: 'violet' }, { key: 'backoffice', label: 'Backoffice', icon: ShieldCheck, accent: 'blue' }, { key: 'settings', label: 'Configuración', icon: Settings, accent: 'slate' }] },
 ];
 
 const VIEW_TITLES = {
@@ -67,14 +68,22 @@ function ChatCard({ chat }) {
 }
 
 function Sidebar({ view, setView, consultationOnly, onLogout, mobileOpen, onClose }) {
-  const sections = consultationOnly ? [{ label: 'General', items: [{ key: 'ai', label: 'Consultas IA' }] }] : NAV_SECTIONS;
+  const sections = consultationOnly ? [{ label: 'General', items: [{ key: 'ai', label: 'Consultas IA', icon: Sparkles, accent: 'violet' }] }] : NAV_SECTIONS;
   const selectView = (nextView) => { setView(nextView); onClose(); };
   return <>
     {mobileOpen && <button aria-label="Cerrar navegación" type="button" onClick={onClose} className="fixed inset-0 z-30 bg-black/70 lg:hidden" />}
     <aside className={`fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-[#2E2E2E] bg-[#141414] transition-transform duration-200 lg:static lg:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-      <div className="flex items-center gap-2 border-b border-[#2E2E2E] px-4 py-5"><span className="size-4 rounded-sm bg-[#BFBFBF]" /><div><p className="text-sm font-semibold text-[#F2F2F2]">LYN Superagente</p><p className="mt-0.5 text-[10px] text-[#737373]">Centro de operaciones</p></div></div>
+      <div className="flex items-center gap-2 border-b border-[#2E2E2E] px-4 py-5"><span className="size-4 rounded-sm bg-gradient-to-br from-sky-300 to-cyan-500 shadow-[0_0_16px_rgba(56,189,248,0.25)]" /><div><p className="text-sm font-semibold text-[#F2F2F2]">LYN Superagente</p><p className="mt-0.5 text-[10px] text-[#737373]">Centro de operaciones</p></div></div>
       <nav className="flex-1 overflow-y-auto px-3 py-4">
-        {sections.map((section) => <div key={section.label} className="mb-5"><p className="mb-1.5 px-2 font-mono text-[9px] uppercase tracking-[0.15em] text-[#737373]">{section.label}</p>{section.items.map((item) => <button key={item.key} type="button" onClick={() => selectView(item.key)} className={`group flex w-full items-center gap-2 border-l-2 px-2.5 py-2 text-left text-xs transition ${view === item.key ? 'border-l-[#BFBFBF] bg-[#0D0D0D] font-semibold text-[#F2F2F2]' : 'border-l-transparent text-[#BFBFBF] hover:bg-[#0D0D0D] hover:text-[#F2F2F2]'}`}><span className={`size-1.5 rounded-sm ${view === item.key ? 'bg-[#BFBFBF]' : 'bg-[#4A4A4A] group-hover:bg-[#737373]'}`} /><span className="flex-1">{item.label}</span>{item.badge && <span className="rounded border border-[#737373] px-1 py-0.5 font-mono text-[8px] uppercase tracking-wide text-[#BFBFBF]">{item.badge}</span>}</button>)}</div>)}
+        {sections.map((section) => <div key={section.label} className="mb-5"><p className="mb-1.5 px-2 font-mono text-[9px] uppercase tracking-[0.15em] text-[#737373]">{section.label}</p>{section.items.map((item) => {
+          const Icon = item.icon || Sparkles;
+          const active = view === item.key;
+          return <button key={item.key} type="button" onClick={() => selectView(item.key)} className={`dashboard-nav-item group flex w-full items-center gap-2.5 px-2.5 py-2 text-left text-xs ${active ? 'is-active font-semibold text-[#F2F2F2]' : 'text-[#BFBFBF]'}`}>
+            <span className={`dashboard-nav-icon accent-${item.accent || 'slate'}`}><Icon size={14} strokeWidth={1.8} /></span>
+            <span className="flex-1">{item.label}</span>
+            {item.badge && <span className={`dashboard-nav-badge ${active ? 'is-active' : ''}`}>{item.badge}</span>}
+          </button>;
+        })}</div>)}
       </nav>
       <div className="border-t border-[#2E2E2E] p-3"><div className="flex items-center justify-between rounded border border-[#2E2E2E] bg-[#0D0D0D] px-3 py-2"><div><p className="font-mono text-[9px] uppercase tracking-[0.12em] text-[#737373]">Sesión</p><p className="mt-0.5 text-xs text-[#BFBFBF]">Panel protegido</p></div><button type="button" onClick={onLogout} className="text-[11px] text-[#737373] hover:text-[#F2F2F2]">Salir</button></div></div>
     </aside>
