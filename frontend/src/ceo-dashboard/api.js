@@ -95,6 +95,7 @@ export const api = {
     list: () => request('/meetings'),
     get: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}`),
     update: (artifactId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+    analyze: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}/analyze`, { method: 'POST' }),
     addAction: (artifactId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions`, { method: 'POST', body: JSON.stringify(payload) }),
     updateAction: (artifactId, actionId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
     deleteAction: (artifactId, actionId) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}`, { method: 'DELETE' }),

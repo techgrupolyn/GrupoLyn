@@ -436,3 +436,30 @@ CREATE TABLE IF NOT EXISTS meeting_review_versions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_review_versions_artifact ON meeting_review_versions(artifact_id, created_at DESC);
+ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_status VARCHAR(40) NOT NULL DEFAULT 'pending';
+ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_source_modified_at TIMESTAMPTZ;
+ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_completed_at TIMESTAMPTZ;
+ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_error TEXT;
+CREATE INDEX IF NOT EXISTS idx_meeting_reviews_analysis_queue ON meeting_reviews(analysis_status, updated_at ASC);
+ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS origin VARCHAR(40) NOT NULL DEFAULT 'manual';
+CREATE TABLE IF NOT EXISTS meeting_review_blockers (
+  id UUID PRIMARY KEY,
+  artifact_id UUID NOT NULL REFERENCES meeting_reviews(artifact_id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  detail TEXT,
+  severity VARCHAR(20) NOT NULL DEFAULT 'medium',
+  source_ref VARCHAR(1024),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_review_blockers_artifact ON meeting_review_blockers(artifact_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS meeting_review_ai_runs (
+  id UUID PRIMARY KEY,
+  artifact_id UUID NOT NULL REFERENCES meeting_reviews(artifact_id) ON DELETE CASCADE,
+  actor VARCHAR(120) NOT NULL,
+  provider VARCHAR(80) NOT NULL,
+  model VARCHAR(160) NOT NULL,
+  input_chars INTEGER NOT NULL,
+  output_json JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_review_ai_runs_artifact ON meeting_review_ai_runs(artifact_id, created_at DESC);

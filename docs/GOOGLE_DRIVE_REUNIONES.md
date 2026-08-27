@@ -28,6 +28,9 @@ GOOGLE_DRIVE_OAUTH_REDIRECT_URI=https://ceo.grupolyn.com/api/integrations/google
 GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY=...
 GOOGLE_DRIVE_SYNC_MAX_FILES=1000
 GOOGLE_DRIVE_TEXT_MAX_CHARS=200000
+MEETING_AI_TEXT_MAX_CHARS=60000
+MEETING_AI_ANALYSIS_INTERVAL_MS=20000
+MEETING_AI_ANALYSIS_BATCH_SIZE=1
 ```
 
 Genera `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` con:
@@ -44,3 +47,24 @@ Tras desplegar, entra con `superadmin`, abre **Reuniones**, pulsa **Conectar Goo
 - Comparte las carpetas con permiso **Lector**; nunca actives enlaces públicos.
 - Si una carpeta deja de ser necesaria, usa **Desactivar**: detiene sincronizaciones futuras sin borrar el historial ya importado.
 - La integración recorre subcarpetas, deduplica por ID de archivo de Google Drive y vuelve a extraer texto únicamente cuando el archivo cambia.
+
+## Identificación y nomenclatura
+
+Al importar una transcripción, nota o documento, el Dashboard identifica el tipo de reunión y busca los campos **PMC**, **Obra/Proyecto** y **Contacto/Cliente** en los metadatos de Drive, el nombre del archivo y las primeras 20.000 letras del texto. La nomenclatura operativa es:
+
+- `Comité de obra · {PMC}` para los comités de obra.
+- `Reunión cliente · {Obra}` para reuniones con cliente.
+- `Reunión · {Obra|PMC|Contacto}` si no se detecta uno de los dos tipos anteriores.
+
+Los valores detectados se muestran en la bandeja y permanecen editables en el panel lateral. Las correcciones manuales se conservan y siempre prevalecen sobre una detección posterior. Para obtener la mayor precisión, usa encabezados independientes en la transcripción, por ejemplo: `PMC: Laura M.`, `Obra: Villajoyosa 12` y `Contacto: Marta S.`.
+
+
+## Análisis IA de reuniones
+
+Al importar una transcripción nueva o modificada, el servidor la encola automáticamente y la analiza una única vez por versión. La bandeja actualiza su estado periódicamente y la reunión se abre con el resultado ya guardado. El servidor envía como máximo `MEETING_AI_TEXT_MAX_CHARS` caracteres al modelo y exige una respuesta JSON estructurada. Guarda el resumen, decisiones, identidad de la reunión, acciones y bloqueos en la base de datos central. El botón del panel lateral se reserva para una regeneración explícita.
+
+- La cola procesa por defecto un documento cada 20 segundos (`MEETING_AI_ANALYSIS_BATCH_SIZE=1`) para controlar coste. Una versión ya completada o fallida no se vuelve a enviar automáticamente; solo se reencola si Drive detecta una versión nueva.
+- Las acciones generadas se identifican como **IA** y una nueva generación sustituye solo esas acciones; las añadidas o editadas manualmente se conservan.
+- Los bloqueos detectados se regeneran a partir de la fuente y quedan visibles junto a los bloqueos de aprobación por responsable o fecha.
+- Cada ejecución conserva proveedor, modelo, tamaño de contexto, respuesta estructurada, usuario y fecha en el historial auditable.
+- Si Gemini no está disponible, el análisis no se guarda y el panel muestra un error; nunca se persiste un resultado de fallback como si fuera IA.
