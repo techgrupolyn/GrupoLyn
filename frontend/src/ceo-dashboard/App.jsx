@@ -10,6 +10,7 @@ import GroupsView from './views/GroupsView';
 import LabelsView from './views/LabelsView';
 import MeetingsView from './views/MeetingsView';
 import SettingsView from './views/SettingsView';
+import { normalizeSettingsTab, readDashboardRoute, shouldShowMeetingsMigrationNotice } from './routing';
 import SpecialistsView from './views/SpecialistsView';
 import TemplatesView from './views/TemplatesView';
 
@@ -17,8 +18,9 @@ const CHART_COLORS = ['#BFBFBF', '#F2F2F2', '#737373', '#4A4A4A', '#2E2E2E'];
 
 const NAV_SECTIONS = [
   { label: 'General', items: [{ key: 'dashboard', label: 'Resumen ejecutivo', icon: LayoutDashboard, accent: 'sky' }, { key: 'ai', label: 'Consultas IA', icon: Sparkles, accent: 'violet' }] },
-  { label: 'CRM omnicanal', items: [{ key: 'groups', label: 'Grupos', icon: UsersRound, accent: 'emerald' }, { key: 'labels', label: 'Etiquetas', icon: Tags, accent: 'amber' }, { key: 'templates', label: 'Plantillas', icon: FileText, accent: 'blue' }, { key: 'business', label: 'Business', icon: Building2, accent: 'cyan' }] },
+  { label: 'CRM omnicanal', items: [], emptyLabel: 'Contactos e identidades próximamente' },
   { label: 'Agente de reuniones', items: [{ key: 'meetings', label: 'Gestión de reuniones', icon: CalendarDays, accent: 'rose', badge: 'Nuevo' }] },
+  { label: 'Superagente WhatsApp', items: [{ key: 'groups', label: 'Grupos', icon: UsersRound, accent: 'emerald' }, { key: 'labels', label: 'Etiquetas', icon: Tags, accent: 'amber' }, { key: 'templates', label: 'Plantillas', icon: FileText, accent: 'blue' }, { key: 'business', label: 'Business', icon: Building2, accent: 'cyan' }] },
   { label: 'Administración', items: [{ key: 'specialists', label: 'Especialistas', icon: Bot, accent: 'violet' }, { key: 'backoffice', label: 'Backoffice', icon: ShieldCheck, accent: 'blue' }, { key: 'settings', label: 'Configuración', icon: Settings, accent: 'slate' }] },
 ];
 
@@ -75,7 +77,7 @@ function Sidebar({ view, setView, consultationOnly, onLogout, mobileOpen, onClos
     <aside className={`fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-[#2E2E2E] bg-[#141414] transition-transform duration-200 lg:static lg:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
       <div className="flex items-center gap-2 border-b border-[#2E2E2E] px-4 py-5"><span className="size-4 rounded-sm bg-gradient-to-br from-sky-300 to-cyan-500 shadow-[0_0_16px_rgba(56,189,248,0.25)]" /><div><p className="text-sm font-semibold text-[#F2F2F2]">LYN Superagente</p><p className="mt-0.5 text-[10px] text-[#737373]">Centro de operaciones</p></div></div>
       <nav className="flex-1 overflow-y-auto px-3 py-4">
-        {sections.map((section) => <div key={section.label} className="mb-5"><p className="mb-1.5 px-2 font-mono text-[9px] uppercase tracking-[0.15em] text-[#737373]">{section.label}</p>{section.items.map((item) => {
+        {sections.map((section) => <div key={section.label} className="mb-5"><p className="mb-1.5 px-2 font-mono text-[9px] uppercase tracking-[0.15em] text-[#737373]">{section.label}</p>{section.emptyLabel && <p className="px-2 text-[10px] leading-4 text-[#4A4A4A]">{section.emptyLabel}</p>}{section.items.map((item) => {
           const Icon = item.icon || Sparkles;
           const active = view === item.key;
           return <button key={item.key} type="button" onClick={() => selectView(item.key)} className={`dashboard-nav-item group flex w-full items-center gap-2.5 px-2.5 py-2 text-left text-xs ${active ? 'is-active font-semibold text-[#F2F2F2]' : 'text-[#BFBFBF]'}`}>
@@ -97,13 +99,40 @@ export default function CEOApp({ user, onLogout }) {
   const [error, setError] = useState('');
   const [mobileOpen, setMobileOpen] = useState(false);
   const mainRef = useRef(null);
-  const [view, setView] = useState(() => {
-    const params = new URLSearchParams(window.location.search);
-    return consultationOnly ? 'ai' : (params.get('view') || 'dashboard');
+  const initialRoute = readDashboardRoute(window.location.search, consultationOnly);
+  const [view, setView] = useState(initialRoute.view);
+  const [settingsTab, setSettingsTab] = useState(initialRoute.settingsTab);
+  const [showMeetingsMigrationNotice, setShowMeetingsMigrationNotice] = useState(() => {
+    try { return shouldShowMeetingsMigrationNotice(window.localStorage.getItem('lyn-meetings-drive-config-migration-v1')); } catch { return true; }
   });
 
+  const selectView = (nextView) => {
+    setView(nextView);
+    if (nextView === 'settings') setSettingsTab('general');
+  };
+
+  const dismissMeetingsMigrationNotice = () => {
+    setShowMeetingsMigrationNotice(false);
+    try { window.localStorage.setItem('lyn-meetings-drive-config-migration-v1', 'dismissed'); } catch { /* localStorage unavailable */ }
+  };
+
   useEffect(() => { if (consultationOnly && view !== 'ai') setView('ai'); }, [consultationOnly, view]);
-  useEffect(() => { const url = new URL(window.location.href); if (view === 'dashboard') url.searchParams.delete('view'); else url.searchParams.set('view', view); window.history.replaceState({}, '', url); mainRef.current?.scrollTo({ top: 0, behavior: 'smooth' }); }, [view]);
+  useEffect(() => {
+    const handlePopState = () => {
+      const route = readDashboardRoute(window.location.search, consultationOnly);
+      setView(route.view);
+      setSettingsTab(route.settingsTab);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [consultationOnly]);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (view === 'dashboard') url.searchParams.delete('view'); else url.searchParams.set('view', view);
+    if (view === 'settings') url.searchParams.set('tab', normalizeSettingsTab(settingsTab)); else url.searchParams.delete('tab');
+    window.history.replaceState({}, '', url);
+    mainRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [view, settingsTab]);
 
   const loadMetrics = async () => {
     setLoading(true);
@@ -117,10 +146,10 @@ export default function CEOApp({ user, onLogout }) {
     if (consultationOnly) return <ConsultaIAPanel />;
     switch (view) {
       case 'groups': return <GroupsView />;
-      case 'meetings': return <MeetingsView />;
+      case 'meetings': return <>{showMeetingsMigrationNotice && <div className="ceo-page px-4 pt-4 sm:px-6 xl:px-8"><div className="flex flex-col gap-3 rounded-md border border-sky-300/25 bg-sky-300/5 p-4 text-xs text-[#BFBFBF] sm:flex-row sm:items-center sm:justify-between"><p>La configuración de Google Drive ahora está en <button type="button" onClick={() => { setSettingsTab('meetings'); setView('settings'); }} className="font-semibold text-sky-300 hover:text-sky-200">Configuración › Agente de reuniones</button>.</p><button type="button" onClick={dismissMeetingsMigrationNotice} className="shrink-0 text-[#737373] hover:text-[#F2F2F2]">Entendido</button></div></div>}<MeetingsView /></>;
       case 'labels': return <LabelsView />;
       case 'business': return <BusinessView />;
-      case 'settings': return <SettingsView />;
+      case 'settings': return <SettingsView activeTab={settingsTab} onTabChange={setSettingsTab} />;
       case 'templates': return <TemplatesView />;
       case 'specialists': return <SpecialistsView />;
       case 'backoffice': return <BackofficeView />;
@@ -129,5 +158,5 @@ export default function CEOApp({ user, onLogout }) {
     }
   };
 
-  return <div className="flex min-h-screen bg-[#0D0D0D] text-[#F2F2F2] selection:bg-[#BFBFBF] selection:text-black"><Sidebar view={view} setView={setView} consultationOnly={consultationOnly} onLogout={onLogout} mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} /><main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto"><header className="sticky top-0 z-20 flex min-h-16 items-center justify-between gap-4 border-b border-[#2E2E2E] bg-[#141414]/95 px-4 backdrop-blur sm:px-6 xl:px-8"><div className="flex min-w-0 items-center gap-3"><button type="button" aria-label="Abrir navegación" onClick={() => setMobileOpen(true)} className="rounded border border-[#2E2E2E] p-2 text-[#BFBFBF] hover:border-[#737373] lg:hidden"><svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h16" /></svg></button><div className="min-w-0"><p className="truncate text-xs text-[#737373]">Dashboard <span className="px-1 text-[#4A4A4A]">/</span> {view === 'meetings' ? 'Agente de reuniones' : consultationOnly ? 'Acceso de consultas' : 'Operaciones'}</p><h1 className="truncate text-sm font-semibold text-[#F2F2F2]">{VIEW_TITLES[view] || 'Dashboard'}</h1></div></div><div className="flex shrink-0 items-center gap-2">{!consultationOnly && view === 'dashboard' && <button type="button" onClick={loadMetrics} disabled={loading} className="hidden rounded border border-[#2E2E2E] px-3 py-2 text-xs text-[#BFBFBF] hover:border-[#737373] disabled:opacity-40 sm:block">{loading ? 'Actualizando…' : 'Actualizar'}</button>}<span className="hidden rounded border border-[#2E2E2E] px-2.5 py-1.5 text-[10px] text-[#BFBFBF] sm:block">Operación centralizada</span><span title={user?.usuario || 'Usuario'} className="flex size-8 items-center justify-center rounded-full bg-[#2E2E2E] text-[10px] font-semibold text-[#F2F2F2]">{String(user?.usuario || 'LY').slice(0, 2).toUpperCase()}</span></div></header>{!consultationOnly && error && view === 'dashboard' && <div className="mx-4 mt-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200 sm:mx-6 xl:mx-8">{error}</div>}{renderView()}</main></div>;
+  return <div className="flex min-h-screen bg-[#0D0D0D] text-[#F2F2F2] selection:bg-[#BFBFBF] selection:text-black"><Sidebar view={view} setView={selectView} consultationOnly={consultationOnly} onLogout={onLogout} mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} /><main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto"><header className="sticky top-0 z-20 flex min-h-16 items-center justify-between gap-4 border-b border-[#2E2E2E] bg-[#141414]/95 px-4 backdrop-blur sm:px-6 xl:px-8"><div className="flex min-w-0 items-center gap-3"><button type="button" aria-label="Abrir navegación" onClick={() => setMobileOpen(true)} className="rounded border border-[#2E2E2E] p-2 text-[#BFBFBF] hover:border-[#737373] lg:hidden"><svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h16" /></svg></button><div className="min-w-0"><p className="truncate text-xs text-[#737373]">Dashboard <span className="px-1 text-[#4A4A4A]">/</span> {view === 'meetings' ? 'Agente de reuniones' : consultationOnly ? 'Acceso de consultas' : 'Operaciones'}</p><h1 className="truncate text-sm font-semibold text-[#F2F2F2]">{VIEW_TITLES[view] || 'Dashboard'}</h1></div></div><div className="flex shrink-0 items-center gap-2">{!consultationOnly && view === 'dashboard' && <button type="button" onClick={loadMetrics} disabled={loading} className="hidden rounded border border-[#2E2E2E] px-3 py-2 text-xs text-[#BFBFBF] hover:border-[#737373] disabled:opacity-40 sm:block">{loading ? 'Actualizando…' : 'Actualizar'}</button>}<span className="hidden rounded border border-[#2E2E2E] px-2.5 py-1.5 text-[10px] text-[#BFBFBF] sm:block">Operación centralizada</span><span title={user?.usuario || 'Usuario'} className="flex size-8 items-center justify-center rounded-full bg-[#2E2E2E] text-[10px] font-semibold text-[#F2F2F2]">{String(user?.usuario || 'LY').slice(0, 2).toUpperCase()}</span></div></header>{!consultationOnly && error && view === 'dashboard' && <div className="mx-4 mt-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200 sm:mx-6 xl:mx-8">{error}</div>}{renderView()}</main></div>;
 }

@@ -80,7 +80,7 @@ function ArtifactStatus({ artifact }) {
   return <span className="inline-flex items-center gap-1.5 text-[11px] text-[#737373]"><span className="size-1.5 rounded-full bg-[#2E2E2E]" />Sin texto extraído</span>;
 }
 
-export default function MeetingsView() {
+export default function MeetingsView({ mode = 'operations' }) {
   const [status, setStatus] = useState(null);
   const [artifacts, setArtifacts] = useState([]);
   const [folderForm, setFolderForm] = useState({ connection_id: '', label: '', folder_url: '' });
@@ -92,6 +92,7 @@ export default function MeetingsView() {
   const [query, setQuery] = useState('');
   const [type, setType] = useState('all');
   const [period, setPeriod] = useState('all');
+  const isConfiguration = mode === 'configuration';
 
   const load = async () => {
     setLoading(true);
@@ -187,20 +188,20 @@ export default function MeetingsView() {
         <div className="mb-5 flex flex-col gap-4 border-b border-[#2E2E2E] pb-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#737373]">Agente de reuniones</p>
-            <h2 className="mt-1 text-xl font-semibold tracking-tight text-[#F2F2F2]">Gestión de reuniones</h2>
-            <p className="mt-1 text-xs text-[#737373]">Centraliza las transcripciones y documentos de Google Drive con acceso de solo lectura.</p>
+            <h2 className="mt-1 text-xl font-semibold tracking-tight text-[#F2F2F2]">{isConfiguration ? 'Configuración del Agente de reuniones' : 'Gestión de reuniones'}</h2>
+            <p className="mt-1 text-xs text-[#737373]">{isConfiguration ? 'Conectá Google Drive, administrá carpetas fuente y revisá su sincronización.' : 'Revisá transcripciones, notas y documentos importados desde Google Drive.'}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={load} disabled={loading} className="rounded border border-[#2E2E2E] bg-[#141414] px-3 py-2 text-xs font-medium text-[#BFBFBF] transition hover:border-[#737373] disabled:opacity-40">
               {loading ? 'Actualizando…' : 'Actualizar'}
             </button>
-            <button type="button" onClick={() => setShowSetup((current) => !current)} className="ceo-button-primary rounded bg-[#BFBFBF] px-3 py-2 text-xs font-semibold text-black transition hover:bg-[#F2F2F2]">
+            {isConfiguration && <button type="button" onClick={() => setShowSetup((current) => !current)} className="ceo-button-primary rounded bg-[#BFBFBF] px-3 py-2 text-xs font-semibold text-black transition hover:bg-[#F2F2F2]">
               {showSetup ? 'Cerrar configuración' : 'Configurar fuentes'}
-            </button>
+            </button>}
           </div>
         </div>
 
-        {(showSetup || !hasFolders) && (
+        {isConfiguration && (showSetup || !hasFolders) && (
           <div className="mb-5 grid gap-4 xl:grid-cols-2">
             <div className="rounded-md border border-[#2E2E2E] bg-[#141414] p-5">
               <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#737373]">01 · Cuenta Google</p>
@@ -284,7 +285,7 @@ export default function MeetingsView() {
           <p className="border-t border-[#2E2E2E] px-3 py-2 text-[11px] text-[#737373]">Mostrando {filteredArtifacts.length} de {artifacts.length} archivos. Los documentos se ordenan por su última modificación en Google Drive.</p>
         </div>
 
-        <div className="mt-5 rounded-md border border-[#2E2E2E] bg-[#141414]">
+        {isConfiguration && <div className="mt-5 rounded-md border border-[#2E2E2E] bg-[#141414]">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#2E2E2E] px-4 py-3">
             <div><p className="font-mono text-[10px] uppercase tracking-[0.13em] text-[#737373]">Fuentes sincronizadas</p><p className="mt-1 text-xs text-[#737373]">Administra las carpetas sin eliminar los archivos ya importados.</p></div>
           </div>
@@ -297,7 +298,7 @@ export default function MeetingsView() {
             ))}
             {!loading && !hasFolders && <p className="px-4 py-5 text-xs text-[#737373]">Configura una carpeta fuente para iniciar la sincronización.</p>}
           </div>
-        </div>
+        </div>}
       </div>
 
       {selected && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 sm:p-6"><div role="dialog" aria-modal="true" aria-label="Detalle del archivo" className="max-h-[88vh] w-full max-w-4xl overflow-y-auto rounded-md border border-[#2E2E2E] bg-[#141414] shadow-2xl"><div className="sticky top-0 flex items-start justify-between gap-4 border-b border-[#2E2E2E] bg-[#141414] p-5"><div className="min-w-0"><p className="font-mono text-[10px] uppercase tracking-[0.13em] text-[#737373]">{artifactLabel(selected.artifact_type)} · {selected.folder_label || 'Google Drive'}</p><h3 className="mt-1 truncate text-lg font-semibold text-[#F2F2F2]">{selected.name}</h3></div><button type="button" onClick={() => setSelected(null)} className="rounded border border-[#2E2E2E] px-3 py-2 text-xs text-[#BFBFBF] hover:border-[#737373]">Cerrar</button></div><div className="p-5">{selected.web_view_link && <a href={selected.web_view_link} target="_blank" rel="noreferrer" className="inline-flex rounded border border-[#2E2E2E] px-3 py-2 text-xs text-[#BFBFBF] hover:border-[#737373]">Abrir original en Google Drive</a>}<pre className="mt-4 whitespace-pre-wrap rounded border border-[#2E2E2E] bg-[#0D0D0D] p-4 text-xs leading-5 text-[#D4D4D4]">{selected.content_text || 'Este tipo de archivo se conserva como referencia. Su contenido no se extrae automáticamente.'}</pre>{selected.content_truncated && <p className="mt-3 text-xs text-amber-200">El texto se guardó parcialmente por el límite de seguridad configurado.</p>}</div></div></div>}

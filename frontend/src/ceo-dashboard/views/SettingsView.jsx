@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import api from '../api';
+import MeetingsView from './MeetingsView';
+import { SETTINGS_TABS, normalizeSettingsTab } from '../routing';
 
-export default function SettingsView() {
+export function WhatsAppSettingsPanel() {
   const [settings, setSettings] = useState(null);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
@@ -125,8 +127,8 @@ export default function SettingsView() {
 
   return (
     <div className="ceo-page p-4 sm:p-6 xl:p-8">
-      <h2 className="font-display text-2xl font-medium text-[#F2F2F2] tracking-wide">Configuración</h2>
-      <p className="mt-2 text-xs text-[#737373]">Ajustes de la instancia, privacidad, presencia, proxy y webhooks.</p>
+      <h2 className="font-display text-2xl font-medium text-[#F2F2F2] tracking-wide">WhatsApp</h2>
+      <p className="mt-2 text-xs text-[#737373]">Instancia Evolution, presencia, proxy, cuentas, códigos de activación y webhooks.</p>
 
       <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
         <form onSubmit={saveSettings} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
@@ -216,6 +218,51 @@ export default function SettingsView() {
           <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Privacidad</p>
           <pre className="mt-4 max-h-64 overflow-y-auto ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-[10px] text-[#737373]">{JSON.stringify(privacy, null, 2)}</pre>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function MeetingsSettingsPanel() { return <MeetingsView mode="configuration" />; }
+
+function PendingSettingsTab({ title, description }) {
+  return (
+    <div className="ceo-page p-4 sm:p-6 xl:p-8">
+      <div className="ceo-card max-w-3xl rounded-md border border-[#2E2E2E] bg-[#141414] p-6 sm:p-8">
+        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-300">Configuración</p>
+        <h2 className="mt-2 text-xl font-semibold text-[#F2F2F2]">{title}</h2>
+        <p className="mt-3 max-w-2xl text-sm leading-6 text-[#BFBFBF]">{description}</p>
+        <p className="mt-5 rounded border border-sky-300/20 bg-sky-300/5 px-4 py-3 text-xs leading-5 text-[#BFBFBF]">Esta sección queda preparada dentro de la arquitectura del portal. Sus reglas y conexiones se añadirán en su entrega funcional, sin mezclar ajustes con la operación diaria.</p>
+      </div>
+    </div>
+  );
+}
+
+export default function SettingsView({ activeTab = 'general', onTabChange = () => {} }) {
+  const tab = normalizeSettingsTab(activeTab);
+  const current = SETTINGS_TABS.find((item) => item.key === tab) || SETTINGS_TABS[0];
+
+  return (
+    <div className="ceo-page p-4 sm:p-6 xl:p-8">
+      <div className="border-b border-[#2E2E2E] pb-5">
+        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#737373]">Administración</p>
+        <h2 className="mt-1 text-2xl font-semibold tracking-tight text-[#F2F2F2]">Configuración</h2>
+        <p className="mt-2 text-xs text-[#737373]">Centraliza los ajustes del portal, WhatsApp y cada agente sin mezclarlos con sus vistas operativas.</p>
+      </div>
+
+      <div className="mt-5 flex gap-2 overflow-x-auto border-b border-[#2E2E2E] pb-3" role="tablist" aria-label="Secciones de configuración">
+        {SETTINGS_TABS.map((item) => {
+          const selected = tab === item.key;
+          return <button key={item.key} type="button" role="tab" aria-selected={selected} onClick={() => onTabChange(item.key)} className={`dashboard-filter-tab shrink-0 rounded px-3 py-2 text-xs font-medium ${selected ? 'is-active bg-[#2E2E2E] text-[#F2F2F2]' : 'text-[#737373] hover:bg-[#141414] hover:text-[#BFBFBF]'}`}>{item.label}</button>;
+        })}
+      </div>
+
+      <div className="mt-1" role="tabpanel" aria-label={current.label}>
+        {tab === 'whatsapp' && <WhatsAppSettingsPanel />}
+        {tab === 'meetings' && <MeetingsSettingsPanel />}
+        {tab === 'general' && <PendingSettingsTab title="Configuración general" description="Usá las pestañas para configurar cada dominio del portal. Los ajustes transversales se incorporarán aquí cuando tengan una responsabilidad propia." />}
+        {tab === 'router' && <PendingSettingsTab title="Router de agentes" description="Aquí vivirán las reglas fuente → agente → disparador → salida de las automatizaciones de la empresa." />}
+        {tab === 'integrations' && <PendingSettingsTab title="Integraciones" description="Aquí se centralizarán el estado y las credenciales de los servicios externos autorizados." />}
       </div>
     </div>
   );
