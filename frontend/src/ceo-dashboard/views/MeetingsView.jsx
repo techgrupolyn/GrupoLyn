@@ -183,7 +183,7 @@ export default function MeetingsView() {
 
   return (
     <section className="p-4 sm:p-6 xl:p-8">
-      <div className="mx-auto max-w-[1500px]">
+      <div className="ceo-page">
         <div className="mb-5 flex flex-col gap-4 border-b border-[#2E2E2E] pb-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#737373]">Agente de reuniones</p>

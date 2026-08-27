@@ -105,7 +105,7 @@ export default function CEOApp({ user, onLogout }) {
   useEffect(() => { if (!consultationOnly && view === 'dashboard') loadMetrics(); }, [consultationOnly, view]);
 
   const renderView = () => {
-    if (consultationOnly) return <div className="p-4 sm:p-6 xl:p-8"><ConsultaIAPanel /></div>;
+    if (consultationOnly) return <ConsultaIAPanel />;
     switch (view) {
       case 'groups': return <GroupsView />;
       case 'meetings': return <MeetingsView />;
@@ -115,8 +115,8 @@ export default function CEOApp({ user, onLogout }) {
       case 'templates': return <TemplatesView />;
       case 'specialists': return <SpecialistsView />;
       case 'backoffice': return <BackofficeView />;
-      case 'ai': return <div className="p-4 sm:p-6 xl:p-8"><ConsultaIAPanel /></div>;
-      default: return <div className="p-4 sm:p-6 xl:p-8"><div className="mx-auto max-w-[1500px]">{metrics && <><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="Mensajes" value={metrics.totals?.mensajes} subtext="Total registros" /><MetricCard label="Chats activos" value={metrics.totals?.chats_activos} subtext="Conversaciones únicas" /><MetricCard label="Chats últimas 24 h" value={metrics.totals?.chats_ultimas_24h} subtext="Actividad reciente" /><MetricCard label="Chats última hora" value={metrics.totals?.chats_ultima_1h} subtext="Actividad en vivo" /></div><div className="mt-5 grid gap-4 xl:grid-cols-5"><Section title="Distribución por tipo" className="xl:col-span-2"><TypeChart byType={metrics.byType} /></Section><Section title="Chats destacados" className="xl:col-span-3">{(metrics.topChats || []).slice(0, 8).map((chat) => <ChatCard key={chat.id} chat={chat} />)}{!(metrics.topChats || []).length && <p className="py-8 text-center text-xs text-[#737373]">Sin chats destacados.</p>}</Section></div></>}<div className="mt-5"><ConsultaIAPanel /></div></div></div>;
+      case 'ai': return <ConsultaIAPanel />;
+      default: return <div className="ceo-page p-4 sm:p-6 xl:p-8"><div>{metrics && <><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="Mensajes" value={metrics.totals?.mensajes} subtext="Total registros" /><MetricCard label="Chats activos" value={metrics.totals?.chats_activos} subtext="Conversaciones únicas" /><MetricCard label="Chats últimas 24 h" value={metrics.totals?.chats_ultimas_24h} subtext="Actividad reciente" /><MetricCard label="Chats última hora" value={metrics.totals?.chats_ultima_1h} subtext="Actividad en vivo" /></div><div className="mt-5 grid gap-4 xl:grid-cols-5"><Section title="Distribución por tipo" className="xl:col-span-2"><TypeChart byType={metrics.byType} /></Section><Section title="Chats destacados" className="xl:col-span-3">{(metrics.topChats || []).slice(0, 8).map((chat) => <ChatCard key={chat.id} chat={chat} />)}{!(metrics.topChats || []).length && <p className="py-8 text-center text-xs text-[#737373]">Sin chats destacados.</p>}</Section></div></>}<div className="mt-5"><ConsultaIAPanel /></div></div></div>;
     }
   };
 

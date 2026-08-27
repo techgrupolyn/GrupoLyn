@@ -35,8 +35,8 @@ export default function ConsultaIAPanel() {
   };
 
   return (
-    <section id="ai" className="border-t border-[#2E2E2E] bg-[#141414]">
-      <div className="border-b border-[#2E2E2E] px-10 py-8">
+    <section id="ai" className="ceo-page ceo-ai-panel p-4 sm:p-6 xl:p-8">
+      <div className="border-b border-[#2E2E2E] pb-5">
         <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <h3 className="font-display text-2xl font-medium text-[#F2F2F2] tracking-wide">Consultas a la IA</h3>
@@ -52,7 +52,7 @@ export default function ConsultaIAPanel() {
         </div>
       </div>
 
-      <div className="grid gap-6 px-10 py-8 lg:grid-cols-[1fr_320px]">
+      <div className="ceo-ai-grid grid gap-5 pt-6 lg:grid-cols-[minmax(0,1fr)_300px]">
         <div className="space-y-6">
           <div className="relative">
             <textarea
@@ -60,7 +60,7 @@ export default function ConsultaIAPanel() {
               onChange={(e) => setPregunta(e.target.value)}
               placeholder="Consultá métricas, resúmenes o temas recurrentes..."
               rows={4}
-              className="h-40 w-full resize-none rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-6 py-5 pr-14 text-sm text-[#F2F2F2] outline-none placeholder:text-[#BFBFBF] transition-colors duration-200 focus:border-[#F2F2F2]/30"
+              className="h-40 w-full resize-none ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-6 py-5 pr-14 text-sm text-[#F2F2F2] outline-none placeholder:text-[#BFBFBF] transition-colors duration-200 focus:border-[#F2F2F2]/30"
             />
             <div className="absolute bottom-5 right-5 flex items-center gap-2.5 text-[10px] font-medium uppercase tracking-widest text-[#737373]" aria-hidden="true">
               <span className="size-1 rounded-full bg-[#BFBFBF]" />
@@ -72,7 +72,7 @@ export default function ConsultaIAPanel() {
             type="submit"
             disabled={!pregunta.trim() || cargando}
             onClick={handleSubmit}
-            className="flex w-full items-center justify-center gap-2.5 rounded-sm bg-[#BFBFBF] px-6 py-4 text-xs font-semibold uppercase tracking-widest text-black transition-all duration-200 hover:bg-[#d4d4d4] disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.98]"
+            className="flex w-full items-center justify-center gap-2.5 rounded-md bg-[#BFBFBF] px-6 py-4 text-xs font-semibold uppercase tracking-widest text-black transition-all duration-200 hover:bg-[#d4d4d4] disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.98]"
           >
             {cargando ? (
               <>
@@ -91,7 +91,7 @@ export default function ConsultaIAPanel() {
           </button>
 
           {error && (
-            <div className="flex items-start gap-3 rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] p-5 text-xs text-[#737373]">
+            <div className="flex items-start gap-3 ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] p-5 text-xs text-[#737373]">
               <span className="mt-px inline-block size-1.5 shrink-0 rounded-full bg-[#BFBFBF]" />
               <span>{error}</span>
             </div>
@@ -105,7 +105,7 @@ export default function ConsultaIAPanel() {
                   {ia?.fallback ? 'Fallback local' : (ia?.modelo || 'Gemini')}
                 </span>
               </div>
-              <div className="whitespace-pre-wrap rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] p-6 text-sm leading-relaxed text-[#F2F2F2]">
+              <div className="whitespace-pre-wrap ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] p-6 text-sm leading-relaxed text-[#F2F2F2]">
                 {respuesta}
               </div>
               {fuentes && (
@@ -118,7 +118,7 @@ export default function ConsultaIAPanel() {
         </div>
 
         <div className="space-y-4">
-          <div className="rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] p-6">
+          <div className="ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] p-6">
             <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Ejemplos</p>
             <ul className="mt-4 space-y-3 text-xs text-[#737373]">
               {['Resumen semanal de lo acontecido.', '¿Qué temas se hablaron más esta semana?', '¿Cuántos mensajes hay por día?'].map((ejemplo, index) => (
@@ -126,7 +126,7 @@ export default function ConsultaIAPanel() {
                   <button
                     type="button"
                     onClick={() => setPregunta(ejemplo)}
-                    className="w-full rounded-sm border border-[#2E2E2E] bg-[#141414] p-3 text-left transition-all duration-200 hover:border-[#F2F2F2]/20 hover:text-[#F2F2F2]"
+                    className="w-full ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-3 text-left transition-all duration-200 hover:border-[#F2F2F2]/20 hover:text-[#F2F2F2]"
                   >
                     {ejemplo}
                   </button>
@@ -135,7 +135,7 @@ export default function ConsultaIAPanel() {
             </ul>
           </div>
 
-          <div className="rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] p-6">
+          <div className="ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] p-6">
             <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Contexto</p>
             <ul className="mt-4 space-y-3 text-xs text-[#737373]">
               <li className="flex items-start gap-3">

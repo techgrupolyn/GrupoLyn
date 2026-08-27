@@ -41,7 +41,7 @@ export default function SpecialistsView() {
   };
 
   return (
-    <section className="p-10">
+    <section className="ceo-page p-4 sm:p-6 xl:p-8">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="font-display text-2xl font-medium text-[#F2F2F2] tracking-wide">Especialistas</h2>
@@ -55,12 +55,12 @@ export default function SpecialistsView() {
         {loading && <p className="text-xs text-[#737373]">Cargando especialistas...</p>}
         {!loading && items.length === 0 && <p className="text-xs text-[#737373]">Sin especialistas</p>}
         {items.map((item) => (
-          <div key={item.id} className="rounded-lg border border-[#2E2E2E] bg-[#141414] p-5">
+          <div key={item.id} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-5">
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
               <div className="lg:col-span-3">
                 <label className="text-[10px] font-semibold uppercase tracking-widest text-[#737373]">Nombre</label>
                 <input
-                  className="mt-2 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 py-2 text-xs text-[#F2F2F2]"
+                  className="mt-2 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 py-2 text-xs text-[#F2F2F2]"
                   value={item.nombre || ''}
                   onChange={(e) => updateField(item.id, 'nombre', e.target.value)}
                 />
@@ -68,7 +68,7 @@ export default function SpecialistsView() {
               <div className="lg:col-span-2">
                 <label className="text-[10px] font-semibold uppercase tracking-widest text-[#737373]">Rol</label>
                 <input
-                  className="mt-2 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 py-2 text-xs text-[#F2F2F2]"
+                  className="mt-2 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 py-2 text-xs text-[#F2F2F2]"
                   value={item.rol || ''}
                   onChange={(e) => updateField(item.id, 'rol', e.target.value)}
                 />
@@ -76,7 +76,7 @@ export default function SpecialistsView() {
               <div className="lg:col-span-2">
                 <label className="text-[10px] font-semibold uppercase tracking-widest text-[#737373]">Modelo</label>
                 <select
-                  className="mt-2 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 py-2 text-xs text-[#F2F2F2]"
+                  className="mt-2 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 py-2 text-xs text-[#F2F2F2]"
                   value={item.modelo || 'flash'}
                   onChange={(e) => updateField(item.id, 'modelo', e.target.value)}
                 >
@@ -108,7 +108,7 @@ export default function SpecialistsView() {
             <div className="mt-4">
               <label className="text-[10px] font-semibold uppercase tracking-widest text-[#737373]">Contexto / Prompt</label>
               <textarea
-                className="mt-2 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 py-2 text-xs text-[#F2F2F2]"
+                className="mt-2 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 py-2 text-xs text-[#F2F2F2]"
                 rows={4}
                 value={item.sistema_prompt || ''}
                 onChange={(e) => updateField(item.id, 'sistema_prompt', e.target.value)}

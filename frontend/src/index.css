@@ -68,3 +68,91 @@ body {
 .wa-empty-state {
   opacity: 0.92;
 }
+
+/* Dashboard executive visual system */
+.ceo-page {
+  width: 100%;
+  max-width: 1500px;
+  margin-inline: auto;
+}
+
+.ceo-page > h2,
+.ceo-page .ceo-page-title {
+  font-size: clamp(1.25rem, 1.1rem + 0.5vw, 1.5rem);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.ceo-page > h2 + p,
+.ceo-page .ceo-page-description {
+  max-width: 760px;
+  line-height: 1.6;
+}
+
+.ceo-card {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.025), 0 16px 32px rgba(0, 0, 0, 0.08);
+}
+
+.ceo-surface {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.015);
+}
+
+.ceo-page :is(input:not([type='checkbox']), select, textarea) {
+  border-radius: 0.375rem;
+  transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+}
+
+.ceo-page :is(input:not([type='checkbox']), select, textarea):focus {
+  border-color: #737373;
+  box-shadow: 0 0 0 3px rgba(191, 191, 191, 0.08);
+}
+
+.ceo-page button {
+  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+.ceo-page button:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+.ceo-page table {
+  overflow: hidden;
+  border-radius: 0.375rem;
+  border: 1px solid #2E2E2E;
+  background: #141414;
+}
+
+.ceo-page thead {
+  background: #0D0D0D;
+}
+
+.ceo-page thead th {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 500;
+  letter-spacing: 0.11em;
+}
+
+.ceo-page tbody tr {
+  transition: background-color 150ms ease;
+}
+
+.ceo-page tbody tr:hover {
+  background: rgba(13, 13, 13, 0.72);
+}
+
+.ceo-ai-panel {
+  border: 0;
+  background: transparent;
+}
+
+.ceo-ai-panel .ceo-ai-grid {
+  padding-inline: 0;
+}
+
+@media (max-width: 640px) {
+  .ceo-page > h2,
+  .ceo-page .ceo-page-title {
+    font-size: 1.25rem;
+  }
+}

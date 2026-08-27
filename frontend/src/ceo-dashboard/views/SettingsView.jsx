@@ -124,12 +124,12 @@ export default function SettingsView() {
   };
 
   return (
-    <div className="p-10">
+    <div className="ceo-page p-4 sm:p-6 xl:p-8">
       <h2 className="font-display text-2xl font-medium text-[#F2F2F2] tracking-wide">Configuración</h2>
       <p className="mt-2 text-xs text-[#737373]">Ajustes de la instancia, privacidad, presencia, proxy y webhooks.</p>
 
       <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <form onSubmit={saveSettings} className="rounded-sm border border-[#2E2E2E] bg-[#141414] p-6">
+        <form onSubmit={saveSettings} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
           <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Instancia</p>
           {Object.keys(form).map((k) => (
             <label key={k} className="mt-3 flex items-center gap-2 text-xs text-[#737373]">
@@ -137,58 +137,58 @@ export default function SettingsView() {
               {k}
             </label>
           ))}
-          <button type="submit" disabled={saving} className="mt-4 rounded-sm bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
+          <button type="submit" disabled={saving} className="mt-4 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
             {saving ? 'Guardando...' : 'Guardar configuración'}
           </button>
         </form>
 
-        <form onSubmit={setPresence} className="rounded-sm border border-[#2E2E2E] bg-[#141414] p-6">
+        <form onSubmit={setPresence} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
           <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Presencia</p>
-          <input value={presenceForm.number} onChange={(e) => setPresenceForm((s) => ({ ...s, number: e.target.value }))} placeholder="Número" className="mt-4 h-10 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
-          <select value={presenceForm.presence} onChange={(e) => setPresenceForm((s) => ({ ...s, presence: e.target.value }))} className="mt-3 h-10 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none">
+          <input value={presenceForm.number} onChange={(e) => setPresenceForm((s) => ({ ...s, number: e.target.value }))} placeholder="Número" className="mt-4 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
+          <select value={presenceForm.presence} onChange={(e) => setPresenceForm((s) => ({ ...s, presence: e.target.value }))} className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none">
             <option value="available">Disponible</option>
             <option value="unavailable">No disponible</option>
             <option value="composing">Escribiendo</option>
             <option value="recording">Grabando</option>
             <option value="paused">Pausado</option>
           </select>
-          <button type="submit" disabled={saving} className="mt-4 rounded-sm bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">Enviar presencia</button>
+          <button type="submit" disabled={saving} className="mt-4 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">Enviar presencia</button>
         </form>
 
-        <form onSubmit={saveProxy} className="rounded-sm border border-[#2E2E2E] bg-[#141414] p-6">
+        <form onSubmit={saveProxy} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
           <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Proxy</p>
           <label className="mt-3 flex items-center gap-2 text-xs text-[#737373]">
             <input type="checkbox" checked={proxyForm.enabled} onChange={(e) => setProxyForm((s) => ({ ...s, enabled: e.target.checked }))} />
             Habilitar proxy
           </label>
-          <input value={proxyForm.host} onChange={(e) => setProxyForm((s) => ({ ...s, host: e.target.value }))} placeholder="Host" className="mt-3 h-10 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
-          <input value={proxyForm.port} onChange={(e) => setProxyForm((s) => ({ ...s, port: e.target.value }))} placeholder="Puerto" className="mt-3 h-10 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
-          <input value={proxyForm.username} onChange={(e) => setProxyForm((s) => ({ ...s, username: e.target.value }))} placeholder="Usuario" className="mt-3 h-10 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
-          <input value={proxyForm.password} onChange={(e) => setProxyForm((s) => ({ ...s, password: e.target.value }))} placeholder="Contraseña" type="password" className="mt-3 h-10 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
-          <button type="submit" disabled={saving} className="mt-4 rounded-sm bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">Guardar proxy</button>
+          <input value={proxyForm.host} onChange={(e) => setProxyForm((s) => ({ ...s, host: e.target.value }))} placeholder="Host" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
+          <input value={proxyForm.port} onChange={(e) => setProxyForm((s) => ({ ...s, port: e.target.value }))} placeholder="Puerto" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
+          <input value={proxyForm.username} onChange={(e) => setProxyForm((s) => ({ ...s, username: e.target.value }))} placeholder="Usuario" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
+          <input value={proxyForm.password} onChange={(e) => setProxyForm((s) => ({ ...s, password: e.target.value }))} placeholder="Contraseña" type="password" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
+          <button type="submit" disabled={saving} className="mt-4 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">Guardar proxy</button>
         </form>
 
-        <form onSubmit={createAccount} className="rounded-sm border border-[#2E2E2E] bg-[#141414] p-6">
+        <form onSubmit={createAccount} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
           <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Cuentas WhatsApp</p>
           <p className="mt-3 text-xs leading-5 text-[#737373]">Cada cuenta usa una instancia Evolution propia y comparte esta base central sin mezclar chats.</p>
-          <input required value={accountForm.id} onChange={(e) => setAccountForm((current) => ({ ...current, id: e.target.value.toLowerCase() }))} placeholder="ID: ventas-caracas" className="mt-4 h-10 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
-          <input required value={accountForm.nombre} onChange={(e) => setAccountForm((current) => ({ ...current, nombre: e.target.value }))} placeholder="Nombre visible" className="mt-3 h-10 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
-          <input required value={accountForm.evolution_instance_name} onChange={(e) => setAccountForm((current) => ({ ...current, evolution_instance_name: e.target.value }))} placeholder="Instancia Evolution" className="mt-3 h-10 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
-          <button type="submit" className="mt-3 rounded-sm bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black">Crear cuenta</button>
+          <input required value={accountForm.id} onChange={(e) => setAccountForm((current) => ({ ...current, id: e.target.value.toLowerCase() }))} placeholder="ID: ventas-caracas" className="mt-4 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
+          <input required value={accountForm.nombre} onChange={(e) => setAccountForm((current) => ({ ...current, nombre: e.target.value }))} placeholder="Nombre visible" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
+          <input required value={accountForm.evolution_instance_name} onChange={(e) => setAccountForm((current) => ({ ...current, evolution_instance_name: e.target.value }))} placeholder="Instancia Evolution" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
+          <button type="submit" className="mt-3 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black">Crear cuenta</button>
           <div className="mt-4 space-y-1 text-xs text-[#737373]">{accounts.map((account) => <p key={account.id}>{account.nombre} · {account.evolution_instance_name} · {account.activo ? 'Activo' : 'Inactiva'} · {account.chats_count || 0} chats</p>)}</div>
         </form>
 
-        <form onSubmit={createInvitation} className="rounded-sm border border-[#2E2E2E] bg-[#141414] p-6">
+        <form onSubmit={createInvitation} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
           <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Activar extensión</p>
           <p className="mt-3 text-xs leading-5 text-[#737373]">Generá un código de un solo uso para un empleado. Lo pega una vez en la extensión y luego solo escanea el QR.</p>
-          <input value={invitationLabel} onChange={(e) => setInvitationLabel(e.target.value)} placeholder="Nombre del empleado o equipo" maxLength={160} className="mt-4 h-10 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
-          <select required value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)} className="mt-3 h-10 w-full rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none"><option value="">Selecciona una cuenta</option>{accounts.filter((account) => account.activo).map((account) => <option key={account.id} value={account.id}>{account.nombre} · {account.evolution_instance_name}</option>)}</select>
-          <button type="submit" disabled={creatingInvitation} className="mt-3 rounded-sm bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">{creatingInvitation ? 'Generando...' : 'Generar código'}</button>
-          {invitationCode && <textarea readOnly value={invitationCode} onFocus={(e) => e.target.select()} className="mt-4 h-24 w-full resize-none rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-[11px] text-[#F2F2F2] outline-none" aria-label="Código de activación" />}
+          <input value={invitationLabel} onChange={(e) => setInvitationLabel(e.target.value)} placeholder="Nombre del empleado o equipo" maxLength={160} className="mt-4 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
+          <select required value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)} className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none"><option value="">Selecciona una cuenta</option>{accounts.filter((account) => account.activo).map((account) => <option key={account.id} value={account.id}>{account.nombre} · {account.evolution_instance_name}</option>)}</select>
+          <button type="submit" disabled={creatingInvitation} className="mt-3 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">{creatingInvitation ? 'Generando...' : 'Generar código'}</button>
+          {invitationCode && <textarea readOnly value={invitationCode} onFocus={(e) => e.target.select()} className="mt-4 h-24 w-full resize-none ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-[11px] text-[#F2F2F2] outline-none" aria-label="Código de activación" />}
           {invitationError && <p className="mt-3 text-xs text-red-400">{invitationError}</p>}
         </form>
 
-        <div className="rounded-sm border border-[#2E2E2E] bg-[#141414] p-6">
+        <div className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
           <div className="flex items-center justify-between gap-3">
             <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Códigos y activaciones</p>
             <button type="button" onClick={loadInvitations} disabled={invitationsLoading} className="px-3 py-1 text-[10px]">Actualizar</button>
@@ -197,7 +197,7 @@ export default function SettingsView() {
           <div className="mt-4 max-h-72 space-y-2 overflow-y-auto">
             {invitations.map((invitation) => {
               const status = invitation.revoked_at ? 'Invalidado' : invitation.redeemed_at ? 'Activado' : new Date(invitation.expires_at) <= new Date() ? 'Vencido' : 'Pendiente';
-              return <div key={invitation.id} className="rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-xs">
+              return <div key={invitation.id} className="ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-xs">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-[#F2F2F2]">{invitation.label || 'Sin etiqueta'}</p>
@@ -212,9 +212,9 @@ export default function SettingsView() {
           </div>
         </div>
 
-        <div className="rounded-sm border border-[#2E2E2E] bg-[#141414] p-6">
+        <div className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
           <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Privacidad</p>
-          <pre className="mt-4 max-h-64 overflow-y-auto rounded-sm border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-[10px] text-[#737373]">{JSON.stringify(privacy, null, 2)}</pre>
+          <pre className="mt-4 max-h-64 overflow-y-auto ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-[10px] text-[#737373]">{JSON.stringify(privacy, null, 2)}</pre>
         </div>
       </div>
     </div>
