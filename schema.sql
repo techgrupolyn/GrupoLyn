@@ -395,3 +395,44 @@ CREATE TABLE IF NOT EXISTS google_drive_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_google_drive_artifacts_folder_updated ON google_drive_artifacts(folder_id, source_modified_at DESC);
 CREATE INDEX IF NOT EXISTS idx_google_drive_artifacts_type ON google_drive_artifacts(artifact_type, source_modified_at DESC);
+
+CREATE TABLE IF NOT EXISTS meeting_reviews (
+  artifact_id UUID PRIMARY KEY REFERENCES google_drive_artifacts(id) ON DELETE CASCADE,
+  summary TEXT NOT NULL DEFAULT '',
+  decisions TEXT NOT NULL DEFAULT '',
+  project_name VARCHAR(255),
+  contact_name VARCHAR(255),
+  meeting_kind VARCHAR(80) NOT NULL DEFAULT 'MEET',
+  pmc VARCHAR(255),
+  workflow_stage VARCHAR(40) NOT NULL DEFAULT 'agent',
+  status VARCHAR(40) NOT NULL DEFAULT 'draft',
+  approved_at TIMESTAMPTZ,
+  approved_by VARCHAR(120),
+  returned_reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_reviews_status ON meeting_reviews(status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS meeting_review_actions (
+  id UUID PRIMARY KEY,
+  artifact_id UUID NOT NULL REFERENCES meeting_reviews(artifact_id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  project_name VARCHAR(255),
+  responsible VARCHAR(255),
+  due_date DATE,
+  estimated_minutes INTEGER,
+  source_ref VARCHAR(1024),
+  status VARCHAR(40) NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_review_actions_artifact ON meeting_review_actions(artifact_id, created_at ASC);
+CREATE TABLE IF NOT EXISTS meeting_review_versions (
+  id UUID PRIMARY KEY,
+  artifact_id UUID NOT NULL REFERENCES meeting_reviews(artifact_id) ON DELETE CASCADE,
+  actor VARCHAR(120) NOT NULL,
+  stage VARCHAR(80) NOT NULL,
+  detail TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_review_versions_artifact ON meeting_review_versions(artifact_id, created_at DESC);

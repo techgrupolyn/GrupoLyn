@@ -9,6 +9,7 @@ import BusinessView from './views/BusinessView';
 import GroupsView from './views/GroupsView';
 import LabelsView from './views/LabelsView';
 import MeetingsView from './views/MeetingsView';
+import MeetingManagementView from './views/MeetingManagementView';
 import SettingsView from './views/SettingsView';
 import { normalizeSettingsTab, readDashboardRoute, shouldShowMeetingsMigrationNotice } from './routing';
 import SpecialistsView from './views/SpecialistsView';
@@ -146,7 +147,7 @@ export default function CEOApp({ user, onLogout }) {
     if (consultationOnly) return <ConsultaIAPanel />;
     switch (view) {
       case 'groups': return <GroupsView />;
-      case 'meetings': return <>{showMeetingsMigrationNotice && <div className="ceo-page px-4 pt-4 sm:px-6 xl:px-8"><div className="flex flex-col gap-3 rounded-md border border-sky-300/25 bg-sky-300/5 p-4 text-xs text-[#BFBFBF] sm:flex-row sm:items-center sm:justify-between"><p>La configuración de Google Drive ahora está en <button type="button" onClick={() => { setSettingsTab('meetings'); setView('settings'); }} className="font-semibold text-sky-300 hover:text-sky-200">Configuración › Agente de reuniones</button>.</p><button type="button" onClick={dismissMeetingsMigrationNotice} className="shrink-0 text-[#737373] hover:text-[#F2F2F2]">Entendido</button></div></div>}<MeetingsView /></>;
+      case 'meetings': return <>{showMeetingsMigrationNotice && <div className="ceo-page px-4 pt-4 sm:px-6 xl:px-8"><div className="flex flex-col gap-3 rounded-md border border-sky-300/25 bg-sky-300/5 p-4 text-xs text-[#BFBFBF] sm:flex-row sm:items-center sm:justify-between"><p>La configuración de Google Drive ahora está en <button type="button" onClick={() => { setSettingsTab('meetings'); setView('settings'); }} className="font-semibold text-sky-300 hover:text-sky-200">Configuración › Agente de reuniones</button>.</p><button type="button" onClick={dismissMeetingsMigrationNotice} className="shrink-0 text-[#737373] hover:text-[#F2F2F2]">Entendido</button></div></div>}<MeetingManagementView /></>;
       case 'labels': return <LabelsView />;
       case 'business': return <BusinessView />;
       case 'settings': return <SettingsView activeTab={settingsTab} onTabChange={setSettingsTab} />;

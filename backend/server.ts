@@ -549,6 +549,46 @@ async function ensureDatabaseSchema(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_google_drive_artifacts_folder_updated ON google_drive_artifacts(folder_id, source_modified_at DESC);
     CREATE INDEX IF NOT EXISTS idx_google_drive_artifacts_type ON google_drive_artifacts(artifact_type, source_modified_at DESC);
+    CREATE TABLE IF NOT EXISTS meeting_reviews (
+      artifact_id UUID PRIMARY KEY REFERENCES google_drive_artifacts(id) ON DELETE CASCADE,
+      summary TEXT NOT NULL DEFAULT '',
+      decisions TEXT NOT NULL DEFAULT '',
+      project_name VARCHAR(255),
+      contact_name VARCHAR(255),
+      meeting_kind VARCHAR(80) NOT NULL DEFAULT 'MEET',
+      pmc VARCHAR(255),
+      workflow_stage VARCHAR(40) NOT NULL DEFAULT 'agent',
+      status VARCHAR(40) NOT NULL DEFAULT 'draft',
+      approved_at TIMESTAMPTZ,
+      approved_by VARCHAR(120),
+      returned_reason TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_meeting_reviews_status ON meeting_reviews(status, updated_at DESC);
+    CREATE TABLE IF NOT EXISTS meeting_review_actions (
+      id UUID PRIMARY KEY,
+      artifact_id UUID NOT NULL REFERENCES meeting_reviews(artifact_id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      project_name VARCHAR(255),
+      responsible VARCHAR(255),
+      due_date DATE,
+      estimated_minutes INTEGER,
+      source_ref VARCHAR(1024),
+      status VARCHAR(40) NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_meeting_review_actions_artifact ON meeting_review_actions(artifact_id, created_at ASC);
+    CREATE TABLE IF NOT EXISTS meeting_review_versions (
+      id UUID PRIMARY KEY,
+      artifact_id UUID NOT NULL REFERENCES meeting_reviews(artifact_id) ON DELETE CASCADE,
+      actor VARCHAR(120) NOT NULL,
+      stage VARCHAR(80) NOT NULL,
+      detail TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_meeting_review_versions_artifact ON meeting_review_versions(artifact_id, created_at DESC);
     ALTER TABLE chats ADD COLUMN IF NOT EXISTS account_id VARCHAR(120) NOT NULL DEFAULT 'default';
     ALTER TABLE grupos ADD COLUMN IF NOT EXISTS account_id VARCHAR(120) NOT NULL DEFAULT 'default';
     ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS account_id VARCHAR(120) NOT NULL DEFAULT 'default';
@@ -3522,6 +3562,212 @@ app.get('/api/google-drive/artifacts/:id', requireCeoAuth, async (req: Request, 
     res.status(500).json({ error: 'No se pudo cargar el documento de Google Drive' });
   }
 });
+
+
+async function ensureMeetingReview(artifactId: string, actor: string): Promise<boolean> {
+  const result = await pool.query(
+    `INSERT INTO meeting_reviews (artifact_id, summary, decisions, project_name, contact_name, meeting_kind, pmc)
+     SELECT a.id,
+            COALESCE(NULLIF(a.metadata->>'summary', ''), LEFT(COALESCE(a.content_text, ''), 1400)),
+            COALESCE(NULLIF(a.metadata->>'decisions', ''), ''),
+            NULLIF(COALESCE(a.metadata->>'obra', a.metadata->>'project', ''), ''),
+            NULLIF(COALESCE(a.metadata->>'contacto', a.metadata->>'contact', ''), ''),
+            'MEET',
+            NULLIF(COALESCE(a.metadata->>'pmc', ''), '')
+     FROM google_drive_artifacts a
+     WHERE a.id = $1 AND a.artifact_type IN ('transcript', 'notes', 'document')
+     ON CONFLICT (artifact_id) DO NOTHING
+     RETURNING artifact_id`,
+    [artifactId],
+  );
+  if (result.rows.length) {
+    await pool.query(
+      `INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail)
+       VALUES ($1, $2, $3, 'agent', 'Versión inicial importada desde Google Drive')`,
+      [randomUUID(), artifactId, actor || 'sistema'],
+    );
+  }
+  return Boolean(result.rows.length);
+}
+
+function meetingActionFields(body: Record<string, unknown>): { title: string; projectName: string | null; responsible: string | null; dueDate: string | null; estimatedMinutes: number | null; sourceRef: string | null; status: string } {
+  const title = String(body.title || '').trim().slice(0, 2000);
+  const projectName = String(body.project_name || '').trim().slice(0, 255) || null;
+  const responsible = String(body.responsible || '').trim().slice(0, 255) || null;
+  const rawDueDate = String(body.due_date || '').trim();
+  const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDueDate) ? rawDueDate : null;
+  const minutes = Number(body.estimated_minutes);
+  const estimatedMinutes = Number.isFinite(minutes) && minutes >= 0 && minutes <= 100_000 ? Math.floor(minutes) : null;
+  const sourceRef = String(body.source_ref || '').trim().slice(0, 1024) || null;
+  const status = ['pending', 'done', 'cancelled'].includes(String(body.status)) ? String(body.status) : 'pending';
+  return { title, projectName, responsible, dueDate, estimatedMinutes, sourceRef, status };
+}
+
+export function meetingApprovalBlockers(actions: Array<{ responsible?: string | null; due_date?: string | null; status?: string }>): { missingResponsible: number; missingDueDate: number } {
+  return actions.reduce((totals, action) => {
+    if (action.status === 'done' || action.status === 'cancelled') return totals;
+    if (!String(action.responsible || '').trim()) totals.missingResponsible += 1;
+    if (!action.due_date) totals.missingDueDate += 1;
+    return totals;
+  }, { missingResponsible: 0, missingDueDate: 0 });
+}
+
+app.get('/api/meetings', requireCeoAuth, async (_req: Request, res: Response) => {
+  try {
+    await pool.query(
+      `INSERT INTO meeting_reviews (artifact_id, summary, decisions, project_name, contact_name, meeting_kind, pmc)
+       SELECT a.id, COALESCE(NULLIF(a.metadata->>'summary', ''), LEFT(COALESCE(a.content_text, ''), 1400)),
+              COALESCE(NULLIF(a.metadata->>'decisions', ''), ''),
+              NULLIF(COALESCE(a.metadata->>'obra', a.metadata->>'project', ''), ''),
+              NULLIF(COALESCE(a.metadata->>'contacto', a.metadata->>'contact', ''), ''), 'MEET',
+              NULLIF(COALESCE(a.metadata->>'pmc', ''), '')
+       FROM google_drive_artifacts a
+       WHERE a.artifact_type IN ('transcript', 'notes', 'document')
+       ON CONFLICT (artifact_id) DO NOTHING`,
+    );
+    const { rows } = await pool.query(
+      `SELECT a.id, a.name, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_truncated,
+              f.label AS folder_label, c.google_email, r.summary, r.decisions, r.project_name, r.contact_name,
+              r.meeting_kind, r.pmc, r.workflow_stage, r.status, r.updated_at,
+              COUNT(ma.id)::int AS actions_count,
+              COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND (ma.responsible IS NULL OR trim(ma.responsible) = ''))::int AS actions_without_responsible,
+              COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND ma.due_date IS NULL)::int AS actions_without_due_date
+       FROM google_drive_artifacts a
+       INNER JOIN meeting_reviews r ON r.artifact_id = a.id
+       LEFT JOIN google_drive_folders f ON f.id = a.folder_id
+       LEFT JOIN google_drive_connections c ON c.id = a.connection_id
+       LEFT JOIN meeting_review_actions ma ON ma.artifact_id = a.id
+       GROUP BY a.id, f.label, c.google_email, r.artifact_id
+       ORDER BY CASE r.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 WHEN 'returned' THEN 2 ELSE 3 END, a.source_modified_at DESC NULLS LAST
+       LIMIT 300`,
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error('[meetings] Error listando:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudieron cargar las reuniones' });
+  }
+});
+
+app.get('/api/meetings/:artifactId', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const artifactId = String(req.params.artifactId || '').trim();
+    await ensureMeetingReview(artifactId, String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema'));
+    const artifactResult = await pool.query(
+      `SELECT a.id, a.name, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_text, a.content_truncated,
+              f.label AS folder_label, c.google_email, r.summary, r.decisions, r.project_name, r.contact_name,
+              r.meeting_kind, r.pmc, r.workflow_stage, r.status, r.approved_at, r.approved_by, r.returned_reason, r.updated_at
+       FROM google_drive_artifacts a
+       INNER JOIN meeting_reviews r ON r.artifact_id = a.id
+       LEFT JOIN google_drive_folders f ON f.id = a.folder_id
+       LEFT JOIN google_drive_connections c ON c.id = a.connection_id
+       WHERE a.id = $1`, [artifactId],
+    );
+    if (!artifactResult.rows.length) return res.status(404).json({ error: 'Reunión no encontrada' });
+    const [actionsResult, versionsResult] = await Promise.all([
+      pool.query(`SELECT id, title, project_name, responsible, due_date, estimated_minutes, source_ref, status, created_at, updated_at FROM meeting_review_actions WHERE artifact_id = $1 ORDER BY created_at ASC`, [artifactId]),
+      pool.query(`SELECT id, actor, stage, detail, created_at FROM meeting_review_versions WHERE artifact_id = $1 ORDER BY created_at DESC LIMIT 30`, [artifactId]),
+    ]);
+    res.json({ ...artifactResult.rows[0], actions: actionsResult.rows, versions: versionsResult.rows, blockers: meetingApprovalBlockers(actionsResult.rows) });
+  } catch (error) {
+    console.error('[meetings] Error detalle:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudo cargar la reunión' });
+  }
+});
+
+app.put('/api/meetings/:artifactId', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const artifactId = String(req.params.artifactId || '').trim();
+    const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
+    await ensureMeetingReview(artifactId, actor);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const { rows } = await pool.query(
+      `UPDATE meeting_reviews SET summary = $2, decisions = $3, project_name = $4, contact_name = $5, pmc = $6,
+        meeting_kind = $7, updated_at = NOW() WHERE artifact_id = $1 RETURNING *`,
+      [artifactId, String(body.summary || '').slice(0, 20_000), String(body.decisions || '').slice(0, 20_000),
+        String(body.project_name || '').trim().slice(0, 255) || null, String(body.contact_name || '').trim().slice(0, 255) || null,
+        String(body.pmc || '').trim().slice(0, 255) || null, String(body.meeting_kind || 'MEET').trim().slice(0, 80) || 'MEET'],
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Reunión no encontrada' });
+    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', 'Resumen, decisiones o datos de reunión actualizados')`, [randomUUID(), artifactId, actor]);
+    res.json(rows[0]);
+  } catch (error) { res.status(500).json({ error: 'No se pudo guardar la reunión' }); }
+});
+
+app.post('/api/meetings/:artifactId/actions', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const artifactId = String(req.params.artifactId || '').trim();
+    const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
+    await ensureMeetingReview(artifactId, actor);
+    const action = meetingActionFields((req.body || {}) as Record<string, unknown>);
+    if (!action.title) return res.status(400).json({ error: 'El título de la acción es obligatorio' });
+    const { rows } = await pool.query(
+      `INSERT INTO meeting_review_actions (id, artifact_id, title, project_name, responsible, due_date, estimated_minutes, source_ref, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [randomUUID(), artifactId, action.title, action.projectName, action.responsible, action.dueDate, action.estimatedMinutes, action.sourceRef, action.status],
+    );
+    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', 'Acción añadida')`, [randomUUID(), artifactId, actor]);
+    res.status(201).json(rows[0]);
+  } catch (error) { res.status(500).json({ error: 'No se pudo crear la acción' }); }
+});
+
+app.put('/api/meetings/:artifactId/actions/:actionId', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const artifactId = String(req.params.artifactId || '').trim();
+    const actionId = String(req.params.actionId || '').trim();
+    const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
+    const action = meetingActionFields((req.body || {}) as Record<string, unknown>);
+    if (!action.title) return res.status(400).json({ error: 'El título de la acción es obligatorio' });
+    const { rows } = await pool.query(
+      `UPDATE meeting_review_actions SET title = $3, project_name = $4, responsible = $5, due_date = $6,
+       estimated_minutes = $7, source_ref = $8, status = $9, updated_at = NOW()
+       WHERE id = $1 AND artifact_id = $2 RETURNING *`,
+      [actionId, artifactId, action.title, action.projectName, action.responsible, action.dueDate, action.estimatedMinutes, action.sourceRef, action.status],
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Acción no encontrada' });
+    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', 'Acción actualizada')`, [randomUUID(), artifactId, actor]);
+    res.json(rows[0]);
+  } catch (error) { res.status(500).json({ error: 'No se pudo actualizar la acción' }); }
+});
+
+app.delete('/api/meetings/:artifactId/actions/:actionId', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const artifactId = String(req.params.artifactId || '').trim();
+    const actionId = String(req.params.actionId || '').trim();
+    const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
+    const result = await pool.query(`DELETE FROM meeting_review_actions WHERE id = $1 AND artifact_id = $2 RETURNING id`, [actionId, artifactId]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Acción no encontrada' });
+    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', 'Acción eliminada')`, [randomUUID(), artifactId, actor]);
+    res.status(204).end();
+  } catch (error) { res.status(500).json({ error: 'No se pudo eliminar la acción' }); }
+});
+
+app.post('/api/meetings/:artifactId/workflow', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const artifactId = String(req.params.artifactId || '').trim();
+    const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
+    const command = String(req.body?.command || '').trim();
+    const actionsResult = await pool.query<{ responsible: string | null; due_date: string | null; status: string }>(`SELECT responsible, due_date, status FROM meeting_review_actions WHERE artifact_id = $1`, [artifactId]);
+    const blockers = meetingApprovalBlockers(actionsResult.rows);
+    if (command === 'approve' && (blockers.missingResponsible || blockers.missingDueDate)) {
+      return res.status(409).json({ error: 'La aprobación está bloqueada hasta asignar responsable y fecha a todas las acciones pendientes.', blockers });
+    }
+    const update = command === 'approve'
+      ? { status: 'approved', stage: 'operations', detail: 'Aprobada y enviada a Dirección de Operaciones' }
+      : command === 'return'
+        ? { status: 'returned', stage: 'delineante', detail: 'Devuelta al delineante para corrección' }
+        : { status: 'pending', stage: 'pmc', detail: 'Guardada para revisión del PMC' };
+    const { rows } = await pool.query(
+      `UPDATE meeting_reviews SET status = $2, workflow_stage = $3, approved_at = CASE WHEN $2 = 'approved' THEN NOW() ELSE NULL END,
+       approved_by = CASE WHEN $2 = 'approved' THEN $4 ELSE NULL END, returned_reason = CASE WHEN $2 = 'returned' THEN COALESCE($5, '') ELSE NULL END,
+       updated_at = NOW() WHERE artifact_id = $1 RETURNING *`,
+      [artifactId, update.status, update.stage, actor, String(req.body?.reason || '').slice(0, 2000)],
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Reunión no encontrada' });
+    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, $4, $5)`, [randomUUID(), artifactId, actor, update.stage, update.detail]);
+    res.json({ meeting: rows[0], blockers });
+  } catch (error) { res.status(500).json({ error: 'No se pudo actualizar la cadena de revisión' }); }
+});
+
 app.post('/api/ceo/ask', requireCeoSession, async (req: Request, res: Response) => {
   try {
     const { pregunta } = req.body as { pregunta?: string };

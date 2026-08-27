@@ -91,6 +91,15 @@ export const api = {
     create: (payload) => request('/whatsapp-accounts', { method: 'POST', body: JSON.stringify(payload) }),
     update: (id, payload) => request(/whatsapp-accounts/, { method: 'PATCH', body: JSON.stringify(payload) }),
   },
+  meetings: {
+    list: () => request('/meetings'),
+    get: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}`),
+    update: (artifactId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+    addAction: (artifactId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions`, { method: 'POST', body: JSON.stringify(payload) }),
+    updateAction: (artifactId, actionId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+    deleteAction: (artifactId, actionId) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}`, { method: 'DELETE' }),
+    workflow: (artifactId, command, reason = '') => request(`/meetings/${encodeURIComponent(artifactId)}/workflow`, { method: 'POST', body: JSON.stringify({ command, reason }) }),
+  },
   googleDrive: {
     status: () => request('/google-drive/status'),
     connect: () => request('/google-drive/connect', { method: 'POST' }),
