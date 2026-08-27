@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveMeetingIdentity, formatMeetingName, meetingApprovalBlockers, normalizeMeetingAiAnalysis, parseMeetingAiAnalysis } from '../server.ts';
+import { deriveMeetingDate, deriveMeetingIdentity, formatMeetingName, meetingApprovalBlockers, normalizeMeetingAiAnalysis, parseMeetingAiAnalysis } from '../server.ts';
 
 describe('Flujo de aprobación de reuniones', () => {
   it('bloquea solo acciones pendientes sin responsable o fecha', () => {
@@ -22,7 +22,12 @@ describe('Flujo de aprobación de reuniones', () => {
       projectName: 'Villajoyosa 12',
       contactName: 'Marta S.',
     });
-    expect(formatMeetingName(identity)).toBe('Comité de obra · Laura M.');
+    expect(formatMeetingName(identity)).toBe('Comité de obra · Villajoyosa 12');
+  });
+
+  it('clasifica reunión de cliente y comité por su contexto operativo', () => {
+    expect(deriveMeetingIdentity({ name: 'Seguimiento de obra', content_text: 'Obra: Ático Albir\nPMC: Laura M.' }).meetingKind).toBe('COMITE_OBRA');
+    expect(deriveMeetingIdentity({ name: 'Entrevista con cliente', content_text: 'Obra: Ático Albir\nCliente: Javier R.' }).meetingKind).toBe('REUNION_CLIENTE');
   });
 
   it('normaliza reunión cliente usando la obra como referencia', () => {
@@ -53,6 +58,12 @@ describe('Flujo de aprobación de reuniones', () => {
       projectName: 'Villajoyosa 12',
       contactName: 'Marta S.',
     });
+  });
+
+  it('obtiene la fecha real de reunión desde el nombre y conserva referencias de minuto', () => {
+    expect(deriveMeetingDate({ name: 'Comité de obra · 26/08/2026' })).toBe('2026-08-26');
+    const analysis = normalizeMeetingAiAnalysis({ meeting_date: '2026-08-26', summary: 'Se confirma el ajuste [min 14:20]', decisions: ['Se actualiza el plano [min 14:20]'], actions: [] });
+    expect(analysis).toMatchObject({ meetingDate: '2026-08-26', summary: 'Se confirma el ajuste [min 14:20]', decisions: ['Se actualiza el plano [min 14:20]'] });
   });
 
   it('normaliza la salida estructurada de IA sin aceptar fechas ambiguas ni acciones vacías', () => {
