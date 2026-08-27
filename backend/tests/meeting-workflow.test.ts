@@ -90,6 +90,10 @@ describe('Flujo de aprobación de reuniones', () => {
     expect(analysis.blockers[0]).toMatchObject({ severity: 'high', detail: 'Afecta el camino crítico.' });
   });
 
+  it('rechaza fechas ISO inexistentes del análisis', () => {
+    const analysis = normalizeMeetingAiAnalysis({ meeting_date: '2026-02-30', summary: 'Resumen válido', actions: [] });
+    expect(analysis.meetingDate).toBeNull();
+  });
   it('acepta JSON cercado de Gemini y exige un resumen para persistirlo', () => {
     const fence = String.fromCharCode(96).repeat(3);
     const response = fence + 'json\n{"summary":"Resumen válido","decisions":[],"actions":[],"blockers":[]}\n' + fence;

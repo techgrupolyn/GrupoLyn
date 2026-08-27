@@ -44,6 +44,7 @@ const GOOGLE_DRIVE_TEXT_MAX_CHARS = boundedInterval(process.env.GOOGLE_DRIVE_TEX
 const MEETING_AI_TEXT_MAX_CHARS = boundedInterval(process.env.MEETING_AI_TEXT_MAX_CHARS, 60_000, 10_000, 200_000);
 const MEETING_AI_ANALYSIS_INTERVAL_MS = boundedInterval(process.env.MEETING_AI_ANALYSIS_INTERVAL_MS, 20_000, 5_000, 5 * 60 * 1000);
 const MEETING_AI_ANALYSIS_BATCH_SIZE = boundedInterval(process.env.MEETING_AI_ANALYSIS_BATCH_SIZE, 1, 1, 5);
+const MEETING_IMPORT_BATCH_SIZE = boundedInterval(process.env.MEETING_IMPORT_BATCH_SIZE, 25, 5, 100);
 const MEETING_AI_ANALYSIS_VERSION = 4;
 const INVITATION_TTL_MAX_HOURS = 30 * 24;
 const DEFAULT_WHATSAPP_ACCOUNT_ID = 'default';
@@ -3769,7 +3770,13 @@ function meetingAnalysisItems(value: unknown, limit: number): string[] {
 
 function meetingAnalysisDate(value: unknown): string | null {
   const date = String(value || '').trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+  const match = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day ? date : null;
 }
 
 export function normalizeMeetingAiAnalysis(value: unknown): MeetingAiAnalysis {
@@ -3956,7 +3963,7 @@ app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => 
     const requestedFilter = String(req.query.filter || 'all').trim();
     const filter = ['all', 'mine', 'pending', 'approved'].includes(requestedFilter) ? requestedFilter : 'all';
     const artifacts = await pool.query<{ id: string }>(
-      `SELECT a.id FROM google_drive_artifacts a LEFT JOIN meeting_reviews r ON r.artifact_id = a.id WHERE a.artifact_type IN ('transcript', 'notes', 'document') AND r.artifact_id IS NULL ORDER BY a.source_modified_at DESC NULLS LAST LIMIT 300`,
+      `SELECT a.id FROM google_drive_artifacts a LEFT JOIN meeting_reviews r ON r.artifact_id = a.id WHERE a.artifact_type IN ('transcript', 'notes', 'document') AND r.artifact_id IS NULL ORDER BY a.source_modified_at DESC NULLS LAST LIMIT ${MEETING_IMPORT_BATCH_SIZE}`,
     );
     await Promise.all(artifacts.rows.map((artifact) => ensureMeetingReview(artifact.id, 'sistema')));
     const where: string[] = ["a.artifact_type IN ('transcript', 'notes', 'document')"];
@@ -3993,7 +4000,7 @@ app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => 
         parameters,
       ),
       pool.query(
-        "SELECT COUNT(*) FILTER (WHERE r.status = 'pending')::int AS pending, COUNT(*) FILTER (WHERE r.workflow_stage = 'pmc')::int AS awaiting, COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND (ma.responsible IS NULL OR trim(ma.responsible) = ''))::int AS unassigned, COUNT(*) FILTER (WHERE r.project_name IS NULL OR trim(r.project_name) = '')::int AS no_project FROM meeting_reviews r LEFT JOIN meeting_review_actions ma ON ma.artifact_id = r.artifact_id",
+        "SELECT COUNT(DISTINCT r.artifact_id) FILTER (WHERE r.status = 'pending')::int AS pending, COUNT(DISTINCT r.artifact_id) FILTER (WHERE r.workflow_stage = 'pmc')::int AS awaiting, COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND (ma.responsible IS NULL OR trim(ma.responsible) = ''))::int AS unassigned, COUNT(DISTINCT r.artifact_id) FILTER (WHERE r.project_name IS NULL OR trim(r.project_name) = '')::int AS no_project FROM meeting_reviews r LEFT JOIN meeting_review_actions ma ON ma.artifact_id = r.artifact_id",
       ),
     ]);
     const total = Number(listResult.rows[0]?.total_count || 0);
@@ -4102,7 +4109,8 @@ async function processPendingMeetingAnalyses(): Promise<void> {
   meetingAnalysisWorkerRunning = true;
   try {
     await pool.query("UPDATE meeting_reviews SET analysis_status = 'pending', analysis_error = 'La ejecución anterior venció y fue reencolada.', updated_at = NOW() WHERE analysis_status = 'processing' AND updated_at < NOW() - INTERVAL '10 minutes'");
-    await pool.query("UPDATE meeting_reviews r SET analysis_status = 'pending', analysis_error = NULL, updated_at = NOW() FROM google_drive_artifacts a WHERE r.artifact_id = a.id AND r.analysis_version < $1 AND r.analysis_status <> 'processing' AND a.content_text IS NOT NULL AND length(trim(a.content_text)) > 0", [MEETING_AI_ANALYSIS_VERSION]);
+    await pool.query("UPDATE meeting_reviews r SET analysis_status = 'failed', analysis_error = 'No se pudo extraer texto del documento para analizarlo.', analysis_version = $1, updated_at = NOW() FROM google_drive_artifacts a WHERE r.artifact_id = a.id AND r.analysis_status = 'pending' AND (a.content_text IS NULL OR length(trim(a.content_text)) = 0)", [MEETING_AI_ANALYSIS_VERSION]);
+    await pool.query("UPDATE meeting_reviews r SET analysis_status = 'pending', analysis_error = NULL, updated_at = NOW() FROM google_drive_artifacts a WHERE r.artifact_id = a.id AND r.analysis_status <> 'processing' AND a.content_text IS NOT NULL AND length(trim(a.content_text)) > 0 AND (r.analysis_version < $1 OR (r.analysis_status = 'failed' AND r.analysis_error = 'No se pudo extraer texto del documento para analizarlo.') OR r.analysis_source_modified_at IS DISTINCT FROM a.source_modified_at)", [MEETING_AI_ANALYSIS_VERSION]);
     const pending = await pool.query<{ artifact_id: string }>(
       "SELECT r.artifact_id FROM meeting_reviews r INNER JOIN google_drive_artifacts a ON a.id = r.artifact_id WHERE r.analysis_status = 'pending' AND a.content_text IS NOT NULL AND length(trim(a.content_text)) > 0 ORDER BY r.updated_at ASC LIMIT $1",
       [MEETING_AI_ANALYSIS_BATCH_SIZE],
@@ -4132,7 +4140,9 @@ app.post('/api/meetings/:artifactId/analyze', requireCeoAuth, async (req: Reques
   const artifactId = String(req.params.artifactId || '').trim();
   const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
   try {
-    await pool.query("UPDATE meeting_reviews SET analysis_status = 'processing', analysis_error = NULL, updated_at = NOW() WHERE artifact_id = $1", [artifactId]);
+    if (!await ensureMeetingReview(artifactId, actor)) return res.status(404).json({ error: 'Reunión no encontrada' });
+    const claim = await pool.query("UPDATE meeting_reviews SET analysis_status = 'processing', analysis_error = NULL, updated_at = NOW() WHERE artifact_id = $1 AND analysis_status <> 'processing' RETURNING artifact_id", [artifactId]);
+    if (!claim.rows.length) return res.status(409).json({ error: 'El análisis de esta reunión ya está en curso' });
     const result = await runMeetingAiAnalysis(artifactId, actor);
     res.json({ ok: true, ...result });
   } catch (error) {
@@ -4247,6 +4257,7 @@ app.post('/api/meetings/:artifactId/workflow', requireCeoAuth, async (req: Reque
     const artifactId = String(req.params.artifactId || '').trim();
     const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
     const command = String(req.body?.command || '').trim();
+    if (!['approve', 'return', 'save'].includes(command)) return res.status(400).json({ error: 'Comando de flujo inválido' });
     const actionsResult = await pool.query<{ responsible: string | null; due_date: string | null; status: string }>(`SELECT responsible, due_date, status FROM meeting_review_actions WHERE artifact_id = $1`, [artifactId]);
     const blockers = meetingApprovalBlockers(actionsResult.rows);
     if (command === 'approve' && (blockers.missingResponsible || blockers.missingDueDate)) {
