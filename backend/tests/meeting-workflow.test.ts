@@ -67,6 +67,7 @@ describe('Flujo de aprobación de reuniones', () => {
 
   it('obtiene la fecha real de reunión desde el nombre y conserva referencias de minuto', () => {
     expect(deriveMeetingDate({ name: 'Comité de obra · 26/08/2026' })).toBe('2026-08-26');
+    expect(deriveMeetingDate({ name: 'Reunión iniciada a las 2026/07/31 15:44 CEST - Notas de Gemini' })).toBe('2026-07-31');
     const analysis = normalizeMeetingAiAnalysis({ meeting_date: '2026-08-26', summary: 'Se confirma el ajuste [min 14:20]', decisions: ['Se actualiza el plano [min 14:20]'], actions: [] });
     expect(analysis).toMatchObject({ meetingDate: '2026-08-26', summary: 'Se confirma el ajuste [min 14:20]', decisions: ['Se actualiza el plano [min 14:20]'] });
   });

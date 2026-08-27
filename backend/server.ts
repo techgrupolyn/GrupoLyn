@@ -3618,6 +3618,7 @@ type MeetingIdentitySource = {
   project_name?: string | null;
   contact_name?: string | null;
   meeting_kind?: string | null;
+  meeting_date?: string | null;
 };
 
 function meetingIdentityValue(value: unknown): string | null {
@@ -3710,12 +3711,13 @@ export function formatMeetingName(identity: Pick<MeetingIdentity, 'meetingKind' 
   return suffix ? `${label} · ${suffix}` : `${label} · sin identificar`;
 }
 
-function meetingRowWithName<T extends MeetingIdentitySource>(row: T): T & { name: string; source_name: string | null; pmc: string | null; project_name: string | null; contact_name: string | null; meeting_kind: MeetingIdentity['meetingKind'] } {
+function meetingRowWithName<T extends MeetingIdentitySource>(row: T): T & { name: string; source_name: string | null; pmc: string | null; project_name: string | null; contact_name: string | null; meeting_kind: MeetingIdentity['meetingKind']; meeting_date: string | null } {
   const detected = deriveMeetingIdentity(row);
   const pmc = meetingIdentityValue(row.pmc) || detected.pmc;
   const projectName = meetingIdentityValue(row.project_name) || detected.projectName;
   const contactName = meetingIdentityValue(row.contact_name) || detected.contactName;
   const meetingKind = row.meeting_kind && row.meeting_kind !== 'MEET' ? row.meeting_kind as MeetingIdentity['meetingKind'] : detected.meetingKind;
+  const meetingDate = meetingAnalysisDate(row.meeting_date) || deriveMeetingDate(row);
   return {
     ...row,
     name: formatMeetingName({ meetingKind, pmc, projectName, contactName }),
@@ -3724,9 +3726,9 @@ function meetingRowWithName<T extends MeetingIdentitySource>(row: T): T & { name
     project_name: projectName,
     contact_name: contactName,
     meeting_kind: meetingKind,
+    meeting_date: meetingDate,
   };
 }
-
 type MeetingAiAction = {
   title: string;
   projectName: string | null;
@@ -3872,6 +3874,24 @@ function meetingAiPrompt(source: string, identity: MeetingIdentity, meetingDate:
   ].join('\n');
 }
 
+async function backfillMeetingDates(): Promise<void> {
+  const { rows } = await pool.query<MeetingIdentitySource & { id: string }>(
+    `SELECT a.id, a.name, a.content_text, a.metadata
+     FROM meeting_reviews r
+     INNER JOIN google_drive_artifacts a ON a.id = r.artifact_id
+     WHERE r.meeting_date IS NULL
+     ORDER BY a.source_modified_at DESC NULLS LAST
+     LIMIT 1000`,
+  );
+  let updated = 0;
+  for (const artifact of rows) {
+    const meetingDate = deriveMeetingDate(artifact);
+    if (!meetingDate) continue;
+    const result = await pool.query('UPDATE meeting_reviews SET meeting_date = $2, updated_at = NOW() WHERE artifact_id = $1 AND meeting_date IS NULL', [artifact.id, meetingDate]);
+    updated += result.rowCount || 0;
+  }
+  if (updated) console.log(`[meetings] Fechas de reunión retrorellenadas: ${updated}`);
+}
 async function ensureMeetingReview(artifactId: string, actor: string): Promise<boolean> {
   const artifactResult = await pool.query<MeetingIdentitySource & { id: string; artifact_type: string; metadata: Record<string, unknown> }>(
     `SELECT id, name, content_text, metadata, artifact_type FROM google_drive_artifacts
@@ -6187,6 +6207,7 @@ app.post('/api/profile/privacy', async (req: Request, res: Response) => {
 
 async function bootstrap() {
   await ensureDatabaseSchema();
+  await backfillMeetingDates();
   void processPendingMeetingAnalyses();
   await loadSpecialistsFromDb();
   await bootEvolution();
