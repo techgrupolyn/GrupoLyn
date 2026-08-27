@@ -440,6 +440,7 @@ ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_status VARCHAR(40)
 ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_source_modified_at TIMESTAMPTZ;
 ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_completed_at TIMESTAMPTZ;
 ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_error TEXT;
+ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_version SMALLINT NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS idx_meeting_reviews_analysis_queue ON meeting_reviews(analysis_status, updated_at ASC);
 ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS origin VARCHAR(40) NOT NULL DEFAULT 'manual';
 CREATE TABLE IF NOT EXISTS meeting_review_blockers (

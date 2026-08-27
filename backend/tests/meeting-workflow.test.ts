@@ -41,6 +41,20 @@ describe('Flujo de aprobación de reuniones', () => {
   });
 
 
+  it('detecta etiquetas de identidad con formato Markdown y variantes operativas', () => {
+    const identity = deriveMeetingIdentity({
+      name: 'Grabación semanal',
+      content_text: '**PMC asignado:** Laura M.\n- Obra principal: Villajoyosa 12\nCliente entrevistado: Marta S.',
+    });
+
+    expect(identity).toEqual({
+      meetingKind: 'REUNION_CLIENTE',
+      pmc: 'Laura M.',
+      projectName: 'Villajoyosa 12',
+      contactName: 'Marta S.',
+    });
+  });
+
   it('normaliza la salida estructurada de IA sin aceptar fechas ambiguas ni acciones vacías', () => {
     const analysis = normalizeMeetingAiAnalysis({
       resumen: 'La obra avanza y queda pendiente confirmar la entrega de carpintería.',

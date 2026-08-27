@@ -164,6 +164,16 @@ describe('callGeminiWithPrompt', () => {
       .resolves.toContain('datos locales');
   });
 
+  it('conserva JSON válido cuando Gemini lo devuelve en un bloque de código', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ output_text: '```json\n{"summary":"Resumen válido"}\n```' }),
+    });
+
+    await expect(callGeminiWithPrompt('Devuelve JSON')).resolves.toBe('{"summary":"Resumen válido"}');
+  });
+
   it('maneja respuesta sin texto', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,

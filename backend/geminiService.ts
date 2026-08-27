@@ -168,8 +168,9 @@ export async function callGeminiWithPrompt(prompt: string, modelo: 'flash' | 'pr
 function cleanGeminiResponse(raw: string): string {
   const text = String(raw || '').trim();
   if (!text) return '';
-  return text
-    .replace(/```[\s\S]*?```/g, '')
+  const fenced = text.match(/^```(?:json)?\s*\r?\n?([\s\S]*?)\s*```$/i);
+  const normalized = fenced ? fenced[1].trim() : text;
+  return normalized
     .replace(/`[^`]*`/g, '')
     .replace(/\*\*/g, '')
     .replace(/\*/g, '')

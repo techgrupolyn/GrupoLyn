@@ -61,9 +61,9 @@ Los valores detectados se muestran en la bandeja y permanecen editables en el pa
 
 ## Análisis IA de reuniones
 
-Al importar una transcripción nueva o modificada, el servidor la encola automáticamente y la analiza una única vez por versión. La bandeja actualiza su estado periódicamente y la reunión se abre con el resultado ya guardado. El servidor envía como máximo `MEETING_AI_TEXT_MAX_CHARS` caracteres al modelo y exige una respuesta JSON estructurada. Guarda el resumen, decisiones, identidad de la reunión, acciones y bloqueos en la base de datos central. El botón del panel lateral se reserva para una regeneración explícita.
+Al importar una transcripción nueva o modificada, el servidor la encola automáticamente y la analiza una única vez por versión del documento y del analizador. La bandeja actualiza su estado periódicamente y la reunión se abre con el resultado ya guardado. El servidor envía como máximo `MEETING_AI_TEXT_MAX_CHARS` caracteres al modelo y exige una respuesta JSON estructurada. Guarda el resumen, decisiones, identidad de la reunión, acciones y bloqueos en la base de datos central. El botón del panel lateral se reserva para una regeneración explícita.
 
-- La cola procesa por defecto un documento cada 20 segundos (`MEETING_AI_ANALYSIS_BATCH_SIZE=1`) para controlar coste. Una versión ya completada o fallida no se vuelve a enviar automáticamente; solo se reencola si Drive detecta una versión nueva.
+- La cola procesa por defecto un documento cada 20 segundos (`MEETING_AI_ANALYSIS_BATCH_SIZE=1`) para controlar coste. Una versión ya completada o fallida no se vuelve a enviar automáticamente; solo se reencola si Drive detecta una versión nueva o se publica una versión explícita del analizador que requiere una migración puntual.
 - Las acciones generadas se identifican como **IA** y una nueva generación sustituye solo esas acciones; las añadidas o editadas manualmente se conservan.
 - Los bloqueos detectados se regeneran a partir de la fuente y quedan visibles junto a los bloqueos de aprobación por responsable o fecha.
 - Cada ejecución conserva proveedor, modelo, tamaño de contexto, respuesta estructurada, usuario y fecha en el historial auditable.
