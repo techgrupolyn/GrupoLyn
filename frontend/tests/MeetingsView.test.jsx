@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filterDriveArtifacts, summarizeDriveData } from '../src/ceo-dashboard/views/MeetingsView';
+import { filterDriveArtifacts, getArtifactOperationalData, summarizeDriveData } from '../src/ceo-dashboard/views/MeetingsView';
 
 const artifacts = [
   { id: '1', name: 'Comité de obra', folder_label: 'Obras', google_email: 'lyn@example.com', artifact_type: 'transcript', content_preview: 'Acuerdos de la reunión', source_modified_at: '2026-08-25T10:00:00.000Z' },
@@ -22,5 +22,18 @@ describe('Gestión de reuniones', () => {
     expect(filterDriveArtifacts(artifacts, { query: 'obra' }, now).map((artifact) => artifact.id)).toEqual(['1', '3']);
     expect(filterDriveArtifacts(artifacts, { type: 'recording' }, now).map((artifact) => artifact.id)).toEqual(['2']);
     expect(filterDriveArtifacts(artifacts, { period: 'week' }, now).map((artifact) => artifact.id)).toEqual(['1', '2']);
+  });
+
+  it('muestra campos operativos como pendientes hasta que exista evidencia', () => {
+    expect(getArtifactOperationalData({})).toMatchObject({
+      project: 'Pendiente de identificar',
+      contact: 'Sin contacto identificado',
+      actionsLabel: 'Sin acciones extraídas',
+    });
+    expect(getArtifactOperationalData({ metadata: { obra: 'Villajoyosa 12', contacto: 'Marta S.', actions: ['Confirmar plano', 'Enviar presupuesto'] } })).toMatchObject({
+      project: 'Villajoyosa 12',
+      contact: 'Marta S.',
+      actionsLabel: '2 acciones',
+    });
   });
 });

@@ -22,6 +22,23 @@ function isTextReady(artifact) {
   return ['transcript', 'notes', 'document'].includes(artifact.artifact_type) && Boolean(String(artifact.content_preview || '').trim());
 }
 
+export function getArtifactOperationalData(artifact = {}) {
+  const metadata = artifact.metadata && typeof artifact.metadata === 'object' && !Array.isArray(artifact.metadata) ? artifact.metadata : {};
+  const project = String(metadata.obra || metadata.project || metadata.project_name || '').trim();
+  const contact = String(metadata.contacto || metadata.contact || metadata.contact_name || '').trim();
+  const rawActions = Array.isArray(metadata.actions) ? metadata.actions : Array.isArray(metadata.action_items) ? metadata.action_items : [];
+  const explicitCount = Number(metadata.actions_count);
+  const actionCount = Number.isFinite(explicitCount) && explicitCount >= 0 ? explicitCount : rawActions.filter(Boolean).length;
+  return {
+    project: project || 'Pendiente de identificar',
+    contact: contact || 'Sin contacto identificado',
+    actionsLabel: actionCount ? `${actionCount} ${actionCount === 1 ? 'acción' : 'acciones'}` : 'Sin acciones extraídas',
+    hasProject: Boolean(project),
+    hasContact: Boolean(contact),
+    hasActions: actionCount > 0,
+  };
+}
+
 export function summarizeDriveData(artifacts = [], folders = []) {
   const activeFolders = folders.filter((folder) => folder.enabled).length;
   const textReady = artifacts.filter(isTextReady).length;
@@ -241,23 +258,26 @@ export default function MeetingsView() {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[850px] border-collapse text-left">
+            <table className="w-full min-w-[1180px] border-collapse text-left">
               <thead className="bg-[#0D0D0D] text-[10px] uppercase tracking-[0.13em] text-[#737373]">
-                <tr><th className="px-3 py-3 font-medium">Reunión / archivo</th><th className="px-3 py-3 font-medium">Carpeta</th><th className="px-3 py-3 font-medium">Tipo</th><th className="px-3 py-3 font-medium">Estado</th><th className="px-3 py-3 font-medium">Actualizado</th><th className="px-3 py-3 text-right font-medium">Acción</th></tr>
+                <tr><th className="px-3 py-3 font-medium">Reunión / archivo</th><th className="px-3 py-3 font-medium">Obra</th><th className="px-3 py-3 font-medium">Contacto</th><th className="px-3 py-3 font-medium">Acciones</th><th className="px-3 py-3 font-medium">Tipo</th><th className="px-3 py-3 font-medium">Estado</th><th className="px-3 py-3 font-medium">Actualizado</th><th className="px-3 py-3 text-right font-medium">Acción</th></tr>
               </thead>
               <tbody className="divide-y divide-[#2E2E2E]">
-                {filteredArtifacts.map((artifact) => (
-                  <tr key={artifact.id} className="group cursor-pointer transition hover:bg-[#0D0D0D]" onClick={() => openArtifact(artifact)}>
-                    <td className="border-l-2 border-l-transparent px-3 py-3 group-hover:border-l-[#BFBFBF]"><p className="max-w-sm truncate text-sm font-medium text-[#F2F2F2]">{artifact.name}</p><p className="mt-0.5 max-w-sm truncate text-[11px] text-[#737373]">{artifact.google_email || 'Cuenta Google'}</p></td>
-                    <td className="px-3 py-3 text-xs text-[#BFBFBF]">{artifact.folder_label || 'Carpeta no disponible'}</td>
+                {filteredArtifacts.map((artifact) => {
+                  const operations = getArtifactOperationalData(artifact);
+                  return <tr key={artifact.id} className="group cursor-pointer transition hover:bg-[#0D0D0D]" onClick={() => openArtifact(artifact)}>
+                    <td className="border-l-2 border-l-transparent px-3 py-3 group-hover:border-l-[#BFBFBF]"><p className="max-w-xs truncate text-sm font-medium text-[#F2F2F2]">{artifact.name}</p><p className="mt-0.5 max-w-xs truncate text-[11px] text-[#737373]">{artifact.folder_label || 'Carpeta no disponible'} · {artifact.google_email || 'Cuenta Google'}</p></td>
+                    <td className={`px-3 py-3 text-xs ${operations.hasProject ? 'text-[#F2F2F2]' : 'text-[#737373]'}`}>{operations.project}</td>
+                    <td className={`px-3 py-3 text-xs ${operations.hasContact ? 'text-[#F2F2F2]' : 'text-[#737373]'}`}>{operations.contact}</td>
+                    <td className={`px-3 py-3 text-xs ${operations.hasActions ? 'font-medium text-[#F2F2F2]' : 'text-[#737373]'}`}>{operations.actionsLabel}</td>
                     <td className="px-3 py-3"><span className="rounded border border-[#2E2E2E] bg-[#141414] px-2 py-1 text-[10px] uppercase tracking-wide text-[#BFBFBF]">{artifactLabel(artifact.artifact_type)}</span></td>
                     <td className="px-3 py-3"><ArtifactStatus artifact={artifact} /></td>
                     <td className="px-3 py-3 font-mono text-[11px] text-[#BFBFBF]">{formatDate(artifact.source_modified_at)}</td>
                     <td className="px-3 py-3 text-right"><button type="button" onClick={(event) => { event.stopPropagation(); openArtifact(artifact); }} disabled={action === `artifact-${artifact.id}`} className="rounded border border-[#2E2E2E] px-2.5 py-1.5 text-[11px] text-[#BFBFBF] transition hover:border-[#737373] hover:text-[#F2F2F2] disabled:opacity-40">{action === `artifact-${artifact.id}` ? 'Abriendo…' : 'Abrir'}</button></td>
-                  </tr>
-                ))}
-                {!loading && !filteredArtifacts.length && <tr><td colSpan="6" className="px-3 py-12 text-center text-xs text-[#737373]">{artifacts.length ? 'No hay resultados para los filtros seleccionados.' : 'Aún no hay reuniones ni documentos importados.'}</td></tr>}
-                {loading && <tr><td colSpan="6" className="px-3 py-12 text-center text-xs text-[#737373]">Cargando reuniones…</td></tr>}
+                  </tr>;
+                })}
+                {!loading && !filteredArtifacts.length && <tr><td colSpan="8" className="px-3 py-12 text-center text-xs text-[#737373]">{artifacts.length ? 'No hay resultados para los filtros seleccionados.' : 'Aún no hay reuniones ni documentos importados.'}</td></tr>}
+                {loading && <tr><td colSpan="8" className="px-3 py-12 text-center text-xs text-[#737373]">Cargando reuniones…</td></tr>}
               </tbody>
             </table>
           </div>

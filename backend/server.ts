@@ -3488,7 +3488,7 @@ app.get('/api/google-drive/artifacts', requireCeoAuth, async (req: Request, res:
     const where = folderId ? 'WHERE a.folder_id = $1' : '';
     const { rows } = await pool.query(
       `SELECT a.id, a.folder_id, a.google_file_id, a.name, a.mime_type, a.artifact_type, a.web_view_link,
-              a.source_modified_at, a.size_bytes, a.content_truncated, a.created_at, a.updated_at,
+              a.source_modified_at, a.size_bytes, a.content_truncated, a.metadata, a.created_at, a.updated_at,
               LEFT(COALESCE(a.content_text, ''), 3000) AS content_preview, f.label AS folder_label, c.google_email
        FROM google_drive_artifacts a
        LEFT JOIN google_drive_folders f ON f.id = a.folder_id
