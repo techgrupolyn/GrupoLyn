@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { deriveMeetingDate, deriveMeetingIdentity, formatMeetingName, meetingApprovalBlockers, normalizeMeetingAiAnalysis, parseMeetingAiAnalysis } from '../server.ts';
+import { deriveMeetingDate, deriveMeetingIdentity, formatMeetingName, meetingApprovalBlockers, meetingListPagination, normalizeMeetingAiAnalysis, parseMeetingAiAnalysis } from '../server.ts';
 
 describe('Flujo de aprobación de reuniones', () => {
+  it('normaliza límites de paginación para reuniones', () => {
+    expect(meetingListPagination('0', '5')).toEqual({ page: 1, pageSize: 10, offset: 0 });
+    expect(meetingListPagination('3', '500')).toEqual({ page: 3, pageSize: 100, offset: 200 });
+  });
+
   it('bloquea solo acciones pendientes sin responsable o fecha', () => {
     expect(meetingApprovalBlockers([
       { status: 'pending', responsible: '', due_date: null },

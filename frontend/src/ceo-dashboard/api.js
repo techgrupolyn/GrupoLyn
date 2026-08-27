@@ -92,7 +92,11 @@ export const api = {
     update: (id, payload) => request(/whatsapp-accounts/, { method: 'PATCH', body: JSON.stringify(payload) }),
   },
   meetings: {
-    list: () => request('/meetings'),
+    list: ({ page = 1, pageSize = 25, q = '', filter = 'all' } = {}) => {
+      const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), filter });
+      if (q) params.set('q', q);
+      return request(`/meetings?${params.toString()}`);
+    },
     get: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}`),
     update: (artifactId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
     analyze: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}/analyze`, { method: 'POST' }),

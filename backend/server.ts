@@ -3921,39 +3921,76 @@ export function meetingApprovalBlockers(actions: Array<{ responsible?: string | 
   }, { missingResponsible: 0, missingDueDate: 0 });
 }
 
-app.get('/api/meetings', requireCeoAuth, async (_req: Request, res: Response) => {
+export function meetingListPagination(pageValue: unknown, pageSizeValue: unknown): { page: number; pageSize: number; offset: number } {
+  const rawPage = Number(Array.isArray(pageValue) ? pageValue[0] : pageValue);
+  const rawPageSize = Number(Array.isArray(pageSizeValue) ? pageSizeValue[0] : pageSizeValue);
+  const page = Number.isFinite(rawPage) ? Math.max(1, Math.floor(rawPage)) : 1;
+  const pageSize = Number.isFinite(rawPageSize) ? Math.min(100, Math.max(10, Math.floor(rawPageSize))) : 25;
+  return { page, pageSize, offset: (page - 1) * pageSize };
+}
+
+app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => {
   try {
+    const { page, pageSize, offset } = meetingListPagination(req.query.page, req.query.page_size);
+    const search = String(req.query.q || '').trim().slice(0, 200);
+    const requestedFilter = String(req.query.filter || 'all').trim();
+    const filter = ['all', 'mine', 'pending', 'approved'].includes(requestedFilter) ? requestedFilter : 'all';
     const artifacts = await pool.query<{ id: string }>(
       `SELECT a.id FROM google_drive_artifacts a LEFT JOIN meeting_reviews r ON r.artifact_id = a.id WHERE a.artifact_type IN ('transcript', 'notes', 'document') AND r.artifact_id IS NULL ORDER BY a.source_modified_at DESC NULLS LAST LIMIT 300`,
     );
     await Promise.all(artifacts.rows.map((artifact) => ensureMeetingReview(artifact.id, 'sistema')));
-    const { rows } = await pool.query(
-      `SELECT a.id, a.name, LEFT(COALESCE(a.content_text, ''), 20000) AS content_text, a.metadata, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_truncated,
-              f.label AS folder_label, c.google_email, r.summary, r.decisions, r.project_name, r.contact_name,
-              r.meeting_kind, r.pmc, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.updated_at,
-              COUNT(ma.id)::int AS actions_count,
-              COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND (ma.responsible IS NULL OR trim(ma.responsible) = ''))::int AS actions_without_responsible,
-              COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND ma.due_date IS NULL)::int AS actions_without_due_date
-       FROM google_drive_artifacts a
-       INNER JOIN meeting_reviews r ON r.artifact_id = a.id
-       LEFT JOIN google_drive_folders f ON f.id = a.folder_id
-       LEFT JOIN google_drive_connections c ON c.id = a.connection_id
-       LEFT JOIN meeting_review_actions ma ON ma.artifact_id = a.id
-       GROUP BY a.id, f.label, c.google_email, r.artifact_id
-       ORDER BY CASE r.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 WHEN 'returned' THEN 2 ELSE 3 END, a.source_modified_at DESC NULLS LAST
-       LIMIT 300`,
-    );
-    res.json(rows.map((row) => {
+    const where: string[] = ["a.artifact_type IN ('transcript', 'notes', 'document')"];
+    const parameters: unknown[] = [];
+    if (search) {
+      parameters.push('%' + search + '%');
+      const placeholder = '$' + parameters.length;
+      where.push("(COALESCE(a.name, '') ILIKE " + placeholder + " OR COALESCE(r.project_name, '') ILIKE " + placeholder + " OR COALESCE(r.contact_name, '') ILIKE " + placeholder + " OR COALESCE(r.pmc, '') ILIKE " + placeholder + ")");
+    }
+    if (filter === 'mine') where.push("r.workflow_stage = 'pmc'");
+    if (filter === 'pending') where.push("r.status = 'pending'");
+    if (filter === 'approved') where.push("r.status = 'approved'");
+    parameters.push(pageSize, offset);
+    const limitPlaceholder = '$' + (parameters.length - 1);
+    const offsetPlaceholder = '$' + parameters.length;
+    const [listResult, metricsResult] = await Promise.all([
+      pool.query(
+        `SELECT a.id, a.name, LEFT(COALESCE(a.content_text, ''), 20000) AS content_text, a.metadata, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_truncated,
+                f.label AS folder_label, c.google_email, r.summary, r.decisions, r.project_name, r.contact_name,
+                r.meeting_kind, r.pmc, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.updated_at,
+                COUNT(ma.id)::int AS actions_count,
+                COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND (ma.responsible IS NULL OR trim(ma.responsible) = ''))::int AS actions_without_responsible,
+                COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND ma.due_date IS NULL)::int AS actions_without_due_date,
+                COUNT(*) OVER()::int AS total_count
+         FROM google_drive_artifacts a
+         INNER JOIN meeting_reviews r ON r.artifact_id = a.id
+         LEFT JOIN google_drive_folders f ON f.id = a.folder_id
+         LEFT JOIN google_drive_connections c ON c.id = a.connection_id
+         LEFT JOIN meeting_review_actions ma ON ma.artifact_id = a.id
+         WHERE ${where.join(' AND ')}
+         GROUP BY a.id, f.label, c.google_email, r.artifact_id
+         ORDER BY CASE r.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 WHEN 'returned' THEN 2 ELSE 3 END, a.source_modified_at DESC NULLS LAST
+         LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
+        parameters,
+      ),
+      pool.query(
+        "SELECT COUNT(*) FILTER (WHERE r.status = 'pending')::int AS pending, COUNT(*) FILTER (WHERE r.workflow_stage = 'pmc')::int AS awaiting, COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND (ma.responsible IS NULL OR trim(ma.responsible) = ''))::int AS unassigned, COUNT(*) FILTER (WHERE r.project_name IS NULL OR trim(r.project_name) = '')::int AS no_project FROM meeting_reviews r LEFT JOIN meeting_review_actions ma ON ma.artifact_id = r.artifact_id",
+      ),
+    ]);
+    const total = Number(listResult.rows[0]?.total_count || 0);
+    const items = listResult.rows.map((row) => {
       const named = meetingRowWithName(row);
-      const { content_text: _contentText, metadata: _metadata, ...meeting } = named;
+      const { content_text: _contentText, metadata: _metadata, total_count: _totalCount, ...meeting } = named;
       return meeting;
-    }));
+    });
+    res.json({
+      items, page, pageSize, total, totalPages: total ? Math.ceil(total / pageSize) : 0,
+      metrics: metricsResult.rows[0] || { pending: 0, awaiting: 0, unassigned: 0, no_project: 0 },
+    });
   } catch (error) {
     console.error('[meetings] Error listando:', (error as Error).message);
     res.status(500).json({ error: 'No se pudieron cargar las reuniones' });
   }
 });
-
 type MeetingAiRunResult = { provider: string; model: string; actions: number; blockers: number };
 let meetingAnalysisWorkerRunning = false;
 
