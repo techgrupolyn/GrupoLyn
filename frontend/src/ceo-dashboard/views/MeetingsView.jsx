@@ -66,7 +66,7 @@ export function filterDriveArtifacts(artifacts = [], { query = '', type = 'all',
 function MetricCard({ label, value, detail, tone = 'default' }) {
   const valueClass = tone === 'warm' ? 'text-[#F2F2F2]' : tone === 'muted' ? 'text-[#BFBFBF]' : 'text-[#F2F2F2]';
   return (
-    <div className="min-w-0 rounded-md border border-[#2E2E2E] bg-[#141414] px-4 py-3.5">
+    <div className="dashboard-metric-card min-w-0 rounded-md border border-[#2E2E2E] bg-[#141414] px-4 py-3.5">
       <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#737373]">{label}</p>
       <p className={`mt-1 text-2xl font-semibold tracking-tight ${valueClass}`}>{value}</p>
       <p className="mt-1 truncate text-[11px] text-[#737373]">{detail}</p>
@@ -194,7 +194,7 @@ export default function MeetingsView() {
             <button type="button" onClick={load} disabled={loading} className="rounded border border-[#2E2E2E] bg-[#141414] px-3 py-2 text-xs font-medium text-[#BFBFBF] transition hover:border-[#737373] disabled:opacity-40">
               {loading ? 'Actualizando…' : 'Actualizar'}
             </button>
-            <button type="button" onClick={() => setShowSetup((current) => !current)} className="rounded bg-[#BFBFBF] px-3 py-2 text-xs font-semibold text-black transition hover:bg-[#F2F2F2]">
+            <button type="button" onClick={() => setShowSetup((current) => !current)} className="ceo-button-primary rounded bg-[#BFBFBF] px-3 py-2 text-xs font-semibold text-black transition hover:bg-[#F2F2F2]">
               {showSetup ? 'Cerrar configuración' : 'Configurar fuentes'}
             </button>
           </div>
@@ -227,7 +227,7 @@ export default function MeetingsView() {
                 <input required value={folderForm.label} onChange={(event) => setFolderForm((current) => ({ ...current, label: event.target.value }))} placeholder="Nombre interno de la carpeta" maxLength={255} className="h-10 rounded border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373] focus:border-[#737373]" />
                 <input required value={folderForm.folder_url} onChange={(event) => setFolderForm((current) => ({ ...current, folder_url: event.target.value }))} placeholder="URL o ID de Google Drive" className="h-10 rounded border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373] focus:border-[#737373]" />
               </div>
-              <button type="submit" disabled={!status?.configured || !connected || action === 'folder'} className="mt-3 rounded bg-[#BFBFBF] px-3 py-2 text-xs font-semibold text-black transition hover:bg-[#F2F2F2] disabled:opacity-40">
+              <button type="submit" disabled={!status?.configured || !connected || action === 'folder'} className="mt-3 ceo-button-primary rounded bg-[#BFBFBF] px-3 py-2 text-xs font-semibold text-black transition hover:bg-[#F2F2F2] disabled:opacity-40">
                 {action === 'folder' ? 'Guardando…' : 'Añadir carpeta'}
               </button>
             </form>
@@ -246,9 +246,9 @@ export default function MeetingsView() {
         <div className="mt-5 overflow-hidden rounded-md border border-[#2E2E2E] bg-[#141414]">
           <div className="flex flex-col gap-3 border-b border-[#2E2E2E] p-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap gap-1.5">
-              {ARTIFACT_TYPES.map((item) => <button key={item.key} type="button" onClick={() => setType(item.key)} className={`rounded px-2.5 py-1.5 text-xs transition ${type === item.key ? 'bg-[#2E2E2E] text-[#F2F2F2]' : 'text-[#737373] hover:bg-[#0D0D0D] hover:text-[#BFBFBF]'}`}>{item.label}</button>)}
+              {ARTIFACT_TYPES.map((item) => <button key={item.key} type="button" onClick={() => setType(item.key)} className={`dashboard-filter-tab rounded px-2.5 py-1.5 text-xs transition ${type === item.key ? 'is-active bg-[#2E2E2E] text-[#F2F2F2]' : 'text-[#737373] hover:bg-[#0D0D0D] hover:text-[#BFBFBF]'}`}>{item.label}</button>)}
               <span className="mx-1 hidden h-6 w-px bg-[#2E2E2E] sm:block" />
-              {[{ key: 'all', label: 'Todo el historial' }, { key: 'week', label: 'Últimos 7 días' }, { key: 'month', label: 'Últimos 30 días' }].map((item) => <button key={item.key} type="button" onClick={() => setPeriod(item.key)} className={`rounded px-2.5 py-1.5 text-xs transition ${period === item.key ? 'bg-[#0D0D0D] text-[#BFBFBF] ring-1 ring-[#2E2E2E]' : 'text-[#737373] hover:text-[#BFBFBF]'}`}>{item.label}</button>)}
+              {[{ key: 'all', label: 'Todo el historial' }, { key: 'week', label: 'Últimos 7 días' }, { key: 'month', label: 'Últimos 30 días' }].map((item) => <button key={item.key} type="button" onClick={() => setPeriod(item.key)} className={`dashboard-filter-tab rounded px-2.5 py-1.5 text-xs transition ${period === item.key ? 'is-active bg-[#0D0D0D] text-[#BFBFBF] ring-1 ring-[#2E2E2E]' : 'text-[#737373] hover:text-[#BFBFBF]'}`}>{item.label}</button>)}
             </div>
             <label className="relative block lg:w-80">
               <span className="sr-only">Buscar en reuniones importadas</span>

@@ -81,7 +81,7 @@ export default function TemplatesView() {
           <textarea value={form.components} onChange={(e) => setForm((s) => ({ ...s, components: e.target.value }))} rows={3} className="mt-2 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-xs text-[#F2F2F2] outline-none font-mono" />
         </label>
         <div className="flex items-center gap-3 lg:col-span-4">
-          <button type="submit" disabled={saving} className="rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
+          <button type="submit" disabled={saving} className="ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
             {saving ? 'Guardando...' : form.id ? 'Actualizar' : 'Crear'}
           </button>
           {form.id && (

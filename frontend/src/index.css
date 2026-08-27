@@ -238,3 +238,114 @@ body {
 .dashboard-nav-badge.is-active {
   background: rgba(125, 211, 252, 0.14);
 }
+
+/* Dashboard interaction language */
+.ceo-card,
+.dashboard-metric-card,
+.dashboard-section-card {
+  position: relative;
+  overflow: hidden;
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.ceo-card::before,
+.dashboard-metric-card::before,
+.dashboard-section-card::before {
+  position: absolute;
+  top: 0;
+  right: 18%;
+  left: 18%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.52), transparent);
+  content: '';
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.ceo-card:hover,
+.dashboard-metric-card:hover,
+.dashboard-section-card:hover {
+  border-color: rgba(125, 211, 252, 0.38);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(125, 211, 252, 0.05);
+  transform: translateY(-2px);
+}
+
+.ceo-card:hover::before,
+.dashboard-metric-card:hover::before,
+.dashboard-section-card:hover::before {
+  opacity: 1;
+}
+
+.ceo-surface {
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.ceo-surface:hover {
+  border-color: rgba(147, 197, 253, 0.35);
+  background-color: rgba(22, 30, 38, 0.9);
+}
+
+.ceo-page input:focus,
+.ceo-page select:focus,
+.ceo-page textarea:focus {
+  border-color: rgba(125, 211, 252, 0.72) !important;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.1);
+}
+
+.ceo-page button:not(:disabled) {
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.ceo-page button:not(:disabled):focus-visible,
+.ceo-page a:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+}
+
+.ceo-button-primary {
+  border: 1px solid rgba(125, 211, 252, 0.32);
+  background: linear-gradient(135deg, #7dd3fc, #38bdf8) !important;
+  box-shadow: 0 7px 18px rgba(14, 116, 144, 0.2);
+  color: #07131c !important;
+  transition: transform 150ms ease, box-shadow 150ms ease, filter 150ms ease;
+}
+
+.ceo-button-primary:hover:not(:disabled) {
+  box-shadow: 0 10px 24px rgba(14, 116, 144, 0.35), 0 0 18px rgba(125, 211, 252, 0.16);
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+.ceo-button-primary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.dashboard-metric-card:hover .h-1 > span {
+  background: linear-gradient(90deg, #7dd3fc, #a78bfa);
+}
+
+.dashboard-chat-card {
+  transition: padding 160ms ease, background-color 160ms ease;
+}
+
+.dashboard-chat-card:hover {
+  padding-inline: 0.35rem;
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.06), transparent 70%);
+}
+
+.ceo-page tbody tr:hover td:first-child {
+  box-shadow: inset 2px 0 0 #7dd3fc;
+}
+
+.dashboard-filter-tab {
+  border: 1px solid transparent;
+}
+
+.dashboard-filter-tab:hover {
+  border-color: rgba(125, 211, 252, 0.3);
+}
+
+.dashboard-filter-tab.is-active {
+  border-color: rgba(125, 211, 252, 0.55);
+  box-shadow: 0 0 14px rgba(125, 211, 252, 0.08);
+}

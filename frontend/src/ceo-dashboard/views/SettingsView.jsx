@@ -137,7 +137,7 @@ export default function SettingsView() {
               {k}
             </label>
           ))}
-          <button type="submit" disabled={saving} className="mt-4 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
+          <button type="submit" disabled={saving} className="mt-4 ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
             {saving ? 'Guardando...' : 'Guardar configuración'}
           </button>
         </form>
@@ -152,7 +152,7 @@ export default function SettingsView() {
             <option value="recording">Grabando</option>
             <option value="paused">Pausado</option>
           </select>
-          <button type="submit" disabled={saving} className="mt-4 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">Enviar presencia</button>
+          <button type="submit" disabled={saving} className="mt-4 ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">Enviar presencia</button>
         </form>
 
         <form onSubmit={saveProxy} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
@@ -165,7 +165,7 @@ export default function SettingsView() {
           <input value={proxyForm.port} onChange={(e) => setProxyForm((s) => ({ ...s, port: e.target.value }))} placeholder="Puerto" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
           <input value={proxyForm.username} onChange={(e) => setProxyForm((s) => ({ ...s, username: e.target.value }))} placeholder="Usuario" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
           <input value={proxyForm.password} onChange={(e) => setProxyForm((s) => ({ ...s, password: e.target.value }))} placeholder="Contraseña" type="password" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
-          <button type="submit" disabled={saving} className="mt-4 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">Guardar proxy</button>
+          <button type="submit" disabled={saving} className="mt-4 ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">Guardar proxy</button>
         </form>
 
         <form onSubmit={createAccount} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
@@ -174,7 +174,7 @@ export default function SettingsView() {
           <input required value={accountForm.id} onChange={(e) => setAccountForm((current) => ({ ...current, id: e.target.value.toLowerCase() }))} placeholder="ID: ventas-caracas" className="mt-4 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
           <input required value={accountForm.nombre} onChange={(e) => setAccountForm((current) => ({ ...current, nombre: e.target.value }))} placeholder="Nombre visible" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
           <input required value={accountForm.evolution_instance_name} onChange={(e) => setAccountForm((current) => ({ ...current, evolution_instance_name: e.target.value }))} placeholder="Instancia Evolution" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
-          <button type="submit" className="mt-3 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black">Crear cuenta</button>
+          <button type="submit" className="mt-3 ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black">Crear cuenta</button>
           <div className="mt-4 space-y-1 text-xs text-[#737373]">{accounts.map((account) => <p key={account.id}>{account.nombre} · {account.evolution_instance_name} · {account.activo ? 'Activo' : 'Inactiva'} · {account.chats_count || 0} chats</p>)}</div>
         </form>
 
@@ -183,7 +183,7 @@ export default function SettingsView() {
           <p className="mt-3 text-xs leading-5 text-[#737373]">Generá un código de un solo uso para un empleado. Lo pega una vez en la extensión y luego solo escanea el QR.</p>
           <input value={invitationLabel} onChange={(e) => setInvitationLabel(e.target.value)} placeholder="Nombre del empleado o equipo" maxLength={160} className="mt-4 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
           <select required value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)} className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none"><option value="">Selecciona una cuenta</option>{accounts.filter((account) => account.activo).map((account) => <option key={account.id} value={account.id}>{account.nombre} · {account.evolution_instance_name}</option>)}</select>
-          <button type="submit" disabled={creatingInvitation} className="mt-3 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">{creatingInvitation ? 'Generando...' : 'Generar código'}</button>
+          <button type="submit" disabled={creatingInvitation} className="mt-3 ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">{creatingInvitation ? 'Generando...' : 'Generar código'}</button>
           {invitationCode && <textarea readOnly value={invitationCode} onFocus={(e) => e.target.select()} className="mt-4 h-24 w-full resize-none ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-[11px] text-[#F2F2F2] outline-none" aria-label="Código de activación" />}
           {invitationError && <p className="mt-3 text-xs text-red-400">{invitationError}</p>}
         </form>

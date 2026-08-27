@@ -72,7 +72,7 @@ export default function ConsultaIAPanel() {
             type="submit"
             disabled={!pregunta.trim() || cargando}
             onClick={handleSubmit}
-            className="flex w-full items-center justify-center gap-2.5 rounded-md bg-[#BFBFBF] px-6 py-4 text-xs font-semibold uppercase tracking-widest text-black transition-all duration-200 hover:bg-[#d4d4d4] disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.98]"
+            className="flex w-full items-center justify-center gap-2.5 ceo-button-primary rounded-md bg-[#BFBFBF] px-6 py-4 text-xs font-semibold uppercase tracking-widest text-black transition-all duration-200 hover:bg-[#d4d4d4] disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.98]"
           >
             {cargando ? (
               <>

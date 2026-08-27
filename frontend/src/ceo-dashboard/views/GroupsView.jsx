@@ -45,7 +45,7 @@ export default function GroupsView() {
             placeholder="Buscar por grupo o cuenta"
             className="h-10 w-full max-w-md ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]"
           />
-          <button type="button" onClick={loadChats} disabled={loading} className="rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
+          <button type="button" onClick={loadChats} disabled={loading} className="ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
             {loading ? 'Actualizando...' : 'Actualizar'}
           </button>
         </div>

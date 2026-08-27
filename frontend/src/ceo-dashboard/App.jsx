@@ -36,7 +36,7 @@ const VIEW_TITLES = {
 };
 
 function Section({ title, children, className = '' }) {
-  return <div className={`rounded-md border border-[#2E2E2E] bg-[#141414] p-4 sm:p-5 ${className}`}>{title && <h3 className="mb-4 font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-[#737373]">{title}</h3>}{children}</div>;
+  return <div className={`dashboard-section-card ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-4 sm:p-5 ${className}`}>{title && <h3 className="mb-4 font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-[#737373]">{title}</h3>}{children}</div>;
 }
 
 function formatNumber(value) {
@@ -47,7 +47,7 @@ function formatNumber(value) {
 
 function MetricCard({ label, value, subtext, trend }) {
   return (
-    <div className="rounded-md border border-[#2E2E2E] bg-[#141414] px-4 py-3.5">
+    <div className="dashboard-metric-card rounded-md border border-[#2E2E2E] bg-[#141414] px-4 py-3.5">
       <p className="font-mono text-[10px] uppercase tracking-[0.13em] text-[#737373]">{label}</p>
       <p className="mt-1 text-2xl font-semibold tracking-tight text-[#F2F2F2]">{formatNumber(value)}</p>
       <div className="mt-1.5 flex items-center gap-2"><span className="h-1 w-8 overflow-hidden rounded bg-[#2E2E2E]"><span className="block h-full w-3/4 bg-[#BFBFBF]" /></span><p className="text-[11px] text-[#737373]">{trend || subtext}</p></div>
@@ -64,7 +64,7 @@ function TypeChart({ byType }) {
 function ChatCard({ chat }) {
   const name = chat.nombre || chat.id || 'Sin nombre';
   const initials = name.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase();
-  return <div className="flex min-w-0 items-center gap-3 border-b border-[#2E2E2E] py-3 last:border-b-0"><div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[#2E2E2E] text-[10px] font-semibold text-[#F2F2F2]">{initials}</div><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium text-[#F2F2F2]">{name}</p><p className="mt-0.5 truncate text-[11px] text-[#737373]">{chat.ultimo_mensaje || 'Sin mensajes recientes'}</p></div><span className="font-mono text-[10px] text-[#737373]">{chat.updated_at ? new Date(chat.updated_at).toLocaleDateString('es-ES') : '—'}</span></div>;
+  return <div className="dashboard-chat-card flex min-w-0 items-center gap-3 border-b border-[#2E2E2E] py-3 last:border-b-0"><div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[#2E2E2E] text-[10px] font-semibold text-[#F2F2F2]">{initials}</div><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium text-[#F2F2F2]">{name}</p><p className="mt-0.5 truncate text-[11px] text-[#737373]">{chat.ultimo_mensaje || 'Sin mensajes recientes'}</p></div><span className="font-mono text-[10px] text-[#737373]">{chat.updated_at ? new Date(chat.updated_at).toLocaleDateString('es-ES') : '—'}</span></div>;
 }
 
 function Sidebar({ view, setView, consultationOnly, onLogout, mobileOpen, onClose }) {

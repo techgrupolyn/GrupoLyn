@@ -61,7 +61,7 @@ export default function BackofficeView() {
             <input value={newRol.id} onChange={(e) => setNewRol((f) => ({ ...f, id: e.target.value }))} placeholder="ID" className="h-9 ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
             <input value={newRol.nombre} onChange={(e) => setNewRol((f) => ({ ...f, nombre: e.target.value }))} placeholder="Nombre" className="h-9 ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
             <input value={newRol.descripcion} onChange={(e) => setNewRol((f) => ({ ...f, descripcion: e.target.value }))} placeholder="Descripción" className="h-9 ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none placeholder:text-[#737373]" />
-            <button type="submit" disabled={savingRol} className="sm:col-span-3 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
+            <button type="submit" disabled={savingRol} className="sm:col-span-3 ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
               {savingRol ? 'Guardando...' : 'Guardar rol'}
             </button>
           </div>
@@ -93,7 +93,7 @@ export default function BackofficeView() {
                 <option key={r.id} value={r.id}>{r.nombre}</option>
               ))}
             </select>
-            <button type="submit" disabled={loading} className="sm:col-span-2 rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
+            <button type="submit" disabled={loading} className="sm:col-span-2 ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">
               {loading ? 'Guardando...' : 'Guardar empleado'}
             </button>
           </div>
