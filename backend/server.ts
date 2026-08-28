@@ -3956,9 +3956,34 @@ export function meetingListPagination(pageValue: unknown, pageSizeValue: unknown
   return { page, pageSize, offset: (page - 1) * pageSize };
 }
 
+type MeetingListFilters = {
+  dateFrom: string | null;
+  dateTo: string | null;
+  recentDays: number | null;
+  sort: 'recent' | 'oldest';
+  error: string | null;
+};
+
+export function meetingListFilters(dateFromValue: unknown, dateToValue: unknown, recentDaysValue: unknown, sortValue: unknown): MeetingListFilters {
+  const dateFromInput = String(Array.isArray(dateFromValue) ? dateFromValue[0] || '' : dateFromValue || '').trim();
+  const dateToInput = String(Array.isArray(dateToValue) ? dateToValue[0] || '' : dateToValue || '').trim();
+  const dateFrom = meetingAnalysisDate(dateFromInput);
+  const dateTo = meetingAnalysisDate(dateToInput);
+  if ((dateFromInput && !dateFrom) || (dateToInput && !dateTo)) return { dateFrom: null, dateTo: null, recentDays: null, sort: 'recent', error: 'Las fechas deben usar YYYY-MM-DD y existir en el calendario' };
+  if (dateFrom && dateTo && dateFrom > dateTo) return { dateFrom: null, dateTo: null, recentDays: null, sort: 'recent', error: 'La fecha inicial no puede ser posterior a la fecha final' };
+  const recentDaysInput = String(Array.isArray(recentDaysValue) ? recentDaysValue[0] || '' : recentDaysValue || '').trim();
+  const recentDays = recentDaysInput ? Number(recentDaysInput) : null;
+  if (recentDays !== null && ![7, 30, 90].includes(recentDays)) return { dateFrom: null, dateTo: null, recentDays: null, sort: 'recent', error: 'El período rápido debe ser de 7, 30 o 90 días' };
+  const sortInput = String(Array.isArray(sortValue) ? sortValue[0] || '' : sortValue || 'recent').trim();
+  if (!['recent', 'oldest'].includes(sortInput)) return { dateFrom: null, dateTo: null, recentDays: null, sort: 'recent', error: 'El orden solicitado no es válido' };
+  return { dateFrom, dateTo, recentDays, sort: sortInput as MeetingListFilters['sort'], error: null };
+}
+
 app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => {
   try {
     const { page, pageSize, offset } = meetingListPagination(req.query.page, req.query.page_size);
+    const listFilters = meetingListFilters(req.query.date_from, req.query.date_to, req.query.recent_days, req.query.sort);
+    if (listFilters.error) return res.status(400).json({ error: listFilters.error });
     const search = String(req.query.q || '').trim().slice(0, 200);
     const requestedFilter = String(req.query.filter || 'all').trim();
     const filter = ['all', 'mine', 'pending', 'approved'].includes(requestedFilter) ? requestedFilter : 'all';
@@ -3976,6 +4001,9 @@ app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => 
     if (filter === 'mine') where.push("r.workflow_stage = 'pmc'");
     if (filter === 'pending') where.push("r.status = 'pending'");
     if (filter === 'approved') where.push("r.status = 'approved'");
+    if (listFilters.dateFrom) { parameters.push(listFilters.dateFrom); where.push('r.meeting_date >= $' + parameters.length + '::date'); }
+    if (listFilters.dateTo) { parameters.push(listFilters.dateTo); where.push('r.meeting_date <= $' + parameters.length + '::date'); }
+    if (listFilters.recentDays) { parameters.push(listFilters.recentDays); where.push('r.meeting_date >= CURRENT_DATE - ($' + parameters.length + '::int - 1)'); }
     parameters.push(pageSize, offset);
     const limitPlaceholder = '$' + (parameters.length - 1);
     const offsetPlaceholder = '$' + parameters.length;
@@ -3995,7 +4023,7 @@ app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => 
          LEFT JOIN meeting_review_actions ma ON ma.artifact_id = a.id
          WHERE ${where.join(' AND ')}
          GROUP BY a.id, f.label, c.google_email, r.artifact_id
-         ORDER BY CASE r.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 WHEN 'returned' THEN 2 ELSE 3 END, a.source_modified_at DESC NULLS LAST
+         ORDER BY r.meeting_date ${listFilters.sort === 'oldest' ? 'ASC' : 'DESC'} NULLS LAST, CASE r.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 WHEN 'returned' THEN 2 ELSE 3 END, a.source_modified_at DESC NULLS LAST
          LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
         parameters,
       ),

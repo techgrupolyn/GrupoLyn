@@ -92,9 +92,12 @@ export const api = {
     update: (id, payload) => request(/whatsapp-accounts/, { method: 'PATCH', body: JSON.stringify(payload) }),
   },
   meetings: {
-    list: ({ page = 1, pageSize = 25, q = '', filter = 'all' } = {}) => {
-      const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), filter });
+    list: ({ page = 1, pageSize = 25, q = '', filter = 'all', dateFrom = '', dateTo = '', recentDays = '', sort = 'recent' } = {}) => {
+      const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), filter, sort });
       if (q) params.set('q', q);
+      if (dateFrom) params.set('date_from', dateFrom);
+      if (dateTo) params.set('date_to', dateTo);
+      if (recentDays) params.set('recent_days', String(recentDays));
       return request(`/meetings?${params.toString()}`);
     },
     get: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}`),
