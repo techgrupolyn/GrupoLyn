@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveMeetingDate, deriveMeetingIdentity, formatMeetingName, meetingApprovalBlockers, meetingListFilters, meetingListPagination, normalizeMeetingAiAnalysis, parseMeetingAiAnalysis } from '../server.ts';
+import { deriveMeetingDate, deriveMeetingIdentity, formatMeetingName, meetingApprovalBlockers, meetingListFilters, meetingListPagination, normalizeMeetingAiAnalysis, parseMeetingAiAnalysis, resolveMeetingActionTags, resolveMeetingDirectoryReferences } from '../server.ts';
 
 describe('Flujo de aprobación de reuniones', () => {
   it('normaliza límites de paginación para reuniones', () => {
@@ -13,12 +13,17 @@ describe('Flujo de aprobación de reuniones', () => {
     expect(meetingListFilters('2026-02-30', '', '', 'recent').error).toContain('calendario');
     expect(meetingListFilters('', '', '15', 'recent').error).toContain('7, 30 o 90');
   });
-  it('bloquea solo acciones pendientes sin responsable o fecha', () => {
+  it('bloquea solo acciones pendientes sin responsable y conserva la fecha como aviso opcional', () => {
     expect(meetingApprovalBlockers([
       { status: 'pending', responsible: '', due_date: null },
       { status: 'pending', responsible: 'Marta', due_date: null },
       { status: 'done', responsible: '', due_date: null },
     ])).toEqual({ missingResponsible: 1, missingDueDate: 2 });
+  });
+  it('acepta responsables vinculados múltiples aunque el texto principal esté vacío', () => {
+    expect(meetingApprovalBlockers([
+      { status: 'pending', responsible: '', due_date: null, responsibles: [{ employee_id: 'empleado-1' }] },
+    ])).toEqual({ missingResponsible: 0, missingDueDate: 1 });
   });
 
   it('normaliza comité de obra e identifica PMC, obra y contacto desde la transcripción', () => {
@@ -96,6 +101,71 @@ describe('Flujo de aprobación de reuniones', () => {
     expect(analysis.blockers[0]).toMatchObject({ severity: 'high', detail: 'Afecta el camino crítico.' });
   });
 
+  it('conserva IDs y confianza de etiquetas devueltas por la IA', () => {
+    const analysis = normalizeMeetingAiAnalysis({
+      summary: 'Resumen válido',
+      actions: [{
+        title: 'Actualizar el plano',
+        project_id: 'f0a5c83a-b916-4b52-9724-66b0ed8e0af7',
+        responsible_id: 'b30b7fc5-812a-4c5b-9d6d-d5cfe0bd1d4c',
+        responsible_role: 'Planimetrista',
+        match_confidence: 'high',
+      }],
+    });
+
+    expect(analysis.actions[0]).toMatchObject({
+      projectId: 'f0a5c83a-b916-4b52-9724-66b0ed8e0af7',
+      responsibleId: 'b30b7fc5-812a-4c5b-9d6d-d5cfe0bd1d4c',
+      responsibleRole: 'Planimetrista',
+      matchConfidence: 'high',
+    });
+  });
+  it('vincula solo referencias únicas y prioriza al responsable asignado al proyecto', () => {
+    const candidates = [
+      { project_id: 'project-a', project_name: 'Villa Norte', project_aliases: ['Obra histórica Norte'], client_id: 'client-a', client_name: 'Ana Cliente', employee_id: 'employee-a', employee_name: 'Laura PMC', employee_role: 'PMC', role_in_project: 'Directora de proyecto' },
+      { project_id: 'project-b', project_name: 'Villa Sur', client_id: 'client-b', client_name: 'Berta Cliente', employee_id: 'employee-b', employee_name: 'Laura PMC', employee_role: 'PMC', role_in_project: 'PMC' },
+      { project_id: 'project-a', project_name: 'Villa Norte', client_id: 'client-a', client_name: 'Ana Cliente', employee_id: 'employee-c', employee_name: 'Marta Planos', employee_role: 'Planimetrista', role_in_project: 'Planimetrista' },
+    ];
+
+    expect(resolveMeetingDirectoryReferences({ projectName: 'Villa Norte', clientName: 'Ana Cliente', employeeName: 'Laura PMC' }, candidates)).toMatchObject({
+      projectId: 'project-a', clientId: 'client-a', employeeId: 'employee-a', employeeRole: 'Directora de proyecto', matchConfidence: 'high',
+    });
+    expect(resolveMeetingDirectoryReferences({ employeeName: 'Laura PMC' }, candidates)).toMatchObject({ employeeId: null, matchConfidence: null });    expect(resolveMeetingDirectoryReferences({ clientName: 'Ana Cliente' }, candidates)).toMatchObject({
+      projectId: 'project-a', projectName: 'Villa Norte', clientId: 'client-a', matchConfidence: 'high',
+    });
+    expect(resolveMeetingDirectoryReferences({ source: 'Seguimiento de la obra Villa Norte con el equipo.' }, candidates)).toMatchObject({
+      projectId: 'project-a', projectName: 'Villa Norte', matchConfidence: 'high',
+    });
+    expect(resolveMeetingDirectoryReferences({ projectName: 'Villa Norte', employeeName: 'Marta' }, candidates)).toMatchObject({
+      employeeId: 'employee-c', employeeName: 'Marta Planos', matchConfidence: 'high',
+    });
+    expect(resolveMeetingDirectoryReferences({ projectName: 'Comité de obra · Villa Norte' }, candidates)).toMatchObject({
+      projectId: 'project-a', projectName: 'Villa Norte', matchConfidence: 'high',
+    });
+    expect(resolveMeetingDirectoryReferences({ projectName: 'Obra histórica Norte' }, candidates)).toMatchObject({
+      projectId: 'project-a', projectName: 'Villa Norte', matchConfidence: 'high',
+    });
+    expect(resolveMeetingDirectoryReferences({ projectName: 'Villa Norte', roleHint: 'Planimetristas Grupo LYN' }, candidates)).toMatchObject({
+      employeeId: 'employee-c', employeeRole: 'Planimetrista', matchConfidence: 'high',
+    });
+    expect(resolveMeetingDirectoryReferences({ roleHint: 'Planimetristas Grupo LYN' }, candidates)).toMatchObject({
+      employeeId: null, employeeRole: null, matchConfidence: null,
+    });
+  });
+  it('hereda la obra y el PMC solo cuando la acción no propone una persona específica', () => {
+    const candidates = [
+      { project_id: 'project-a', project_name: 'Villa Norte', client_id: 'client-a', client_name: 'Ana Cliente', employee_id: 'employee-a', employee_name: 'Laura PMC', employee_role: 'PMC', role_in_project: 'PMC' },
+      { project_id: 'project-a', project_name: 'Villa Norte', client_id: 'client-a', client_name: 'Ana Cliente', employee_id: 'employee-c', employee_name: 'Marta Planos', employee_role: 'Planimetrista', role_in_project: 'Planimetrista' },
+    ];
+    const baseAction = { title: 'Actualizar planos', projectName: null, projectId: null, responsible: null, responsibleId: null, responsibleRole: null, matchConfidence: null, dueDate: null, estimatedMinutes: null, sourceRef: null, status: 'pending' as const };
+    const [fallback, roleScoped] = resolveMeetingActionTags([
+      baseAction,
+      { ...baseAction, title: 'Revisar mediciones', responsible: 'Planimetrista', responsibleRole: 'Planimetrista' },
+    ], candidates, { projectName: 'Villa Norte', pmcEmployeeId: 'employee-a' });
+
+    expect(fallback).toMatchObject({ projectId: 'project-a', responsibleId: 'employee-a', responsible: 'Laura PMC' });
+    expect(roleScoped).toMatchObject({ projectId: 'project-a', responsibleId: 'employee-c', responsible: 'Marta Planos' });
+  });
   it('rechaza fechas ISO inexistentes del análisis', () => {
     const analysis = normalizeMeetingAiAnalysis({ meeting_date: '2026-02-30', summary: 'Resumen válido', actions: [] });
     expect(analysis.meetingDate).toBeNull();

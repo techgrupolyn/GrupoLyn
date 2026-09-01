@@ -443,7 +443,14 @@ ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_completed_at TIMES
 ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_error TEXT;
 ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS meeting_date DATE;
 ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_version SMALLINT NOT NULL DEFAULT 1;
+ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS project_id VARCHAR(255);
+ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS contact_id VARCHAR(255);
+ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS pmc_employee_id VARCHAR(255);
+ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS directory_match_confidence VARCHAR(20);
 CREATE INDEX IF NOT EXISTS idx_meeting_reviews_analysis_queue ON meeting_reviews(analysis_status, updated_at ASC);
+CREATE INDEX IF NOT EXISTS idx_meeting_reviews_project_id ON meeting_reviews(project_id);
+CREATE INDEX IF NOT EXISTS idx_meeting_reviews_contact_id ON meeting_reviews(contact_id);
+CREATE INDEX IF NOT EXISTS idx_meeting_reviews_pmc_employee_id ON meeting_reviews(pmc_employee_id);
 ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS origin VARCHAR(40) NOT NULL DEFAULT 'manual';
 CREATE TABLE IF NOT EXISTS meeting_review_blockers (
   id UUID PRIMARY KEY,
@@ -466,3 +473,78 @@ CREATE TABLE IF NOT EXISTS meeting_review_ai_runs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_review_ai_runs_artifact ON meeting_review_ai_runs(artifact_id, created_at DESC);
+
+-- Directorio empresarial sincronizado desde Supabase (la fuente nunca se modifica).
+ALTER TABLE empleados ALTER COLUMN numero DROP NOT NULL;
+ALTER TABLE empleados ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+ALTER TABLE empleados ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ;
+ALTER TABLE empleados ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_empleados_email_unique ON empleados(email) WHERE email IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS clientes (
+  id VARCHAR(255) PRIMARY KEY,
+  nombre VARCHAR(255) NOT NULL,
+  apellido VARCHAR(255),
+  email VARCHAR(255),
+  telefono VARCHAR(255),
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  source_updated_at TIMESTAMPTZ,
+  synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_email_unique ON clientes(email) WHERE email IS NOT NULL;
+
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS cliente_id VARCHAR(255);
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS interiorista_id VARCHAR(255);
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS estado VARCHAR(80);
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS fecha_inicio DATE;
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS fecha_fin_estimada DATE;
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS fecha_fin_real DATE;
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS direccion TEXT;
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS ciudad VARCHAR(255);
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS activo BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ;
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS proyecto_asignaciones (
+  id VARCHAR(255) PRIMARY KEY,
+  proyecto_id VARCHAR(255) NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
+  empleado_id VARCHAR(255) NOT NULL REFERENCES empleados(id) ON DELETE CASCADE,
+  rol_en_proyecto VARCHAR(255),
+  origen VARCHAR(40) NOT NULL DEFAULT 'manual',
+  source_created_at TIMESTAMPTZ,
+  synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(proyecto_id, empleado_id, rol_en_proyecto)
+);
+CREATE INDEX IF NOT EXISTS idx_proyecto_asignaciones_proyecto ON proyecto_asignaciones(proyecto_id);
+CREATE INDEX IF NOT EXISTS idx_proyecto_asignaciones_empleado ON proyecto_asignaciones(empleado_id);
+
+CREATE TABLE IF NOT EXISTS directory_sync_runs (
+  id UUID PRIMARY KEY,
+  source VARCHAR(80) NOT NULL,
+  status VARCHAR(40) NOT NULL,
+  profiles_count INTEGER NOT NULL DEFAULT 0,
+  projects_count INTEGER NOT NULL DEFAULT 0,
+  assignments_count INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_directory_sync_runs_source_finished ON directory_sync_runs(source, finished_at DESC);
+
+ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS project_id VARCHAR(255);
+ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS responsible_id VARCHAR(255);
+ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS responsible_role VARCHAR(255);
+ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS match_confidence VARCHAR(20);
+CREATE INDEX IF NOT EXISTS idx_meeting_review_actions_project_id ON meeting_review_actions(project_id);
+CREATE INDEX IF NOT EXISTS idx_meeting_review_actions_responsible_id ON meeting_review_actions(responsible_id);
+CREATE TABLE IF NOT EXISTS meeting_review_action_responsibles (
+  action_id UUID NOT NULL REFERENCES meeting_review_actions(id) ON DELETE CASCADE,
+  employee_id VARCHAR(255) NOT NULL REFERENCES empleados(id) ON DELETE RESTRICT,
+  responsible_name VARCHAR(255) NOT NULL,
+  responsible_role VARCHAR(255),
+  match_confidence VARCHAR(20) NOT NULL DEFAULT 'high',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (action_id, employee_id)
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_action_responsibles_employee ON meeting_review_action_responsibles(employee_id);

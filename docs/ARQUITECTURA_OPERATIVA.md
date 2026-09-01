@@ -40,7 +40,7 @@ Backend Express ── PostgreSQL (superagente)
 | --- | --- |
 | Conversaciones | `chats`, `grupos`, `mensajes`, `grupo_participantes` |
 | IA y trazabilidad | `especialistas`, `analisis_ia`, `resumenes_chat`, `respuestas_chat`, `auditoria_respuestas`, `ceo_consultas` |
-| Organización | `usuarios`, `empleados`, `roles`, `usuario_rol`, `proyectos` |
+| Organización | `usuarios`, `empleados`, `clientes`, `roles`, `usuario_rol`, `proyectos`, `proyecto_asignaciones`, `directory_sync_runs` |
 | Extensión | `extension_invitations`, `extension_activations` |
 
 No borres tablas o mensajes manualmente. Para un reinicio controlado usa `docs/RESET_Y_DATOS.md` y realiza un respaldo antes.
@@ -52,6 +52,14 @@ No borres tablas o mensajes manualmente. Para un reinicio controlado usa `docs/R
 - Red: Nginx es el único servicio público. PostgreSQL, Evolution y backend se enlazan a `127.0.0.1`.
 - IA: `GOOGLE_GEMINI_API_KEY` nunca se expone al frontend o extensión. Los límites de mensajes y medios se configuran con `PENDING_CONTEXT_MESSAGE_LIMIT`, `SUMMARY_HISTORY_MAX_CHARS`, `MAX_MEDIA_ANALYSIS_ITEMS` y `MAX_MEDIA_ANALYSIS_BYTES`.
 
+## Directorio corporativo externo
+
+Cuando se configuran `SUPABASE_SOURCE_URL` y `SUPABASE_SOURCE_SECRET_KEY`, el backend consulta únicamente las rutas REST de lectura `profiles`, `proyectos` y `proyecto_miembros`. Copia perfiles, clientes, roles, proyectos y asignaciones a PostgreSQL local; nunca crea, actualiza ni borra registros en Supabase.
+
+- La clave se conserva exclusivamente en `backend/.env` local o `/etc/lyn/backend.env` en producción; no aparece en el dashboard, la extensión, el repositorio ni las respuestas de la API.
+- La primera sincronización se inicia al arrancar el backend y se repite mediante `SUPABASE_SYNC_INTERVAL_MS` (5 minutos por defecto). Backoffice permite disparar una sincronización manual y muestra el último resultado.
+- El análisis de reuniones consulta la copia local y entrega a Gemini solo candidatos mencionados en el documento. El servidor acepta los IDs de proyecto y responsable únicamente si pertenecen a esos candidatos, antes de persistirlos.
+- El origen sigue siendo la autoridad para sus roles y asignaciones sincronizadas. La base local conserva además su propia información histórica y operativa.
 ## Sincronización en vivo
 
 - El webhook de Evolution persiste cada evento entrante y lo publica por SSE de forma aislada por `account_id`; la extensión actualiza inmediatamente el chat afectado.

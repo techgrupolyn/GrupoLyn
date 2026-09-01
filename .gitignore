@@ -26,3 +26,5 @@ extension/dist/
 dy
 evolution-api/.npmrc
 evolution-api/settings.json
+
+.local-secrets/
