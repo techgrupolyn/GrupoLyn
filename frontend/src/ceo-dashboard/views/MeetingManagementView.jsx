@@ -131,6 +131,8 @@ export default function MeetingManagementView() {
   const [metrics, setMetrics] = useState({ pending: 0, awaiting: 0, unassigned: 0, no_project: 0 });
   const [loading, setLoading] = useState(true);
   const [retagging, setRetagging] = useState(false);
+  const [requeueing, setRequeueing] = useState(false);
+  const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
   const projects = useMemo(() => [...(directory?.projects || [])].sort((left, right) => String(left.nombre || '').localeCompare(String(right.nombre || ''), 'es')), [directory]);
