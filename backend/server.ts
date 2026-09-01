@@ -43,6 +43,7 @@ const GOOGLE_DRIVE_CLIENT_SECRET = process.env.GOOGLE_DRIVE_CLIENT_SECRET?.trim(
 const GOOGLE_DRIVE_OAUTH_REDIRECT_URI = process.env.GOOGLE_DRIVE_OAUTH_REDIRECT_URI?.trim() || (PUBLIC_APP_URL ? `${PUBLIC_APP_URL}/api/integrations/google-drive/oauth/callback` : '');
 const GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY = process.env.GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY?.trim() || '';
 const GOOGLE_DRIVE_SYNC_MAX_FILES = boundedInterval(process.env.GOOGLE_DRIVE_SYNC_MAX_FILES, 1_000, 10, 5_000);
+const GOOGLE_DRIVE_SYNC_INTERVAL_MS = boundedInterval(process.env.GOOGLE_DRIVE_SYNC_INTERVAL_MS, 60_000, 60_000, 60 * 60 * 1000);
 const GOOGLE_DRIVE_TEXT_MAX_CHARS = boundedInterval(process.env.GOOGLE_DRIVE_TEXT_MAX_CHARS, 200_000, 10_000, 500_000);
 const MEETING_AI_TEXT_MAX_CHARS = boundedInterval(process.env.MEETING_AI_TEXT_MAX_CHARS, 60_000, 10_000, 200_000);
 const MEETING_AI_ANALYSIS_INTERVAL_MS = boundedInterval(process.env.MEETING_AI_ANALYSIS_INTERVAL_MS, 20_000, 5_000, 5 * 60 * 1000);
@@ -1188,7 +1189,7 @@ async function listGoogleDriveFolderFiles(folderId: string, accessToken: string)
   return files;
 }
 
-async function syncGoogleDriveFolder(folderId: string): Promise<{ imported: number; updated: number; total: number }> {
+async function syncGoogleDriveFolderUnsafe(folderId: string): Promise<{ imported: number; updated: number; total: number }> {
   const { rows } = await pool.query<{
     id: string; connection_id: string; google_folder_id: string; enabled: boolean;
   }>(`SELECT id, connection_id, google_folder_id, enabled FROM google_drive_folders WHERE id = $1`, [folderId]);
@@ -1207,10 +1208,13 @@ async function syncGoogleDriveFolder(folderId: string): Promise<{ imported: numb
     for (const file of files) {
       const modifiedAt = file.modifiedTime ? new Date(file.modifiedTime) : null;
       const previousModifiedAt = existing.get(file.id);
-      const mustExtractText = canExtractGoogleDriveText(file.mimeType, file.name) && previousModifiedAt !== (modifiedAt?.toISOString() || '');
+      const sourceModifiedAt = modifiedAt?.toISOString() || '';
+      const isNew = !existing.has(file.id);
+      const sourceChanged = isNew || previousModifiedAt !== sourceModifiedAt;
+      if (!sourceChanged) continue;
+      const mustExtractText = canExtractGoogleDriveText(file.mimeType, file.name);
       const text = mustExtractText ? await readGoogleDriveText(file, accessToken) : { text: null, truncated: false };
       const artifactType = classifyGoogleDriveArtifact(file.mimeType, file.name);
-      const isNew = !existing.has(file.id);
       const artifactResult = await pool.query<{ id: string }>(
         `INSERT INTO google_drive_artifacts (
            id, connection_id, folder_id, google_file_id, name, mime_type, artifact_type, web_view_link,
@@ -1251,6 +1255,47 @@ async function syncGoogleDriveFolder(folderId: string): Promise<{ imported: numb
     await pool.query(`UPDATE google_drive_folders SET last_sync_error = $2, updated_at = NOW() WHERE id = $1`, [folder.id, message]);
     throw error;
   }
+}
+
+const googleDriveFolderSyncPromises = new Map<string, Promise<{ imported: number; updated: number; total: number }>>();
+
+async function syncGoogleDriveFolder(folderId: string): Promise<{ imported: number; updated: number; total: number }> {
+  const activeSync = googleDriveFolderSyncPromises.get(folderId);
+  if (activeSync) return activeSync;
+  const sync = syncGoogleDriveFolderUnsafe(folderId).finally(() => { googleDriveFolderSyncPromises.delete(folderId); });
+  googleDriveFolderSyncPromises.set(folderId, sync);
+  return sync;
+}
+
+type GoogleDriveAutoSyncResult = { folders: number; imported: number; updated: number; total: number; failed: number };
+let googleDriveFolderSyncPromise: Promise<GoogleDriveAutoSyncResult> | null = null;
+
+async function syncEnabledGoogleDriveFolders(): Promise<GoogleDriveAutoSyncResult> {
+  if (googleDriveFolderSyncPromise) return googleDriveFolderSyncPromise;
+  googleDriveFolderSyncPromise = (async () => {
+    const result: GoogleDriveAutoSyncResult = { folders: 0, imported: 0, updated: 0, total: 0, failed: 0 };
+    const { rows } = await pool.query<{ id: string }>(
+      'SELECT id FROM google_drive_folders WHERE enabled = TRUE ORDER BY created_at ASC',
+    );
+    result.folders = rows.length;
+    for (const folder of rows) {
+      try {
+        const synced = await syncGoogleDriveFolder(folder.id);
+        result.imported += synced.imported;
+        result.updated += synced.updated;
+        result.total += synced.total;
+      } catch (error) {
+        result.failed += 1;
+        console.error(`[google-drive] Error sincronizando carpeta ${folder.id}:`, (error as Error).message);
+      }
+    }
+    if (MEETING_AI_BACKGROUND_ANALYSIS_ENABLED && (result.imported > 0 || result.updated > 0)) {
+      void processPendingMeetingAnalyses();
+    }
+    publish('google-drive-sync', result);
+    return result;
+  })().finally(() => { googleDriveFolderSyncPromise = null; });
+  return googleDriveFolderSyncPromise;
 }
 
 function isPublicApiRoute(path: string): boolean {
@@ -4444,12 +4489,20 @@ export function meetingListFilters(dateFromValue: unknown, dateToValue: unknown,
   return { dateFrom, dateTo, recentDays, sort: sortInput as MeetingListFilters['sort'], error: null };
 }
 
+export function meetingDirectoryFilterId(value: unknown): string | null {
+  const raw = String(Array.isArray(value) ? value[0] || '' : value || '').trim();
+  return raw ? raw.slice(0, 255) : null;
+}
+
 app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => {
   try {
     const { page, pageSize, offset } = meetingListPagination(req.query.page, req.query.page_size);
     const listFilters = meetingListFilters(req.query.date_from, req.query.date_to, req.query.recent_days, req.query.sort);
     if (listFilters.error) return res.status(400).json({ error: listFilters.error });
     const search = String(req.query.q || '').trim().slice(0, 200);
+    const projectId = meetingDirectoryFilterId(req.query.project_id);
+    const pmcEmployeeId = meetingDirectoryFilterId(req.query.pmc_employee_id);
+    const contactId = meetingDirectoryFilterId(req.query.contact_id);
     const requestedFilter = String(req.query.filter || 'all').trim();
     const filter = ['all', 'mine', 'pending', 'approved'].includes(requestedFilter) ? requestedFilter : 'all';
     const artifacts = await pool.query<{ id: string }>(
@@ -4466,6 +4519,9 @@ app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => 
     if (filter === 'mine') where.push("r.workflow_stage = 'pmc'");
     if (filter === 'pending') where.push("r.status = 'pending'");
     if (filter === 'approved') where.push("r.status = 'approved'");
+    if (projectId) { parameters.push(projectId); where.push('r.project_id = $' + parameters.length); }
+    if (pmcEmployeeId) { parameters.push(pmcEmployeeId); where.push('r.pmc_employee_id = $' + parameters.length); }
+    if (contactId) { parameters.push(contactId); where.push('r.contact_id = $' + parameters.length); }
     if (listFilters.dateFrom) { parameters.push(listFilters.dateFrom); where.push('r.meeting_date >= $' + parameters.length + '::date'); }
     if (listFilters.dateTo) { parameters.push(listFilters.dateTo); where.push('r.meeting_date <= $' + parameters.length + '::date'); }
     if (listFilters.recentDays) { parameters.push(listFilters.recentDays); where.push('r.meeting_date >= CURRENT_DATE - ($' + parameters.length + '::int - 1)'); }
@@ -6701,6 +6757,12 @@ if (MEETING_AI_BACKGROUND_ANALYSIS_ENABLED) {
   }, MEETING_AI_ANALYSIS_INTERVAL_MS).unref();
 }
 
+if (isGoogleDriveConfigured() && process.env.NODE_ENV !== 'test') {
+  setInterval(() => {
+    void syncEnabledGoogleDriveFolders().catch((error) => console.error('[google-drive] Error de sincronización automática:', (error as Error).message));
+  }, GOOGLE_DRIVE_SYNC_INTERVAL_MS).unref();
+}
+
 if (SUPABASE_SYNC_ENABLED && process.env.NODE_ENV !== 'test') {
   setInterval(() => { void runSupabaseDirectorySync().catch((error) => console.error('[supabase-directory] Error:', (error as Error).message)); }, SUPABASE_SYNC_INTERVAL_MS).unref();
 }
@@ -6839,6 +6901,7 @@ app.post('/api/profile/privacy', async (req: Request, res: Response) => {
 async function bootstrap() {
   await ensureDatabaseSchema();
   if (SUPABASE_SYNC_ENABLED) void runSupabaseDirectorySync().catch((error) => console.error('[supabase-directory] Error inicial:', (error as Error).message));
+  if (isGoogleDriveConfigured()) void syncEnabledGoogleDriveFolders().catch((error) => console.error('[google-drive] Error inicial:', (error as Error).message));
   await backfillMeetingDates();
   if (MEETING_AI_BACKGROUND_ANALYSIS_ENABLED) void processPendingMeetingAnalyses();
   await loadSpecialistsFromDb();

@@ -6,7 +6,7 @@ La integración permite que administradores del Dashboard conecten una o varias 
 
 - Las grabaciones y audios permanecen en Google Drive y el Dashboard muestra un enlace al original.
 - Las transcripciones de Google Docs y archivos de texto compatibles se guardan hasta `GOOGLE_DRIVE_TEXT_MAX_CHARS` para consulta posterior.
-- Ningún vídeo, audio o documento se envía automáticamente al proveedor IA. El análisis IA requiere una función explícita posterior, con control de coste y auditoría.
+- Los vídeos y audios permanecen como referencias. Las transcripciones y documentos de texto nuevos o modificados se encolan para un único análisis automático, con auditoría y límite de contexto.
 
 ## Google Cloud
 
@@ -27,6 +27,7 @@ GOOGLE_DRIVE_CLIENT_SECRET=...
 GOOGLE_DRIVE_OAUTH_REDIRECT_URI=https://ceo.grupolyn.com/api/integrations/google-drive/oauth/callback
 GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY=...
 GOOGLE_DRIVE_SYNC_MAX_FILES=1000
+GOOGLE_DRIVE_SYNC_INTERVAL_MS=60000
 GOOGLE_DRIVE_TEXT_MAX_CHARS=200000
 MEETING_AI_TEXT_MAX_CHARS=60000
 MEETING_AI_ANALYSIS_INTERVAL_MS=20000
@@ -39,14 +40,14 @@ Genera `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` con:
 openssl rand -hex 32
 ```
 
-Tras desplegar, entra con `superadmin`, abre **Reuniones**, pulsa **Conectar Google Drive**, inicia sesión con la cuenta que tiene permiso de lector y registra cada carpeta por URL o ID. Ejecuta la primera sincronización manualmente y comprueba la lista de archivos importados.
+Tras desplegar, entra con `superadmin`, abre **Reuniones**, pulsa **Conectar Google Drive**, inicia sesión con la cuenta que tiene permiso de lector y registra cada carpeta por URL o ID. La primera sincronización comienza automáticamente y se repite cada `GOOGLE_DRIVE_SYNC_INTERVAL_MS`; el botón manual sirve para forzar una revisión inmediata.
 
 ## Operación segura
 
 - Usa una cuenta corporativa dedicada o con acceso únicamente a las carpetas de reuniones.
 - Comparte las carpetas con permiso **Lector**; nunca actives enlaces públicos.
 - Si una carpeta deja de ser necesaria, usa **Desactivar**: detiene sincronizaciones futuras sin borrar el historial ya importado.
-- La integración recorre subcarpetas, deduplica por ID de archivo de Google Drive y vuelve a extraer texto únicamente cuando el archivo cambia.
+- La integración recorre subcarpetas, deduplica por ID de archivo de Google Drive y consulta cada carpeta activa cada 60 segundos por defecto. Solo guarda y extrae de nuevo archivos nuevos o modificados.
 
 ## Identificación y nomenclatura
 

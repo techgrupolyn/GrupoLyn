@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveMeetingDate, deriveMeetingIdentity, formatMeetingName, meetingApprovalBlockers, meetingListFilters, meetingListPagination, normalizeMeetingAiAnalysis, parseMeetingAiAnalysis, resolveMeetingActionTags, resolveMeetingDirectoryReferences } from '../server.ts';
+import { deriveMeetingDate, deriveMeetingIdentity, formatMeetingName, meetingApprovalBlockers, meetingDirectoryFilterId, meetingListFilters, meetingListPagination, normalizeMeetingAiAnalysis, parseMeetingAiAnalysis, resolveMeetingActionTags, resolveMeetingDirectoryReferences } from '../server.ts';
 
 describe('Flujo de aprobación de reuniones', () => {
   it('normaliza límites de paginación para reuniones', () => {
@@ -13,6 +13,12 @@ describe('Flujo de aprobación de reuniones', () => {
     expect(meetingListFilters('2026-02-30', '', '', 'recent').error).toContain('calendario');
     expect(meetingListFilters('', '', '15', 'recent').error).toContain('7, 30 o 90');
   });
+  it('normaliza identificadores de filtros de directorio', () => {
+    expect(meetingDirectoryFilterId([' proyecto-1 ', 'ignorar'])).toBe('proyecto-1');
+    expect(meetingDirectoryFilterId('')).toBeNull();
+    expect(meetingDirectoryFilterId('x'.repeat(300))).toHaveLength(255);
+  });
+
   it('bloquea solo acciones pendientes sin responsable y conserva la fecha como aviso opcional', () => {
     expect(meetingApprovalBlockers([
       { status: 'pending', responsible: '', due_date: null },
