@@ -1,7 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { CeoLogin, hasUsableCeoToken, initialDashboardView, isCeoView, shouldPollWhatsappConnection, shouldShowCeoDashboard, shouldShowCeoLogin } from './ceo-dashboard/CeoLogin';
 import api from './api';
-const CEOApp = lazy(() => import('./ceo-dashboard/App'));
+import { importWithChunkRecovery } from './chunkRecovery';
+const CEOApp = lazy(() => importWithChunkRecovery(() => import('./ceo-dashboard/App')));
 
 const API_BASE = import.meta.env.VITE_API_ORIGIN || '';
 const SSE_BASE = import.meta.env.VITE_API_ORIGIN || '/api';

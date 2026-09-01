@@ -45,8 +45,10 @@ run_as_lyn env NODE_OPTIONS=--max-old-space-size=1536 npm run build
 cd "$ROOT/frontend"
 run_as_lyn npm ci
 run_as_lyn npm run build
-install -d -o lyn -g lyn -m 0755 /var/www/lyn/dashboard
-rsync -a --delete --chown=lyn:lyn dist/ /var/www/lyn/dashboard/
+install -d -o lyn -g lyn -m 0755 /var/www/lyn/dashboard/assets
+rsync -a --delete --exclude='assets/' --chown=lyn:lyn dist/ /var/www/lyn/dashboard/
+rsync -a --chown=lyn:lyn dist/assets/ /var/www/lyn/dashboard/assets/
+find /var/www/lyn/dashboard/assets -type f -mtime +30 -delete
 
 systemctl daemon-reload
 
