@@ -99,11 +99,11 @@ export const api = {
     update: (id, payload) => request(/whatsapp-accounts/, { method: 'PATCH', body: JSON.stringify(payload) }),
   },
   meetings: {
-    list: ({ page = 1, pageSize = 25, q = '', filter = 'all', dateFrom = '', dateTo = '', recentDays = '', sort = 'recent', projectId = '', pmcEmployeeId = '', contactId = '', role = '' } = {}) => {
+    list: ({ page = 1, pageSize = 25, q = '', filter = 'all', dateFrom = '', dateTo = '', recentDays = '', sort = 'recent', projectId = '', pmc = '', contactId = '', role = '' } = {}) => {
       const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), filter, sort });
       if (q) params.set('q', q);
       if (projectId) params.set('project_id', projectId);
-      if (pmcEmployeeId) params.set('pmc_employee_id', pmcEmployeeId);
+      if (pmc) params.set('pmc', pmc);
       if (contactId) params.set('contact_id', contactId);
       if (role) params.set('role', role);
       if (dateFrom) params.set('date_from', dateFrom);
@@ -111,10 +111,12 @@ export const api = {
       if (recentDays) params.set('recent_days', String(recentDays));
       return request(`/meetings?${params.toString()}`);
     },
+    filterOptions: () => request('/meetings/filter-options'),
     get: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}`),
     update: (artifactId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
     analyze: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}/analyze`, { method: 'POST' }),
     retag: () => request('/meetings/retag', { method: 'POST' }),
+    reanalyzeMissingPmc: () => request('/meetings/reanalyze-missing-pmc', { method: 'POST' }),
     addAction: (artifactId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions`, { method: 'POST', body: JSON.stringify(payload) }),
     updateAction: (artifactId, actionId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
     deleteAction: (artifactId, actionId) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}`, { method: 'DELETE' }),

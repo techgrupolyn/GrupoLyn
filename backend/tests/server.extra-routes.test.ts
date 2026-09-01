@@ -30,6 +30,11 @@ describe('Server - seguridad CEO', () => {
     expect(res.body.error).toMatch(/obligatorios/i);
   });
 
+  it('protege el reanálisis masivo de PMC con sesión CEO', async () => {
+    const res = await client.post('/api/meetings/reanalyze-missing-pmc').send({});
+    expect(res.status).toBe(401);
+  });
+
   it('protege métricas CEO cuando no se presenta una sesión firmada', async () => {
     const res = await client.get('/api/ceo/metrics');
     expect(res.status).toBe(401);

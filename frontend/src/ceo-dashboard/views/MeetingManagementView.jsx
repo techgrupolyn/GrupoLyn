@@ -96,6 +96,7 @@ function MeetingDrawer({ meeting, onClose, onChanged }) {
     <div className="flex items-start justify-between gap-4 border-b border-[#2E2E2E] bg-[#141414] px-4 py-4"><div className="min-w-0"><h2 className="truncate text-sm font-semibold text-[#F2F2F2]">{meeting.name}</h2><div className="mt-2 flex flex-wrap gap-2 text-[10px] text-[#737373]"><span>Reunión: {formatMeetingDate(draft.meeting_date)}</span><span className={`rounded border px-1.5 py-0.5 ${draft.analysis_status === 'completed' ? 'border-emerald-300/30 text-emerald-200' : draft.analysis_status === 'failed' ? 'border-red-300/30 text-red-200' : 'border-amber-300/30 text-amber-200'}`}>{analysisStatusLabel(draft.analysis_status)}</span><span className="rounded border border-[#2E2E2E] px-1.5 py-0.5">{meetingKindLabel(draft.meeting_kind)}</span><span className="rounded border border-[#2E2E2E] px-1.5 py-0.5">PMC a cargo: {draft.pmc || 'Pendiente'}</span></div></div><button type="button" onClick={onClose} className="rounded p-1 text-[#737373] hover:text-[#F2F2F2]" aria-label="Cerrar">✕</button></div>
     <div className="flex-1 overflow-y-auto p-4"><div className="mb-5 flex items-center justify-between gap-3"><p className="font-mono text-[10px] uppercase tracking-[0.13em] text-[#737373]">Cadena de revisión</p><div className="flex items-center gap-3"><button type="button" onClick={analyze} disabled={busy === 'analyze' || draft.analysis_status === 'processing' || dirty} className="rounded border border-sky-300/40 bg-sky-300/10 px-2.5 py-1.5 text-[10px] font-medium text-sky-100 hover:border-sky-300 disabled:opacity-40">{busy === 'analyze' ? 'Analizando documento…' : draft.analysis_status === 'completed' ? 'Regenerar análisis' : draft.analysis_status === 'processing' ? 'Análisis en curso' : 'Analizar ahora'}</button><WorkflowDots stage={draft.workflow_stage} /></div></div>
       {error && <p role="alert" className="mb-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}
+    {notice && <p role="status" className="mb-4 rounded border border-sky-300/30 bg-sky-300/[0.08] p-3 text-xs text-sky-100">{notice}</p>}
       {draft.analysis_status === 'failed' && <p className="mb-4 rounded border border-amber-300/40 bg-amber-300/[0.08] p-3 text-xs text-amber-100">{draft.analysis_error || 'El análisis automático no pudo completarse. Puedes reintentarlo.'}</p>}
       <section className="mb-5 rounded border border-[#2E2E2E] bg-[#141414] p-3"><div className="mb-3 flex items-center justify-between"><p className="font-mono text-[10px] uppercase tracking-[0.13em] text-[#737373]">Identificación de reunión</p><button type="button" onClick={save} disabled={busy === 'meeting'} className="text-[11px] text-sky-300 hover:text-sky-200">{busy === 'meeting' ? 'Guardando…' : 'Guardar datos'}</button></div><div className="grid gap-2 sm:grid-cols-2"><label className="text-[10px] text-[#737373]">Tipo<select value={draft.meeting_kind || 'MEET'} onChange={(event) => setDraftValue('meeting_kind', event.target.value)} className="mt-1 h-8 w-full rounded border border-[#2E2E2E] bg-[#0D0D0D] px-2 text-xs text-[#F2F2F2] outline-none"><option value="COMITE_OBRA">Comité de obra</option><option value="REUNION_CLIENTE">Reunión cliente</option><option value="MEET">Reunión</option></select></label><label className="text-[10px] text-[#737373]">PMC a cargo<input value={draft.pmc || ''} onChange={(event) => setDraftValue('pmc', event.target.value)} placeholder="Nombre del PMC a cargo" className="mt-1 h-8 w-full rounded border border-[#2E2E2E] bg-[#0D0D0D] px-2 text-xs text-[#F2F2F2] outline-none" /></label><label className="text-[10px] text-[#737373]">Obra<input value={draft.project_name || ''} onChange={(event) => setDraftValue('project_name', event.target.value)} placeholder="Obra o proyecto" className="mt-1 h-8 w-full rounded border border-[#2E2E2E] bg-[#0D0D0D] px-2 text-xs text-[#F2F2F2] outline-none" /></label><label className="text-[10px] text-[#737373]">Contacto<input value={draft.contact_name || ''} onChange={(event) => setDraftValue('contact_name', event.target.value)} placeholder="Cliente o contacto" className="mt-1 h-8 w-full rounded border border-[#2E2E2E] bg-[#0D0D0D] px-2 text-xs text-[#F2F2F2] outline-none" /></label><label className="text-[10px] text-[#737373]">Fecha de reunión<input type="date" value={draft.meeting_date || ''} onChange={(event) => setDraftValue('meeting_date', event.target.value)} className="mt-1 h-8 w-full rounded border border-[#2E2E2E] bg-[#0D0D0D] px-2 text-xs text-[#F2F2F2] outline-none" /></label></div>{(draft.project_id || draft.contact_id || draft.pmc_employee_id) && <div className="mt-3 flex flex-wrap gap-1.5 text-[10px]">{draft.project_id && <span className="rounded border border-emerald-300/35 bg-emerald-300/[0.08] px-1.5 py-1 text-emerald-100">✓ Proyecto vinculado</span>}{draft.contact_id && <span className="rounded border border-emerald-300/35 bg-emerald-300/[0.08] px-1.5 py-1 text-emerald-100">✓ Cliente vinculado</span>}{draft.pmc_employee_id && <span className="rounded border border-emerald-300/35 bg-emerald-300/[0.08] px-1.5 py-1 text-emerald-100">✓ PMC vinculado</span>}</div>}{meeting.source_name && <p className="mt-3 truncate font-mono text-[10px] text-[#737373]">Archivo fuente: {meeting.source_name}</p>}</section>
       <section><div className="mb-2 flex items-center justify-between"><p className="font-mono text-[10px] uppercase tracking-[0.13em] text-[#737373]">Resumen <span className="normal-case tracking-normal">con referencias de minuto cuando existan</span></p><button type="button" onClick={save} disabled={busy === 'meeting'} className="text-[11px] text-sky-300 hover:text-sky-200">{busy === 'meeting' ? 'Guardando…' : 'Guardar'}</button></div><textarea value={draft.summary || ''} onChange={(event) => setDraftValue('summary', event.target.value)} rows="6" className="w-full ceo-surface rounded border border-[#2E2E2E] bg-[#141414] p-3 text-xs leading-5 text-[#D4D4D4] outline-none" /></section>
@@ -116,7 +117,8 @@ export default function MeetingManagementView() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const [projectId, setProjectId] = useState('');
-  const [pmcEmployeeId, setPmcEmployeeId] = useState('');
+  const [pmc, setPmc] = useState('');
+  const [detectedPmcs, setDetectedPmcs] = useState([]);
   const [contactId, setContactId] = useState('');
   const [role, setRole] = useState('');
   const [dateFrom, setDateFrom] = useState('');
@@ -132,7 +134,7 @@ export default function MeetingManagementView() {
   const [error, setError] = useState('');
 
   const projects = useMemo(() => [...(directory?.projects || [])].sort((left, right) => String(left.nombre || '').localeCompare(String(right.nombre || ''), 'es')), [directory]);
-  const pmcs = useMemo(() => (directory?.employees || []).filter((employee) => (employee.roles || []).some((role) => roleTheme(role).key === 'pmc' || /\bpmc\b/i.test(String(role)))).sort((left, right) => [left.nombre, left.apellido].filter(Boolean).join(' ').localeCompare([right.nombre, right.apellido].filter(Boolean).join(' '), 'es')), [directory]);
+
   const contacts = useMemo(() => [...(directory?.clients || [])].sort((left, right) => [left.nombre, left.apellido].filter(Boolean).join(' ').localeCompare([right.nombre, right.apellido].filter(Boolean).join(' '), 'es')), [directory]);
   const roles = useMemo(() => Array.from(new Set((directory?.employees || []).flatMap((employee) => employee.roles || []).map((item) => String(item || '').trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right, 'es')), [directory]);
   const nameOf = (person) => [person?.nombre, person?.apellido].filter(Boolean).join(' ').trim() || 'Sin nombre';
@@ -141,8 +143,12 @@ export default function MeetingManagementView() {
     setLoading(true);
     setError('');
     try {
-      const result = await api.meetings.list({ page: targetPage, pageSize: 25, q: query, filter, projectId, pmcEmployeeId, contactId, role, dateFrom, dateTo, recentDays, sort });
+      const [result, options] = await Promise.all([
+        api.meetings.list({ page: targetPage, pageSize: 25, q: query, filter, projectId, pmc, contactId, role, dateFrom, dateTo, recentDays, sort }),
+        api.meetings.filterOptions().catch(() => null),
+      ]);
       setMeetings(result.items || []);
+      if (options) setDetectedPmcs(options.pmcs || []);
       setPagination({ page: result.page || targetPage, pageSize: result.pageSize || 25, total: result.total || 0, totalPages: result.totalPages || 0 });
       setMetrics(result.metrics || { pending: 0, awaiting: 0, unassigned: 0, no_project: 0 });
     } catch (requestError) {
@@ -154,12 +160,13 @@ export default function MeetingManagementView() {
 
   useEffect(() => {
     void api.directory.overview().then((result) => setDirectory(result || null)).catch(() => setDirectory({ employees: [], clients: [], projects: [] }));
+    void api.meetings.filterOptions().then((result) => setDetectedPmcs(result?.pmcs || [])).catch(() => setDetectedPmcs([]));
   }, []);
   useEffect(() => {
     void load(page);
     const timer = window.setInterval(() => { void load(page); }, 15_000);
     return () => window.clearInterval(timer);
-  }, [page, query, filter, projectId, pmcEmployeeId, contactId, role, dateFrom, dateTo, recentDays, sort]);
+  }, [page, query, filter, projectId, pmc, contactId, role, dateFrom, dateTo, recentDays, sort]);
   useEffect(() => {
     if (!selected?.id) return undefined;
     const timer = window.setInterval(() => { void api.meetings.get(selected.id).then(setSelected).catch(() => undefined); }, 15_000);
@@ -168,18 +175,32 @@ export default function MeetingManagementView() {
 
   const open = async (id) => { try { setSelected(await api.meetings.get(id)); } catch (requestError) { setError(requestError.message); } };
   const refreshSelected = async (id) => { const detail = await api.meetings.get(id); setSelected(detail); await load(); };
-  const retag = async () => { setRetagging(true); setError(''); try { await api.meetings.retag(); await load(); if (selected?.id) setSelected(await api.meetings.get(selected.id)); } catch (requestError) { setError(requestError.body || requestError.message || 'No se pudieron vincular las reuniones con el directorio.'); } finally { setRetagging(false); } };
-  const clearFilters = () => { setProjectId(''); setPmcEmployeeId(''); setContactId(''); setRole(''); setDateFrom(''); setDateTo(''); setRecentDays(''); setCustomDate(false); setSort('recent'); setPage(1); };
-  const filtersActive = Boolean(projectId || pmcEmployeeId || contactId || role || dateFrom || dateTo || recentDays || customDate || sort !== 'recent');
+  const retag = async () => { setRetagging(true); setError(''); setNotice(''); try { await api.meetings.retag(); await load(); if (selected?.id) setSelected(await api.meetings.get(selected.id)); } catch (requestError) { setError(requestError.body || requestError.message || 'No se pudieron vincular las reuniones con el directorio.'); } finally { setRetagging(false); } };
+  const reanalyzeMissingPmc = async () => {
+    if (!window.confirm('Se reenviarán a IA únicamente las reuniones con PMC pendiente de extraer. El procesamiento será gradual para controlar el coste. ¿Continuar?')) return;
+    setRequeueing(true); setError(''); setNotice('');
+    try {
+      const result = await api.meetings.reanalyzeMissingPmc();
+      setNotice(result?.queued ? `${result.queued} reuniones sin PMC se encolaron para análisis.` : 'No hay reuniones con PMC pendiente de extraer.');
+      await load();
+    } catch (requestError) {
+      setError(requestError.body || requestError.message || 'No se pudieron reenviar las reuniones sin PMC.');
+    } finally {
+      setRequeueing(false);
+    }
+  };
+  const clearFilters = () => { setProjectId(''); setPmc(''); setContactId(''); setRole(''); setDateFrom(''); setDateTo(''); setRecentDays(''); setCustomDate(false); setSort('recent'); setPage(1); };
+  const filtersActive = Boolean(projectId || pmc || contactId || role || dateFrom || dateTo || recentDays || customDate || sort !== 'recent');
   const pageStart = pagination.total ? ((pagination.page - 1) * pagination.pageSize) + 1 : 0;
   const pageEnd = pagination.total ? Math.min(pagination.page * pagination.pageSize, pagination.total) : 0;
 
   return <section className="ceo-page p-4 sm:p-6 xl:p-8">
     <div className="mb-5 flex flex-col gap-3 border-b border-[#2E2E2E] pb-5 lg:flex-row lg:items-end lg:justify-between">
       <div><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#737373]">Agente de reuniones</p><h2 className="mt-1 text-xl font-semibold tracking-tight text-[#F2F2F2]">Gestión de reuniones</h2><p className="mt-1 text-xs text-[#737373]">Revisá y aprobá los borradores operativos importados desde Google Drive.</p></div>
-      <div className="flex gap-2"><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Buscar contacto, teléfono, email u obra…" className="h-9 w-72 max-w-full ceo-surface rounded border border-[#2E2E2E] bg-[#141414] px-3 text-xs text-[#F2F2F2] outline-none" /><button type="button" onClick={retag} disabled={retagging} className="h-9 rounded border border-emerald-300/35 bg-emerald-300/[0.08] px-3 text-xs font-medium text-emerald-100 hover:border-emerald-300 disabled:opacity-40">{retagging ? 'Vinculando…' : 'Vincular directorio'}</button></div>
+      <div className="flex flex-wrap gap-2"><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Buscar contacto, teléfono, email u obra…" className="h-9 w-72 max-w-full ceo-surface rounded border border-[#2E2E2E] bg-[#141414] px-3 text-xs text-[#F2F2F2] outline-none" /><button type="button" onClick={reanalyzeMissingPmc} disabled={requeueing} className="h-9 rounded border border-amber-300/35 bg-amber-300/[0.08] px-3 text-xs font-medium text-amber-100 hover:border-amber-300 disabled:opacity-40">{requeueing ? 'Encolando PMC…' : 'Reanalizar PMC pendientes'}</button><button type="button" onClick={retag} disabled={retagging} className="h-9 rounded border border-emerald-300/35 bg-emerald-300/[0.08] px-3 text-xs font-medium text-emerald-100 hover:border-emerald-300 disabled:opacity-40">{retagging ? 'Vinculando…' : 'Vincular directorio'}</button></div>
     </div>
     {error && <p role="alert" className="mb-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}
+    {notice && <p role="status" className="mb-4 rounded border border-sky-300/30 bg-sky-300/[0.08] p-3 text-xs text-sky-100">{notice}</p>}
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{[{ label: 'En cadena de revisión', value: Number(metrics.pending || 0) }, { label: 'Esperan tu revisión', value: Number(metrics.awaiting || 0) }, { label: 'Acciones sin responsable vinculado', value: Number(metrics.unassigned || 0) }, { label: 'Sin obra vinculada', value: Number(metrics.no_project || 0) }].map((metric) => <div key={metric.label} className="dashboard-metric-card rounded-md border border-[#2E2E2E] bg-[#141414] p-4"><p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#737373]">{metric.label}</p><p className="mt-1 text-2xl font-semibold text-[#F2F2F2]">{metric.value}</p></div>)}</div>
     <div className="mt-5 overflow-hidden rounded-md border border-[#2E2E2E] bg-[#141414]">
       <div className="border-b border-[#2E2E2E] px-3 py-3">
@@ -187,7 +208,7 @@ export default function MeetingManagementView() {
           {[['all', 'Todo'], ['mine', 'Mi turno'], ['pending', 'Pendientes'], ['approved', 'Aprobadas']].map(([key, label]) => <button key={key} type="button" onClick={() => { setFilter(key); setPage(1); }} className={`dashboard-filter-tab rounded px-3 py-1.5 text-xs ${filter === key ? 'is-active bg-[#2E2E2E] text-[#F2F2F2]' : 'text-[#737373]'}`}>{label}</button>)}
           <span className="mx-1 hidden h-6 w-px bg-[#2E2E2E] sm:block" />
           <select aria-label="Filtrar por proyecto" value={projectId} onChange={(event) => { setProjectId(event.target.value); setPage(1); }} className="h-8 max-w-52 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#BFBFBF] outline-none hover:border-amber-300/50"><option value="">Proyecto</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.nombre}</option>)}</select>
-          <select aria-label="Filtrar por PMC" value={pmcEmployeeId} onChange={(event) => { setPmcEmployeeId(event.target.value); setPage(1); }} className="h-8 max-w-48 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#BFBFBF] outline-none hover:border-sky-300/50"><option value="">PMC</option>{pmcs.map((employee) => <option key={employee.id} value={employee.id}>{nameOf(employee)}</option>)}</select>
+          <select aria-label="Filtrar por PMC detectado" value={pmc} onChange={(event) => { setPmc(event.target.value); setPage(1); }} className="h-8 max-w-52 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#BFBFBF] outline-none hover:border-sky-300/50"><option value="">PMC detectado</option>{detectedPmcs.map((item) => <option key={item} value={item}>{item}</option>)}</select>
           <select aria-label="Filtrar por rol" value={role} onChange={(event) => { setRole(event.target.value); setPage(1); }} className="h-8 max-w-48 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#BFBFBF] outline-none hover:border-violet-300/50"><option value="">Rol</option>{roles.map((item) => <option key={item} value={item}>{roleLabel(item)}</option>)}</select>
           <select aria-label="Filtrar por contacto" value={contactId} onChange={(event) => { setContactId(event.target.value); setPage(1); }} className="h-8 max-w-52 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#BFBFBF] outline-none hover:border-emerald-300/50"><option value="">Contacto</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{nameOf(contact)}</option>)}</select>
           <span className="mx-1 hidden h-6 w-px bg-[#2E2E2E] md:block" />
