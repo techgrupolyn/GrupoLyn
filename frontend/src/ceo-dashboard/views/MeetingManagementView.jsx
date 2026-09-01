@@ -118,6 +118,7 @@ export default function MeetingManagementView() {
   const [projectId, setProjectId] = useState('');
   const [pmcEmployeeId, setPmcEmployeeId] = useState('');
   const [contactId, setContactId] = useState('');
+  const [role, setRole] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [recentDays, setRecentDays] = useState('');
@@ -133,13 +134,14 @@ export default function MeetingManagementView() {
   const projects = useMemo(() => [...(directory?.projects || [])].sort((left, right) => String(left.nombre || '').localeCompare(String(right.nombre || ''), 'es')), [directory]);
   const pmcs = useMemo(() => (directory?.employees || []).filter((employee) => (employee.roles || []).some((role) => roleTheme(role).key === 'pmc' || /\bpmc\b/i.test(String(role)))).sort((left, right) => [left.nombre, left.apellido].filter(Boolean).join(' ').localeCompare([right.nombre, right.apellido].filter(Boolean).join(' '), 'es')), [directory]);
   const contacts = useMemo(() => [...(directory?.clients || [])].sort((left, right) => [left.nombre, left.apellido].filter(Boolean).join(' ').localeCompare([right.nombre, right.apellido].filter(Boolean).join(' '), 'es')), [directory]);
+  const roles = useMemo(() => Array.from(new Set((directory?.employees || []).flatMap((employee) => employee.roles || []).map((item) => String(item || '').trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right, 'es')), [directory]);
   const nameOf = (person) => [person?.nombre, person?.apellido].filter(Boolean).join(' ').trim() || 'Sin nombre';
 
   const load = async (targetPage = page) => {
     setLoading(true);
     setError('');
     try {
-      const result = await api.meetings.list({ page: targetPage, pageSize: 25, q: query, filter, projectId, pmcEmployeeId, contactId, dateFrom, dateTo, recentDays, sort });
+      const result = await api.meetings.list({ page: targetPage, pageSize: 25, q: query, filter, projectId, pmcEmployeeId, contactId, role, dateFrom, dateTo, recentDays, sort });
       setMeetings(result.items || []);
       setPagination({ page: result.page || targetPage, pageSize: result.pageSize || 25, total: result.total || 0, totalPages: result.totalPages || 0 });
       setMetrics(result.metrics || { pending: 0, awaiting: 0, unassigned: 0, no_project: 0 });
@@ -157,7 +159,7 @@ export default function MeetingManagementView() {
     void load(page);
     const timer = window.setInterval(() => { void load(page); }, 15_000);
     return () => window.clearInterval(timer);
-  }, [page, query, filter, projectId, pmcEmployeeId, contactId, dateFrom, dateTo, recentDays, sort]);
+  }, [page, query, filter, projectId, pmcEmployeeId, contactId, role, dateFrom, dateTo, recentDays, sort]);
   useEffect(() => {
     if (!selected?.id) return undefined;
     const timer = window.setInterval(() => { void api.meetings.get(selected.id).then(setSelected).catch(() => undefined); }, 15_000);
@@ -167,8 +169,8 @@ export default function MeetingManagementView() {
   const open = async (id) => { try { setSelected(await api.meetings.get(id)); } catch (requestError) { setError(requestError.message); } };
   const refreshSelected = async (id) => { const detail = await api.meetings.get(id); setSelected(detail); await load(); };
   const retag = async () => { setRetagging(true); setError(''); try { await api.meetings.retag(); await load(); if (selected?.id) setSelected(await api.meetings.get(selected.id)); } catch (requestError) { setError(requestError.body || requestError.message || 'No se pudieron vincular las reuniones con el directorio.'); } finally { setRetagging(false); } };
-  const clearFilters = () => { setProjectId(''); setPmcEmployeeId(''); setContactId(''); setDateFrom(''); setDateTo(''); setRecentDays(''); setCustomDate(false); setSort('recent'); setPage(1); };
-  const filtersActive = Boolean(projectId || pmcEmployeeId || contactId || dateFrom || dateTo || recentDays || customDate || sort !== 'recent');
+  const clearFilters = () => { setProjectId(''); setPmcEmployeeId(''); setContactId(''); setRole(''); setDateFrom(''); setDateTo(''); setRecentDays(''); setCustomDate(false); setSort('recent'); setPage(1); };
+  const filtersActive = Boolean(projectId || pmcEmployeeId || contactId || role || dateFrom || dateTo || recentDays || customDate || sort !== 'recent');
   const pageStart = pagination.total ? ((pagination.page - 1) * pagination.pageSize) + 1 : 0;
   const pageEnd = pagination.total ? Math.min(pagination.page * pagination.pageSize, pagination.total) : 0;
 
@@ -186,6 +188,7 @@ export default function MeetingManagementView() {
           <span className="mx-1 hidden h-6 w-px bg-[#2E2E2E] sm:block" />
           <select aria-label="Filtrar por proyecto" value={projectId} onChange={(event) => { setProjectId(event.target.value); setPage(1); }} className="h-8 max-w-52 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#BFBFBF] outline-none hover:border-amber-300/50"><option value="">Proyecto</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.nombre}</option>)}</select>
           <select aria-label="Filtrar por PMC" value={pmcEmployeeId} onChange={(event) => { setPmcEmployeeId(event.target.value); setPage(1); }} className="h-8 max-w-48 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#BFBFBF] outline-none hover:border-sky-300/50"><option value="">PMC</option>{pmcs.map((employee) => <option key={employee.id} value={employee.id}>{nameOf(employee)}</option>)}</select>
+          <select aria-label="Filtrar por rol" value={role} onChange={(event) => { setRole(event.target.value); setPage(1); }} className="h-8 max-w-48 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#BFBFBF] outline-none hover:border-violet-300/50"><option value="">Rol</option>{roles.map((item) => <option key={item} value={item}>{roleLabel(item)}</option>)}</select>
           <select aria-label="Filtrar por contacto" value={contactId} onChange={(event) => { setContactId(event.target.value); setPage(1); }} className="h-8 max-w-52 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#BFBFBF] outline-none hover:border-emerald-300/50"><option value="">Contacto</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{nameOf(contact)}</option>)}</select>
           <span className="mx-1 hidden h-6 w-px bg-[#2E2E2E] md:block" />
           <select aria-label="Filtrar por fecha" value={customDate ? 'custom' : recentDays} onChange={(event) => { const value = event.target.value; setCustomDate(value === 'custom'); setRecentDays(value === 'custom' ? '' : value); if (value !== 'custom') { setDateFrom(''); setDateTo(''); } setPage(1); }} className="h-8 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#BFBFBF] outline-none hover:border-sky-300/50"><option value="">Fecha</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="custom">Rango de fechas…</option></select>

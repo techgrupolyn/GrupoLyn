@@ -4503,6 +4503,7 @@ app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => 
     const projectId = meetingDirectoryFilterId(req.query.project_id);
     const pmcEmployeeId = meetingDirectoryFilterId(req.query.pmc_employee_id);
     const contactId = meetingDirectoryFilterId(req.query.contact_id);
+    const role = meetingDirectoryFilterId(req.query.role);
     const requestedFilter = String(req.query.filter || 'all').trim();
     const filter = ['all', 'mine', 'pending', 'approved'].includes(requestedFilter) ? requestedFilter : 'all';
     const artifacts = await pool.query<{ id: string }>(
@@ -4522,6 +4523,15 @@ app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => 
     if (projectId) { parameters.push(projectId); where.push('r.project_id = $' + parameters.length); }
     if (pmcEmployeeId) { parameters.push(pmcEmployeeId); where.push('r.pmc_employee_id = $' + parameters.length); }
     if (contactId) { parameters.push(contactId); where.push('r.contact_id = $' + parameters.length); }
+    if (role) {
+      parameters.push(role);
+      const placeholder = '$' + parameters.length;
+      where.push(`(
+        EXISTS (SELECT 1 FROM usuario_rol pmc_link INNER JOIN roles pmc_role ON pmc_role.id = pmc_link.rol_id WHERE pmc_link.empleado_id = r.pmc_employee_id AND LOWER(TRIM(pmc_role.nombre)) = LOWER(TRIM(${placeholder})))
+        OR EXISTS (SELECT 1 FROM meeting_review_actions role_action WHERE role_action.artifact_id = r.artifact_id AND LOWER(TRIM(COALESCE(role_action.responsible_role, ''))) = LOWER(TRIM(${placeholder})))
+        OR EXISTS (SELECT 1 FROM meeting_review_action_responsibles action_responsible WHERE action_responsible.action_id IN (SELECT id FROM meeting_review_actions WHERE artifact_id = r.artifact_id) AND LOWER(TRIM(COALESCE(action_responsible.responsible_role, ''))) = LOWER(TRIM(${placeholder})))
+      )`);
+    }
     if (listFilters.dateFrom) { parameters.push(listFilters.dateFrom); where.push('r.meeting_date >= $' + parameters.length + '::date'); }
     if (listFilters.dateTo) { parameters.push(listFilters.dateTo); where.push('r.meeting_date <= $' + parameters.length + '::date'); }
     if (listFilters.recentDays) { parameters.push(listFilters.recentDays); where.push('r.meeting_date >= CURRENT_DATE - ($' + parameters.length + '::int - 1)'); }
