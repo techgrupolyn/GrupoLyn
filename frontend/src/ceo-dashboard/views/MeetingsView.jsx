@@ -244,6 +244,7 @@ export default function MeetingsView({ mode = 'operations' }) {
           <MetricCard label="Media en Drive" value={summary.mediaItems} detail="Audios y grabaciones no se envían a IA" tone="muted" />
         </div>
 
+        {!isConfiguration && <>
         <div className="mt-5 overflow-hidden rounded-md border border-[#2E2E2E] bg-[#141414]">
           <div className="flex flex-col gap-3 border-b border-[#2E2E2E] p-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap gap-1.5">
@@ -284,6 +285,8 @@ export default function MeetingsView({ mode = 'operations' }) {
           </div>
           <p className="border-t border-[#2E2E2E] px-3 py-2 text-[11px] text-[#737373]">Mostrando {filteredArtifacts.length} de {artifacts.length} archivos. Los documentos se ordenan por su última modificación en Google Drive.</p>
         </div>
+
+        </>}
 
         {isConfiguration && <div className="mt-5 rounded-md border border-[#2E2E2E] bg-[#141414]">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#2E2E2E] px-4 py-3">

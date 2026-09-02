@@ -5,7 +5,7 @@ export const CEO_DASHBOARD_VIEWS = new Set([
 export const SETTINGS_TABS = [
   { key: 'general', label: 'General', description: 'Preferencias generales del portal y acceso a los ajustes por agente.' },
   { key: 'whatsapp', label: 'WhatsApp', description: 'Instancia Evolution, cuentas, presencia, proxy y activaciones.' },
-  { key: 'meetings', label: 'Agente de reuniones', description: 'Google Drive, carpetas fuente y archivos importados.' },
+  { key: 'meetings', label: 'Agente de reuniones', description: 'Google Drive y carpetas fuente.' },
   { key: 'router', label: 'Router de agentes', description: 'Reglas de enrutamiento entre fuentes, agentes y resultados.' },
   { key: 'integrations', label: 'Integraciones', description: 'Estado y credenciales de las fuentes externas conectadas.' },
 ];
