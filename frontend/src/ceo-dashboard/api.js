@@ -8,7 +8,7 @@ async function request(path, options = {}) {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    if (res.status === 401 || (res.status === 403 && /No tienes permisos para esta operación/i.test(text))) {
+    if (res.status === 401) {
       localStorage.removeItem('lyn_ceo_user');
       localStorage.removeItem('ceo_token');
       window.location.assign('/?view=ceo');
@@ -112,6 +112,8 @@ export const api = {
       return request(`/meetings?${params.toString()}`);
     },
     filterOptions: () => request('/meetings/filter-options'),
+    workItems: () => request('/meetings/work-items'),
+    markWorkItemsRead: (keys) => request('/meetings/work-items/read', { method: 'POST', body: JSON.stringify({ keys }) }),
     get: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}`),
     update: (artifactId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
     analyze: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}/analyze`, { method: 'POST' }),
@@ -119,6 +121,10 @@ export const api = {
     reanalyzeMissingPmc: () => request('/meetings/reanalyze-missing-pmc', { method: 'POST' }),
     addAction: (artifactId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions`, { method: 'POST', body: JSON.stringify(payload) }),
     updateAction: (artifactId, actionId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+    assignResponsible: (artifactId, actionId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}/responsible`, { method: 'PUT', body: JSON.stringify(payload) }),
+    removePrimaryResponsible: (artifactId, actionId) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}/responsible`, { method: 'DELETE' }),
+    manageAdditionalResponsible: (artifactId, actionId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}/responsibles`, { method: 'PUT', body: JSON.stringify(payload) }),
+    removeAdditionalResponsible: (artifactId, actionId, person) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}/responsibles/${encodeURIComponent(person.kind)}/${encodeURIComponent(person.id)}`, { method: 'DELETE' }),
     deleteAction: (artifactId, actionId) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}`, { method: 'DELETE' }),
     workflow: (artifactId, command, reason = '') => request(`/meetings/${encodeURIComponent(artifactId)}/workflow`, { method: 'POST', body: JSON.stringify({ command, reason }) }),
   },

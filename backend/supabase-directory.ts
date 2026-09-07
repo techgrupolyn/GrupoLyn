@@ -36,6 +36,29 @@ type SourceProjectMember = {
   created_at: string | null;
 };
 
+type SourceOrgPosition = {
+  id: string;
+  nombre: string;
+  codigo: string | null;
+  cargo_padre_id: string | null;
+  departamento: string | null;
+  es_direccion: boolean | null;
+  prioridad_responsable_proyecto: number | null;
+  activo: boolean | null;
+  updated_at: string | null;
+};
+
+type SourceOrgRole = { cargo_id: string; rol: string };
+
+type SourceOrgAssignment = {
+  id: string;
+  cargo_id: string;
+  profile_id: string;
+  proyecto_id: string | null;
+  activo: boolean | null;
+  updated_at: string | null;
+};
+
 export type SupabaseDirectoryConfig = {
   url: string;
   key: string;
@@ -47,6 +70,8 @@ export type DirectorySyncResult = {
   clients: number;
   projects: number;
   assignments: number;
+  orgPositions: number;
+  orgAssignments: number;
   syncedAt: string;
 };
 
@@ -80,12 +105,12 @@ export function supabaseDirectoryConfigFromEnv(env = process.env): SupabaseDirec
   };
 }
 
-async function fetchAll<T>(config: SupabaseDirectoryConfig, resource: string, select: string): Promise<T[]> {
+async function fetchAll<T>(config: SupabaseDirectoryConfig, resource: string, select: string, order = 'id.asc'): Promise<T[]> {
   const result: T[] = [];
   for (let offset = 0; ; offset += PAGE_SIZE) {
     const url = new URL(`${config.url}/rest/v1/${resource}`);
     url.searchParams.set('select', select);
-    url.searchParams.set('order', 'id.asc');
+    url.searchParams.set('order', order);
     url.searchParams.set('limit', String(PAGE_SIZE));
     url.searchParams.set('offset', String(offset));
     const response = await fetch(url, {
@@ -101,7 +126,7 @@ async function fetchAll<T>(config: SupabaseDirectoryConfig, resource: string, se
   }
 }
 
-async function upsertDirectory(client: PoolClient, profiles: SourceProfile[], projects: SourceProject[], assignments: SourceProjectMember[]): Promise<DirectorySyncResult> {
+async function upsertDirectory(client: PoolClient, profiles: SourceProfile[], projects: SourceProject[], assignments: SourceProjectMember[], orgPositions: SourceOrgPosition[], orgRoles: SourceOrgRole[], orgAssignments: SourceOrgAssignment[]): Promise<DirectorySyncResult> {
   const syncedAt = new Date().toISOString();
   const roles = new Set(profiles.map((profile) => normalizeRole(profile.rol)).filter(Boolean));
   for (const role of roles) {
@@ -172,6 +197,39 @@ async function upsertDirectory(client: PoolClient, profiles: SourceProfile[], pr
     );
   }
 
+  const employeeIds = new Set((await client.query<{ id: string }>('SELECT id FROM empleados')).rows.map((row) => row.id));
+  const positionIds = new Set<string>();
+  for (const position of orgPositions) {
+    await client.query(
+      `INSERT INTO organigrama_cargos (id, nombre, codigo, cargo_padre_id, departamento, es_direccion, prioridad_responsable_proyecto, activo, source_updated_at, synced_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+       ON CONFLICT (id) DO UPDATE SET nombre = EXCLUDED.nombre, codigo = EXCLUDED.codigo, cargo_padre_id = EXCLUDED.cargo_padre_id,
+         departamento = EXCLUDED.departamento, es_direccion = EXCLUDED.es_direccion, prioridad_responsable_proyecto = EXCLUDED.prioridad_responsable_proyecto,
+         activo = EXCLUDED.activo, source_updated_at = EXCLUDED.source_updated_at, synced_at = NOW()`,
+      [position.id, position.nombre, position.codigo || null, position.cargo_padre_id || null, position.departamento || null, position.es_direccion === true, position.prioridad_responsable_proyecto || null, position.activo !== false, position.updated_at || null],
+    );
+    positionIds.add(position.id);
+  }
+  await client.query('DELETE FROM organigrama_cargos WHERE NOT (id = ANY($1::varchar[]))', [[...positionIds]]);
+  await client.query('DELETE FROM organigrama_cargo_roles');
+  for (const role of orgRoles) {
+    if (!positionIds.has(role.cargo_id)) continue;
+    await client.query('INSERT INTO organigrama_cargo_roles (cargo_id, rol) VALUES ($1, $2) ON CONFLICT DO NOTHING', [role.cargo_id, role.rol]);
+  }
+  const orgAssignmentIds = new Set<string>();
+  for (const assignment of orgAssignments) {
+    if (!positionIds.has(assignment.cargo_id) || !employeeIds.has(assignment.profile_id)) continue;
+    await client.query(
+      `INSERT INTO organigrama_cargo_asignaciones (id, cargo_id, empleado_id, proyecto_id, activo, source_updated_at, synced_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       ON CONFLICT (id) DO UPDATE SET cargo_id = EXCLUDED.cargo_id, empleado_id = EXCLUDED.empleado_id, proyecto_id = EXCLUDED.proyecto_id,
+         activo = EXCLUDED.activo, source_updated_at = EXCLUDED.source_updated_at, synced_at = NOW()`,
+      [assignment.id, assignment.cargo_id, assignment.profile_id, assignment.proyecto_id || null, assignment.activo !== false, assignment.updated_at || null],
+    );
+    orgAssignmentIds.add(assignment.id);
+  }
+  await client.query('DELETE FROM organigrama_cargo_asignaciones WHERE NOT (id = ANY($1::varchar[]))', [[...orgAssignmentIds]]);
+
   const uniqueAssignments = new Map<string, SourceProjectMember>();
   for (const assignment of assignments) {
     const role = String(assignment.rol_en_proyecto || '').trim();
@@ -181,13 +239,14 @@ async function upsertDirectory(client: PoolClient, profiles: SourceProfile[], pr
 
   const assignmentIds = new Set<string>();
   for (const assignment of uniqueAssignments.values()) {
+    const localAssignmentId = 'supabase:' + assignment.id;
     const result = await client.query<{ id: string }>(
       `INSERT INTO proyecto_asignaciones (id, proyecto_id, empleado_id, rol_en_proyecto, origen, source_created_at, synced_at)
        VALUES ($1, $2, $3, $4, 'supabase', $5, NOW())
        ON CONFLICT (proyecto_id, empleado_id, rol_en_proyecto) DO UPDATE SET
          source_created_at = EXCLUDED.source_created_at, synced_at = NOW()
        RETURNING id`,
-      [assignment.id, assignment.proyecto_id, assignment.profile_id, assignment.rol_en_proyecto, assignment.created_at || null],
+      [localAssignmentId, assignment.proyecto_id, assignment.profile_id, assignment.rol_en_proyecto, assignment.created_at || null],
     );
     assignmentIds.add(result.rows[0].id);
   }
@@ -200,20 +259,23 @@ async function upsertDirectory(client: PoolClient, profiles: SourceProfile[], pr
      VALUES ($1, 'supabase', 'success', $2, $3, $4, NOW())`,
     [randomUUID(), profiles.length, projects.length, uniqueAssignments.size],
   );
-  return { profiles: profiles.length, employees, clients, projects: projects.length, assignments: uniqueAssignments.size, syncedAt };
+  return { profiles: profiles.length, employees, clients, projects: projects.length, assignments: uniqueAssignments.size, orgPositions: positionIds.size, orgAssignments: orgAssignmentIds.size, syncedAt };
 }
 
 export async function syncSupabaseDirectory(pool: Pool, config = supabaseDirectoryConfigFromEnv()): Promise<DirectorySyncResult> {
   if (!isConfigured(config)) throw new Error('La conexión de Supabase no está configurada');
-  const [profiles, projects, assignments] = await Promise.all([
+  const [profiles, projects, assignments, orgPositions, orgRoles, orgAssignments] = await Promise.all([
     fetchAll<SourceProfile>(config, 'profiles', 'id,email,nombre,apellidos,rol,telefono,activo,updated_at'),
     fetchAll<SourceProject>(config, 'proyectos', 'id,nombre,descripcion,cliente_id,interiorista_id,estado,fecha_inicio,fecha_fin_estimada,fecha_fin_real,direccion,ciudad,activo,updated_at'),
     fetchAll<SourceProjectMember>(config, 'proyecto_miembros', 'id,proyecto_id,profile_id,rol_en_proyecto,created_at'),
+    fetchAll<SourceOrgPosition>(config, 'cargos', 'id,nombre,codigo,cargo_padre_id,departamento,es_direccion,prioridad_responsable_proyecto,activo,updated_at'),
+    fetchAll<SourceOrgRole>(config, 'cargo_roles_predeterminados', 'cargo_id,rol', 'cargo_id.asc'),
+    fetchAll<SourceOrgAssignment>(config, 'cargo_asignaciones', 'id,cargo_id,profile_id,proyecto_id,activo,updated_at'),
   ]);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const result = await upsertDirectory(client, profiles, projects, assignments);
+    const result = await upsertDirectory(client, profiles, projects, assignments, orgPositions, orgRoles, orgAssignments);
     await client.query('COMMIT');
     return result;
   } catch (error) {
@@ -251,5 +313,3 @@ export function meetingDirectoryContext(rows: MeetingDirectoryCandidate[]): stri
 }
 
 export { displayName };
-
-

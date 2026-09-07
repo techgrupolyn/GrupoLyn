@@ -51,6 +51,7 @@ Abre [http://127.0.0.1:5173](http://127.0.0.1:5173). La vista CEO está en [http
 - `superagente` contiene usuarios, chats normalizados, mensajes, resúmenes, respuestas sugeridas, especialistas y auditoría del CEO.
 - `evolution_db` pertenece a Evolution API: conserva la instancia, QR/sesión y datos que Evolution sincroniza.
 - `CEO_INITIAL_PASSWORD` define la clave inicial de `superadmin` al arrancar sobre una base nueva. `CEO_PUBLIC_INITIAL_PASSWORD` es opcional y crea la cuenta `Publico`, limitada a Consultas IA. `CEO_SESSION_SECRET` debe ser aleatorio y privado.
+- Para permitir acceso con las mismas credenciales de Supabase sin copiar contraseñas, configura `SUPABASE_AUTH_ENABLED=true` junto con `SUPABASE_SOURCE_URL` y `SUPABASE_SOURCE_SECRET_KEY` **sólo en el backend**. La cuenta debe existir y estar activa en el directorio sincronizado; empleados reciben su rol y clientes quedan limitados a Consultas IA.
 - La IA usa la Interactions API de Gemini con `gemini-3.6-flash` por defecto. Requiere una clave válida en `GOOGLE_GEMINI_API_KEY`; sin saldo o sin clave, las rutas de IA responden con error controlado y no guardan resultados incompletos.
 
 Consulta `docs/RESET_Y_DATOS.md` antes de borrar datos.

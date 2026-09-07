@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveMeetingDate, deriveMeetingIdentity, formatMeetingName, meetingApprovalBlockers, meetingDirectoryFilterId, meetingListFilters, meetingListPagination, normalizeMeetingAiAnalysis, parseMeetingAiAnalysis, resolveMeetingActionTags, resolveMeetingDirectoryReferences } from '../server.ts';
+import { deriveMeetingDate, deriveMeetingIdentity, formatMeetingName, manualActionResponsibleInput, meetingApprovalBlockers, meetingDirectoryFilterId, meetingEditorRoleRank, meetingListFilters, meetingListPagination, normalizeMeetingAiAnalysis, parseMeetingAiAnalysis, resolveMeetingActionTags, resolveMeetingDirectoryReferences } from '../server.ts';
 
 describe('Flujo de aprobación de reuniones', () => {
   it('normaliza límites de paginación para reuniones', () => {
@@ -19,6 +19,20 @@ describe('Flujo de aprobación de reuniones', () => {
     expect(meetingDirectoryFilterId('x'.repeat(300))).toHaveLength(255);
   });
 
+  it('reconoce el orden de edición del organigrama', () => {
+    expect(meetingEditorRoleRank('Delineante')).toBe(1);
+    expect(meetingEditorRoleRank('PMC / Proyectos')).toBe(2);
+    expect(meetingEditorRoleRank('Dirección de Operaciones')).toBe(3);
+    expect(meetingEditorRoleRank('Director General')).toBe(4);
+    expect(meetingEditorRoleRank('Interiorista')).toBe(0);
+  });
+
+  it('acepta únicamente responsables manuales presentes en el directorio', () => {
+    expect(manualActionResponsibleInput({ kind: 'employee', id: 'empleado-1' })).toEqual({ kind: 'employee', id: 'empleado-1' });
+    expect(manualActionResponsibleInput({ kind: 'client', id: 'cliente-1' })).toEqual({ kind: 'client', id: 'cliente-1' });
+    expect(manualActionResponsibleInput({ kind: 'subcontractor', id: 'sub-1' })).toBeNull();
+    expect(manualActionResponsibleInput({ kind: 'employee', id: '' })).toBeNull();
+  });
   it('bloquea solo acciones pendientes sin responsable y conserva la fecha como aviso opcional', () => {
     expect(meetingApprovalBlockers([
       { status: 'pending', responsible: '', due_date: null },

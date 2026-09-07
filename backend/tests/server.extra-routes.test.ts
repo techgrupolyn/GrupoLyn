@@ -1,6 +1,6 @@
 import request from 'supertest';
 import { describe, it, expect } from 'vitest';
-import { app, isCeoAdministratorRole, isCeoConsultationRoute } from '../server.ts';
+import { app, isCeoAdministratorRole, isCeoConsultationRoute, isCeoMeetingAccessRole } from '../server.ts';
 
 const client = request(app);
 
@@ -22,6 +22,10 @@ describe('Server - seguridad CEO', () => {
     expect(isCeoConsultationRoute('/ceo/metrics')).toBe(false);
     expect(isCeoAdministratorRole('consulta_publica')).toBe(false);
     expect(isCeoAdministratorRole('superadmin')).toBe(true);
+    expect(isCeoAdministratorRole('employee:director de operaciones')).toBe(true);
+    expect(isCeoAdministratorRole('employee:planimetrista')).toBe(false);
+    expect(isCeoMeetingAccessRole('employee:planimetrista')).toBe(true);
+    expect(isCeoMeetingAccessRole('cliente')).toBe(false);
   });
 
   it('rechaza un login CEO sin credenciales antes de consultar datos', async () => {
@@ -30,6 +34,20 @@ describe('Server - seguridad CEO', () => {
     expect(res.body.error).toMatch(/obligatorios/i);
   });
 
+  it('protege la reasignación manual de responsables con sesión CEO', async () => {
+    const res = await client.put('/api/meetings/00000000-0000-0000-0000-000000000001/actions/00000000-0000-0000-0000-000000000002/responsible').send({ kind: 'employee', id: 'empleado-1' });
+    expect(res.status).toBe(401);
+  });
+  it('protege la gestión de responsables adicionales con sesión CEO', async () => {
+    const res = await client.put('/api/meetings/00000000-0000-0000-0000-000000000001/actions/00000000-0000-0000-0000-000000000002/responsibles').send({ kind: 'client', id: 'cliente-1' });
+    expect(res.status).toBe(401);
+  });
+  it('protege la eliminación de responsables con sesión CEO', async () => {
+    const primary = await client.delete('/api/meetings/00000000-0000-0000-0000-000000000001/actions/00000000-0000-0000-0000-000000000002/responsible');
+    const additional = await client.delete('/api/meetings/00000000-0000-0000-0000-000000000001/actions/00000000-0000-0000-0000-000000000002/responsibles/employee/empleado-1');
+    expect(primary.status).toBe(401);
+    expect(additional.status).toBe(401);
+  });
   it('protege el reanálisis masivo de PMC con sesión CEO', async () => {
     const res = await client.post('/api/meetings/reanalyze-missing-pmc').send({});
     expect(res.status).toBe(401);

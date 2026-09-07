@@ -1,5 +1,5 @@
 export const CEO_DASHBOARD_VIEWS = new Set([
-  'dashboard', 'ai', 'groups', 'labels', 'templates', 'business', 'meetings', 'settings', 'specialists', 'backoffice',
+  'dashboard', 'work', 'ai', 'groups', 'labels', 'templates', 'business', 'meetings', 'settings', 'specialists', 'backoffice',
 ]);
 
 export const SETTINGS_TABS = [

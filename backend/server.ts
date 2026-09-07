@@ -11,6 +11,7 @@ import type { EvolutionInstance, MessageItem, Chat, ConnectionStatus, Mensaje, R
 import { callGeminiWithPrompt, callGeminiWithPromptResult, callGeminiWithMediaResult, resolveSpecialist, setSpecialists, specialists, type GeminiMediaItem } from './geminiService.ts';
 import { canExtractGoogleDriveText, classifyGoogleDriveArtifact, decryptGoogleDriveSecret, encryptGoogleDriveSecret, parseGoogleDriveFolderId } from './google-drive.ts';
 import { meetingDirectoryContext, syncSupabaseDirectory, supabaseDirectoryConfigFromEnv, type MeetingDirectoryCandidate } from './supabase-directory.ts';
+import { authenticateWithSupabasePassword, isSupabaseAuthConfigured, supabaseAuthConfigFromEnv, SupabaseAuthServiceError } from './supabase-auth.ts';
 import { Readable } from 'stream';
 
 const PORT = Number(process.env.PORT || 3003);
@@ -50,6 +51,7 @@ const MEETING_AI_ANALYSIS_INTERVAL_MS = boundedInterval(process.env.MEETING_AI_A
 const MEETING_AI_ANALYSIS_BATCH_SIZE = boundedInterval(process.env.MEETING_AI_ANALYSIS_BATCH_SIZE, 1, 1, 5);
 const MEETING_IMPORT_BATCH_SIZE = boundedInterval(process.env.MEETING_IMPORT_BATCH_SIZE, 25, 5, 100);
 const SUPABASE_SYNC_ENABLED = process.env.SUPABASE_SYNC_ENABLED?.trim().toLowerCase() === 'true';
+const SUPABASE_AUTH_CONFIG = supabaseAuthConfigFromEnv();
 const SUPABASE_SYNC_INTERVAL_MS = boundedInterval(process.env.SUPABASE_SYNC_INTERVAL_MS, 5 * 60 * 1000, 60_000, 60 * 60 * 1000);
 const MEETING_AI_ANALYSIS_VERSION = 4;
 const INVITATION_TTL_MAX_HOURS = 30 * 24;
@@ -523,6 +525,20 @@ async function ensureDatabaseSchema(): Promise<void> {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+    ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(32) NOT NULL DEFAULT 'local';
+    ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS external_auth_user_id VARCHAR(255);
+    ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS email VARCHAR(320);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_external_auth_unique
+      ON usuarios(auth_provider, external_auth_user_id) WHERE external_auth_user_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_email_unique
+      ON usuarios(LOWER(email)) WHERE email IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS meeting_notification_reads (
+      user_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+      notification_key VARCHAR(512) NOT NULL,
+      read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, notification_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_meeting_notification_reads_user ON meeting_notification_reads(user_id, read_at DESC);
     CREATE TABLE IF NOT EXISTS google_drive_connections (
       id UUID PRIMARY KEY,
       google_email VARCHAR(320) NOT NULL UNIQUE,
@@ -614,6 +630,7 @@ async function ensureDatabaseSchema(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_meeting_review_versions_artifact ON meeting_review_versions(artifact_id, created_at DESC);
+
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_status VARCHAR(40) NOT NULL DEFAULT 'pending';
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_source_modified_at TIMESTAMPTZ;
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS analysis_completed_at TIMESTAMPTZ;
@@ -631,20 +648,51 @@ async function ensureDatabaseSchema(): Promise<void> {
     ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS origin VARCHAR(40) NOT NULL DEFAULT 'manual';
     ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS project_id VARCHAR(255);
     ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS responsible_id VARCHAR(255);
+    ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS responsible_kind VARCHAR(32);
     ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS responsible_role VARCHAR(255);
+    ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS responsible_source VARCHAR(32) NOT NULL DEFAULT 'automatic';
     ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS match_confidence VARCHAR(20);
     CREATE INDEX IF NOT EXISTS idx_meeting_review_actions_project_id ON meeting_review_actions(project_id);
     CREATE INDEX IF NOT EXISTS idx_meeting_review_actions_responsible_id ON meeting_review_actions(responsible_id);
+    CREATE INDEX IF NOT EXISTS idx_meeting_review_actions_responsible_kind ON meeting_review_actions(responsible_kind, responsible_id);
     CREATE TABLE IF NOT EXISTS meeting_review_action_responsibles (
       action_id UUID NOT NULL REFERENCES meeting_review_actions(id) ON DELETE CASCADE,
-      employee_id VARCHAR(255) NOT NULL REFERENCES empleados(id) ON DELETE RESTRICT,
+      responsible_kind VARCHAR(32) NOT NULL DEFAULT 'employee',
+      responsible_id VARCHAR(255) NOT NULL,
+      employee_id VARCHAR(255) REFERENCES empleados(id) ON DELETE RESTRICT,
       responsible_name VARCHAR(255) NOT NULL,
       responsible_role VARCHAR(255),
       match_confidence VARCHAR(20) NOT NULL DEFAULT 'high',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (action_id, employee_id)
+      PRIMARY KEY (action_id, responsible_kind, responsible_id)
     );
+    ALTER TABLE meeting_review_action_responsibles ADD COLUMN IF NOT EXISTS responsible_kind VARCHAR(32) NOT NULL DEFAULT 'employee';
+    ALTER TABLE meeting_review_action_responsibles ADD COLUMN IF NOT EXISTS responsible_id VARCHAR(255);
+    UPDATE meeting_review_action_responsibles SET responsible_id = employee_id WHERE responsible_id IS NULL;
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'meeting_review_action_responsibles'::regclass
+          AND contype = 'p'
+          AND pg_get_constraintdef(oid) NOT LIKE '%responsible_kind%'
+      ) THEN
+        ALTER TABLE meeting_review_action_responsibles DROP CONSTRAINT meeting_review_action_responsibles_pkey;
+      END IF;
+    END $$;
+    ALTER TABLE meeting_review_action_responsibles ALTER COLUMN employee_id DROP NOT NULL;
+    ALTER TABLE meeting_review_action_responsibles ALTER COLUMN responsible_id SET NOT NULL;
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'meeting_review_action_responsibles'::regclass AND contype = 'p'
+      ) THEN
+        ALTER TABLE meeting_review_action_responsibles ADD CONSTRAINT meeting_review_action_responsibles_pkey PRIMARY KEY (action_id, responsible_kind, responsible_id);
+      END IF;
+    END $$;
     CREATE INDEX IF NOT EXISTS idx_meeting_action_responsibles_employee ON meeting_review_action_responsibles(employee_id);
+    CREATE INDEX IF NOT EXISTS idx_meeting_action_responsibles_directory ON meeting_review_action_responsibles(responsible_kind, responsible_id);
     CREATE TABLE IF NOT EXISTS meeting_review_blockers (
       id UUID PRIMARY KEY,
       artifact_id UUID NOT NULL REFERENCES meeting_reviews(artifact_id) ON DELETE CASCADE,
@@ -757,6 +805,34 @@ async function ensureDatabaseSchema(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_proyecto_asignaciones_proyecto ON proyecto_asignaciones(proyecto_id);
     CREATE INDEX IF NOT EXISTS idx_proyecto_asignaciones_empleado ON proyecto_asignaciones(empleado_id);
+    CREATE TABLE IF NOT EXISTS organigrama_cargos (
+      id VARCHAR(255) PRIMARY KEY,
+      nombre VARCHAR(255) NOT NULL,
+      codigo VARCHAR(255),
+      cargo_padre_id VARCHAR(255),
+      departamento VARCHAR(255),
+      es_direccion BOOLEAN NOT NULL DEFAULT FALSE,
+      prioridad_responsable_proyecto INTEGER,
+      activo BOOLEAN NOT NULL DEFAULT TRUE,
+      source_updated_at TIMESTAMPTZ,
+      synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS organigrama_cargo_roles (
+      cargo_id VARCHAR(255) NOT NULL REFERENCES organigrama_cargos(id) ON DELETE CASCADE,
+      rol VARCHAR(255) NOT NULL,
+      PRIMARY KEY (cargo_id, rol)
+    );
+    CREATE TABLE IF NOT EXISTS organigrama_cargo_asignaciones (
+      id VARCHAR(255) PRIMARY KEY,
+      cargo_id VARCHAR(255) NOT NULL REFERENCES organigrama_cargos(id) ON DELETE CASCADE,
+      empleado_id VARCHAR(255) NOT NULL REFERENCES empleados(id) ON DELETE CASCADE,
+      proyecto_id VARCHAR(255),
+      activo BOOLEAN NOT NULL DEFAULT TRUE,
+      source_updated_at TIMESTAMPTZ,
+      synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_organigrama_asignaciones_empleado ON organigrama_cargo_asignaciones(empleado_id) WHERE activo = TRUE;
+    CREATE INDEX IF NOT EXISTS idx_organigrama_asignaciones_proyecto ON organigrama_cargo_asignaciones(proyecto_id) WHERE activo = TRUE;
     CREATE TABLE IF NOT EXISTS proyecto_aliases (
       id UUID PRIMARY KEY,
       proyecto_id VARCHAR(255) NOT NULL REFERENCES proyectos(id) ON DELETE CASCADE,
@@ -981,11 +1057,181 @@ function requireCeoAuth(req: Request, res: Response, next: NextFunction): void {
 }
 
 export function isCeoAdministratorRole(role: unknown): boolean {
-  return ['superadmin', 'admin', 'CEO'].includes(String(role));
+  const normalized = String(role || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');
+  return ['superadmin', 'admin', 'ceo', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(normalized);
+}
+
+export function isCeoMeetingAccessRole(role: unknown): boolean {
+  const normalized = String(role || '').trim().toLowerCase();
+  return isCeoAdministratorRole(normalized) || normalized.startsWith('employee:');
+}
+
+export function meetingEditorRoleRank(role: unknown): number {
+  const normalized = String(role || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[_/-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (normalized.includes('director general')) return 4;
+  if (normalized.includes('direccion de operaciones')) return 3;
+  if (normalized.includes('pmc') || normalized.includes('jefe de proyectos')) return 2;
+  if (normalized.includes('delineante')) return 1;
+  return 0;
+}
+
+export function dashboardRoleFromOrgPosition(role: string | null | undefined): string {
+  const normalized = String(role || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return normalized ? 'employee:' + normalized : 'employee:member';
+}
+
+type MeetingAccessScope = { employeeId: string | null; canEdit: boolean; hierarchyRole: string | null };
+
+function meetingVisibilityCondition(reviewAlias: string, employeePlaceholder: string): string {
+  return `(
+    ${reviewAlias}.pmc_employee_id = ${employeePlaceholder}
+    OR EXISTS (SELECT 1 FROM proyecto_asignaciones scoped_assignment WHERE scoped_assignment.proyecto_id = ${reviewAlias}.project_id AND scoped_assignment.empleado_id = ${employeePlaceholder})
+    OR EXISTS (SELECT 1 FROM meeting_review_actions scoped_action WHERE scoped_action.artifact_id = ${reviewAlias}.artifact_id AND scoped_action.responsible_kind = 'employee' AND scoped_action.responsible_id = ${employeePlaceholder})
+    OR EXISTS (
+      SELECT 1 FROM meeting_review_action_responsibles scoped_responsible
+      INNER JOIN meeting_review_actions scoped_action ON scoped_action.id = scoped_responsible.action_id
+      WHERE scoped_action.artifact_id = ${reviewAlias}.artifact_id
+        AND (scoped_responsible.employee_id = ${employeePlaceholder} OR (scoped_responsible.responsible_kind = 'employee' AND scoped_responsible.responsible_id = ${employeePlaceholder}))
+    )
+  )`;
+}
+
+async function resolveMeetingAccessScope(session: CeoSession): Promise<MeetingAccessScope | null> {
+  if (isCeoAdministratorRole(session.rol)) return { employeeId: null, canEdit: true, hierarchyRole: session.rol || null };
+  if (!session.id) return null;
+  const { rows } = await pool.query<{ id: string; cargo: string | null; proyecto_id: string | null }>(
+    `SELECT e.id, c.nombre AS cargo, oca.proyecto_id
+     FROM usuarios u
+     INNER JOIN empleados e ON LOWER(e.email) = LOWER(u.email)
+     LEFT JOIN organigrama_cargo_asignaciones oca ON oca.empleado_id = e.id AND oca.activo = TRUE
+     LEFT JOIN organigrama_cargos c ON c.id = oca.cargo_id AND c.activo = TRUE
+     WHERE u.id = $1 AND u.auth_provider = 'supabase' AND u.activo = TRUE AND e.activo = TRUE`,
+    [session.id],
+  );
+  if (!rows.length) return null;
+  const ranked = rows.map((row) => ({ ...row, rank: meetingEditorRoleRank(row.cargo) })).sort((left, right) => right.rank - left.rank);
+  const best = ranked[0];
+  const globalBest = ranked.find((row) => !row.proyecto_id);
+  const hasGlobalDirection = meetingEditorRoleRank(globalBest?.cargo) >= 3;
+  return { employeeId: hasGlobalDirection ? null : best.id, canEdit: best.rank > 0, hierarchyRole: best.cargo || null };
+}
+
+async function requireCeoMeetingAccess(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const session = readCeoSession(req);
+  if (!session) return void res.status(401).json({ error: 'Sesión inválida o vencida. Inicia sesión nuevamente.' });
+  if (!isCeoMeetingAccessRole(session.rol)) return void res.status(403).json({ error: 'No tienes permiso para acceder a Gestión de reuniones.' });
+  try {
+    const scope = await resolveMeetingAccessScope(session);
+    if (!scope) return void res.status(403).json({ error: 'Tu cuenta no está vinculada a un empleado activo del directorio.' });
+    res.locals.ceoSession = session;
+    res.locals.meetingAccessScope = scope;
+    next();
+  } catch (error) {
+    console.error('[meetings/access] Error resolviendo alcance:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudo resolver el acceso a reuniones.' });
+  }
+}
+
+async function canEditMeetingArtifact(artifactId: string, employeeId: string | null): Promise<boolean> {
+  if (!employeeId) return true;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM meeting_reviews r
+     WHERE r.artifact_id = $1 AND ${meetingVisibilityCondition('r', '$2')}`,
+    [artifactId, employeeId],
+  );
+  return rows.length > 0;
+}
+
+async function requireMeetingEditor(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const session = readCeoSession(req);
+  if (!session) return void res.status(401).json({ error: 'Sesión inválida o vencida. Inicia sesión nuevamente.' });
+  if (!isCeoMeetingAccessRole(session.rol)) return void res.status(403).json({ error: 'No tienes permiso para modificar reuniones.' });
+  try {
+    const scope = await resolveMeetingAccessScope(session);
+    if (!scope?.canEdit) return void res.status(403).json({ error: 'Solo Delineante, PMC/Jefe de Proyectos, Dirección de Operaciones y Director General pueden modificar reuniones.' });
+    const artifactId = String(req.params?.artifactId || '').trim();
+    if (artifactId && !(await canEditMeetingArtifact(artifactId, scope.employeeId))) return void res.status(403).json({ error: 'No puedes modificar una reunión que no está vinculada a tu proyecto o responsabilidad.' });
+    if (!artifactId && req.method !== 'GET' && scope.employeeId) return void res.status(403).json({ error: 'Esta operación global requiere Dirección de Operaciones, Director General o superadministrador.' });
+    res.locals.ceoSession = session;
+    res.locals.meetingAccessScope = scope;
+    next();
+  } catch (error) {
+    console.error('[meetings/editor] Error resolviendo permisos:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudo resolver el permiso de edición.' });
+  }
+}
+function requireMeetingResponsibleAssigner(_req: Request, res: Response, next: NextFunction): void {
+  const session = res.locals.ceoSession as CeoSession | undefined;
+  const scope = res.locals.meetingAccessScope as MeetingAccessScope | undefined;
+  if (isCeoAdministratorRole(session?.rol) || meetingEditorRoleRank(scope?.hierarchyRole) >= 2) return next();
+  res.status(403).json({ error: 'La asignación manual de responsables requiere PMC/Jefe de Proyectos, Dirección o superadministrador.' });
 }
 
 export function isCeoConsultationRoute(path: string): boolean {
   return path === '/ceo/ask';
+}
+
+
+type MeetingWorkItem = {
+  key: string;
+  kind: 'review' | 'action';
+  artifactId: string;
+  actionId?: string;
+  title: string;
+  detail: string;
+  meetingName: string;
+  projectName: string | null;
+  dueDate: string | null;
+  updatedAt: string;
+};
+
+function workflowStageForOrganizationRole(role: unknown): string | null {
+  const rank = meetingEditorRoleRank(role);
+  return rank === 1 ? 'delineante' : rank === 2 ? 'pmc' : rank === 3 ? 'operations' : rank === 4 ? 'director' : null;
+}
+
+async function resolveSessionEmployeeId(session: CeoSession, scope: MeetingAccessScope): Promise<string | null> {
+  if (scope.employeeId) return scope.employeeId;
+  if (!session.id) return null;
+  const result = await pool.query<{ id: string }>('SELECT e.id FROM usuarios u INNER JOIN empleados e ON LOWER(e.email) = LOWER(u.email) WHERE u.id = $1 AND u.activo = TRUE AND e.activo = TRUE LIMIT 1', [session.id]);
+  return result.rows[0]?.id || null;
+}
+
+async function loadMeetingWorkItems(session: CeoSession, scope: MeetingAccessScope): Promise<MeetingWorkItem[]> {
+  const employeeId = await resolveSessionEmployeeId(session, scope);
+  const reviewVisibility = scope.employeeId ? ' AND ' + meetingVisibilityCondition('r', '$1') : '';
+  const actionVisibility = scope.employeeId ? ' AND ' + meetingVisibilityCondition('r', '$2') : '';
+  const reviewQuery = 'SELECT r.artifact_id, a.name, r.project_id, r.project_name, r.workflow_stage, r.status, r.updated_at FROM meeting_reviews r INNER JOIN google_drive_artifacts a ON a.id = r.artifact_id WHERE r.status IN (\'draft\', \'pending\', \'returned\')' + reviewVisibility + ' ORDER BY r.updated_at DESC LIMIT 250';
+  const actionQuery = 'SELECT ma.id, ma.artifact_id, ma.title, ma.project_name, ma.due_date, ma.updated_at, a.name AS meeting_name FROM meeting_review_actions ma INNER JOIN meeting_reviews r ON r.artifact_id = ma.artifact_id INNER JOIN google_drive_artifacts a ON a.id = ma.artifact_id WHERE ma.status = \'pending\' AND ((ma.responsible_kind = \'employee\' AND ma.responsible_id = $1) OR EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id AND (mar.employee_id = $1 OR (mar.responsible_kind = \'employee\' AND mar.responsible_id = $1))))' + actionVisibility + ' ORDER BY ma.due_date ASC NULLS LAST, ma.updated_at DESC LIMIT 250';
+  const [reviewResult, actionResult, assignmentResult] = await Promise.all([
+    pool.query<{ artifact_id: string; name: string | null; project_id: string | null; project_name: string | null; workflow_stage: string; status: string; updated_at: string }>(reviewQuery, scope.employeeId ? [scope.employeeId] : []),
+    employeeId ? pool.query<{ id: string; artifact_id: string; title: string; project_name: string | null; due_date: string | null; updated_at: string; meeting_name: string | null }>(actionQuery, scope.employeeId ? [employeeId, scope.employeeId] : [employeeId]) : Promise.resolve({ rows: [] }),
+    employeeId ? pool.query<{ project_id: string | null; cargo: string | null }>('SELECT oca.proyecto_id, c.nombre AS cargo FROM organigrama_cargo_asignaciones oca INNER JOIN organigrama_cargos c ON c.id = oca.cargo_id WHERE oca.empleado_id = $1 AND oca.activo = TRUE AND c.activo = TRUE', [employeeId]) : Promise.resolve({ rows: [] }),
+  ]);
+  const positions = assignmentResult.rows.map((row) => ({ projectId: row.project_id, stage: workflowStageForOrganizationRole(row.cargo) })).filter((row): row is { projectId: string | null; stage: string } => Boolean(row.stage));
+  const canSeeAllReviews = isCeoAdministratorRole(session.rol) && !employeeId;
+  const stageLabels: Record<string, string> = { delineante: 'Delineante', pmc: 'PMC / Jefe de Proyectos', operations: 'Dirección de Operaciones', director: 'Director General' };
+  const reviewItems = reviewResult.rows.filter((row) => canSeeAllReviews || positions.some((position) => position.stage === row.workflow_stage && (position.projectId === null || position.projectId === row.project_id))).map((row) => ({
+    key: ['review', row.artifact_id, row.workflow_stage, row.updated_at].join(':'), kind: 'review' as const, artifactId: row.artifact_id,
+    title: 'Revisión requerida · ' + (stageLabels[row.workflow_stage] || 'Revisión'), detail: row.status === 'returned' ? 'El documento fue devuelto y requiere una nueva revisión.' : 'Hay un documento pendiente de tu revisión.',
+    meetingName: row.name || 'Reunión sin título', projectName: row.project_name, dueDate: null, updatedAt: row.updated_at,
+  }));
+  const actionItems = actionResult.rows.map((row) => ({
+    key: ['action', row.id, row.updated_at].join(':'), kind: 'action' as const, artifactId: row.artifact_id, actionId: row.id,
+    title: row.title, detail: 'Acción asignada a ti.', meetingName: row.meeting_name || 'Reunión sin título', projectName: row.project_name, dueDate: row.due_date, updatedAt: row.updated_at,
+  }));
+  const unique = new Map<string, MeetingWorkItem>();
+  for (const item of [...actionItems, ...reviewItems]) unique.set(item.key, item);
+  return [...unique.values()].sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt))).slice(0, 250);
+}
+
+async function meetingWorkSummary(session: CeoSession, scope: MeetingAccessScope): Promise<{ items: Array<MeetingWorkItem & { unread: boolean }>; unread: number; total: number; actions: number; reviews: number }> {
+  const items = await loadMeetingWorkItems(session, scope);
+  if (!items.length || !session.id) return { items: items.map((item) => ({ ...item, unread: false })), unread: 0, total: items.length, actions: items.filter((item) => item.kind === 'action').length, reviews: items.filter((item) => item.kind === 'review').length };
+  const read = await pool.query<{ notification_key: string }>('SELECT notification_key FROM meeting_notification_reads WHERE user_id = $1 AND notification_key = ANY($2::text[])', [session.id, items.map((item) => item.key)]);
+  const readKeys = new Set(read.rows.map((row) => row.notification_key));
+  const withReadState = items.map((item) => ({ ...item, unread: !readKeys.has(item.key) }));
+  return { items: withReadState, unread: withReadState.filter((item) => item.unread).length, total: withReadState.length, actions: withReadState.filter((item) => item.kind === 'action').length, reviews: withReadState.filter((item) => item.kind === 'review').length };
 }
 
 function requireCeoSession(req: Request, res: Response, next: NextFunction): void {
@@ -1310,6 +1556,22 @@ function isExtensionAccountRoute(path: string): boolean {
   ].some((pattern) => pattern.test(path));
 }
 
+function isCeoMeetingReadRoute(method: string, path: string): boolean {
+  if (method === 'POST' && path === '/meetings/work-items/read') return true;
+  if (method !== 'GET') return false;
+  return [
+    /^\/meetings$/,
+    /^\/meetings\/filter-options$/,
+    /^\/meetings\/[^/]+$/,
+    /^\/directory$/,
+  ].some((pattern) => pattern.test(path));
+}
+
+function isCeoMeetingEditRoute(method: string, path: string): boolean {
+  if (method === 'GET') return false;
+  return /^\/meetings(?:\/|$)/.test(path) || path === '/directory';
+}
+
 function requireApiAccess(req: Request, res: Response, next: NextFunction): void {
   if (isPublicApiRoute(req.path)) {
     next();
@@ -1318,6 +1580,10 @@ function requireApiAccess(req: Request, res: Response, next: NextFunction): void
   if (req.header('authorization')) {
     if (isCeoConsultationRoute(req.path)) {
       requireCeoSession(req, res, next);
+    } else if (isCeoMeetingReadRoute(req.method, req.path)) {
+      void requireCeoMeetingAccess(req, res, next);
+    } else if (isCeoMeetingEditRoute(req.method, req.path)) {
+      void requireMeetingEditor(req, res, next);
     } else {
       requireCeoAuth(req, res, next);
     }
@@ -4020,7 +4286,7 @@ async function loadMeetingDirectoryCandidates(): Promise<MeetingDirectoryCandida
     const { rows } = await pool.query<MeetingDirectoryCandidate>(
       `SELECT p.id AS project_id, p.nombre AS project_name, c.id AS client_id,
               CONCAT_WS(' ', c.nombre, c.apellido) AS client_name, e.id AS employee_id,
-              CONCAT_WS(' ', e.nombre, e.apellido) AS employee_name, r.nombre AS employee_role,
+              CONCAT_WS(' ', e.nombre, e.apellido) AS employee_name, COALESCE(org_cargo.nombre, r.nombre) AS employee_role,
               pa.rol_en_proyecto AS role_in_project,
               COALESCE((SELECT array_agg(alias ORDER BY alias) FROM proyecto_aliases WHERE proyecto_id = p.id), ARRAY[]::varchar[]) AS project_aliases
        FROM proyectos p
@@ -4029,7 +4295,42 @@ async function loadMeetingDirectoryCandidates(): Promise<MeetingDirectoryCandida
        LEFT JOIN empleados e ON e.id = pa.empleado_id
        LEFT JOIN usuario_rol ur ON ur.empleado_id = e.id
        LEFT JOIN roles r ON r.id = ur.rol_id
+       LEFT JOIN LATERAL (
+         SELECT oc.nombre
+         FROM organigrama_cargo_asignaciones oca
+         INNER JOIN organigrama_cargos oc ON oc.id = oca.cargo_id
+         WHERE oca.empleado_id = e.id AND oca.activo = TRUE AND oc.activo = TRUE
+           AND (oca.proyecto_id = p.id OR oca.proyecto_id IS NULL)
+         ORDER BY (oca.proyecto_id = p.id) DESC,
+           CASE WHEN LOWER(oc.nombre) = 'director general' THEN 4 WHEN LOWER(oc.nombre) = 'direccion de operaciones' THEN 3 WHEN LOWER(oc.nombre) LIKE '%pmc%' OR LOWER(oc.nombre) LIKE '%jefe de proyectos%' THEN 2 WHEN LOWER(oc.nombre) LIKE '%delineante%' THEN 1 ELSE 0 END DESC,
+           oc.nombre ASC
+         LIMIT 1
+       ) org_cargo ON TRUE
        WHERE p.activo = TRUE
+       UNION ALL
+       SELECT p.id AS project_id, p.nombre AS project_name, c.id AS client_id,
+              CONCAT_WS(' ', c.nombre, c.apellido) AS client_name, e.id AS employee_id,
+              CONCAT_WS(' ', e.nombre, e.apellido) AS employee_name, oc.nombre AS employee_role,
+              oc.nombre AS role_in_project,
+              COALESCE((SELECT array_agg(alias ORDER BY alias) FROM proyecto_aliases WHERE proyecto_id = p.id), ARRAY[]::varchar[]) AS project_aliases
+       FROM organigrama_cargo_asignaciones oca
+       INNER JOIN organigrama_cargos oc ON oc.id = oca.cargo_id AND oc.activo = TRUE
+       INNER JOIN empleados e ON e.id = oca.empleado_id AND e.activo = TRUE
+       INNER JOIN proyectos p ON p.id = oca.proyecto_id AND p.activo = TRUE
+       LEFT JOIN clientes c ON c.id = p.cliente_id
+       WHERE oca.activo = TRUE
+       UNION ALL
+       SELECT p.id AS project_id, p.nombre AS project_name, c.id AS client_id,
+              CONCAT_WS(' ', c.nombre, c.apellido) AS client_name, e.id AS employee_id,
+              CONCAT_WS(' ', e.nombre, e.apellido) AS employee_name, oc.nombre AS employee_role,
+              oc.nombre AS role_in_project,
+              COALESCE((SELECT array_agg(alias ORDER BY alias) FROM proyecto_aliases WHERE proyecto_id = p.id), ARRAY[]::varchar[]) AS project_aliases
+       FROM organigrama_cargo_asignaciones oca
+       INNER JOIN organigrama_cargos oc ON oc.id = oca.cargo_id AND oc.activo = TRUE
+       INNER JOIN empleados e ON e.id = oca.empleado_id AND e.activo = TRUE
+       CROSS JOIN proyectos p
+       LEFT JOIN clientes c ON c.id = p.cliente_id
+       WHERE oca.activo = TRUE AND oca.proyecto_id IS NULL AND p.activo = TRUE
        UNION ALL
        SELECT NULL::varchar AS project_id, NULL::varchar AS project_name, NULL::varchar AS client_id,
               NULL::varchar AS client_name, e.id AS employee_id, CONCAT_WS(' ', e.nombre, e.apellido) AS employee_name,
@@ -4267,7 +4568,7 @@ async function persistMeetingActionResponsibles(actionId: string, projectName: s
   for (const reference of references) {
     if (!reference.employeeId || !reference.employeeName || seen.has(reference.employeeId)) continue;
     seen.add(reference.employeeId);
-    const result = await queryable.query(`INSERT INTO meeting_review_action_responsibles (action_id, employee_id, responsible_name, responsible_role, match_confidence) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (action_id, employee_id) DO UPDATE SET responsible_name = EXCLUDED.responsible_name, responsible_role = EXCLUDED.responsible_role, match_confidence = EXCLUDED.match_confidence`, [actionId, reference.employeeId, reference.employeeName, reference.employeeRole, reference.matchConfidence || 'high']);
+    const result = await queryable.query(`INSERT INTO meeting_review_action_responsibles (action_id, responsible_kind, responsible_id, employee_id, responsible_name, responsible_role, match_confidence) VALUES ($1, 'employee', $2, $2, $3, $4, $5) ON CONFLICT (action_id, responsible_kind, responsible_id) DO UPDATE SET employee_id = EXCLUDED.employee_id, responsible_name = EXCLUDED.responsible_name, responsible_role = EXCLUDED.responsible_role, match_confidence = EXCLUDED.match_confidence`, [actionId, reference.employeeId, reference.employeeName, reference.employeeRole, reference.matchConfidence || 'high']);
     inserted += result.rowCount || 0;
   }
   return inserted;
@@ -4312,15 +4613,16 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
   }
   const actionsResult = await pool.query<{
     id: string; title: string; project_name: string | null; responsible: string | null; project_id: string | null; responsible_id: string | null;
-    responsible_role: string | null; match_confidence: string | null; review_project_name: string | null; review_project_id: string | null; review_pmc_employee_id: string | null;
+    responsible_kind: string | null; responsible_source: string | null; responsible_role: string | null; match_confidence: string | null; review_project_name: string | null; review_project_id: string | null; review_pmc_employee_id: string | null;
   }>(
-    `SELECT ma.id, ma.title, ma.project_name, ma.responsible, ma.project_id, ma.responsible_id, ma.responsible_role, ma.match_confidence,
+    `SELECT ma.id, ma.title, ma.project_name, ma.responsible, ma.project_id, ma.responsible_id, ma.responsible_kind, ma.responsible_source, ma.responsible_role, ma.match_confidence,
             r.project_name AS review_project_name, r.project_id AS review_project_id, r.pmc_employee_id AS review_pmc_employee_id
      FROM meeting_review_actions ma
      INNER JOIN meeting_reviews r ON r.artifact_id = ma.artifact_id`,
   );
   for (const action of actionsResult.rows) {
     result.actionsScanned += 1;
+    if (action.responsible_source === 'manual') continue;
     const reference = resolveMeetingDirectoryReferences({ projectName: action.project_name || action.review_project_name, employeeName: action.responsible, roleHint: action.responsible_role || action.responsible || action.title }, candidates);
     const directedReference = resolveMeetingDirectoryReferences({ projectName: action.project_name || action.review_project_name, employeeName: actionDirectedPerson(action.title) }, candidates);
     const matchedReference = directedReference.employeeId && isDirectorReference(directedReference) ? directedReference : reference;
@@ -4337,13 +4639,16 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
     const responsible = effectiveReference.employeeName || action.responsible;
     const nextConfidence = effectiveReference.matchConfidence || (projectId ? 'high' : null);
     const additionalResponsibles = await persistMeetingActionResponsibles(action.id, projectName, action.responsible, action.responsible_role || action.responsible || action.title, candidates);
-    if (action.project_id === projectId && action.responsible_id === effectiveReference.employeeId && action.project_name === projectName && action.responsible === responsible && (action.responsible_role || null) === effectiveReference.employeeRole && (action.match_confidence || null) === nextConfidence) {
+    const expectedResponsibleKind = effectiveReference.employeeId ? 'employee' : null;
+    if (action.project_id === projectId && action.responsible_id === effectiveReference.employeeId && (action.responsible_kind || null) === expectedResponsibleKind && action.project_name === projectName && action.responsible === responsible && (action.responsible_role || null) === effectiveReference.employeeRole && (action.match_confidence || null) === nextConfidence) {
       if (additionalResponsibles) result.actionsTagged += 1;
       continue;
     }
     await pool.query(
       `UPDATE meeting_review_actions
-       SET project_name = $2, project_id = $3, responsible = $4, responsible_id = $5, responsible_role = $6, match_confidence = $7, updated_at = NOW()
+       SET project_name = $2, project_id = $3, responsible = $4, responsible_id = $5,
+           responsible_kind = CASE WHEN $5 IS NULL THEN NULL ELSE 'employee' END,
+           responsible_role = $6, responsible_source = 'automatic', match_confidence = $7, updated_at = NOW()
        WHERE id = $1`,
       [action.id, projectName, projectId, responsible, effectiveReference.employeeId, effectiveReference.employeeRole, nextConfidence],
     );
@@ -4435,6 +4740,49 @@ async function ensureMeetingReview(artifactId: string, actor: string): Promise<b
   return Boolean(result.rows.length);
 }
 
+export type ManualActionResponsible = { kind: 'employee' | 'client'; id: string };
+
+export function manualActionResponsibleInput(body: Record<string, unknown>): ManualActionResponsible | null {
+  const kind = String(body.kind || '').trim().toLowerCase();
+  const id = String(body.id || '').trim().slice(0, 255);
+  return id && (kind === 'employee' || kind === 'client') ? { kind, id } : null;
+}
+
+type ResolvedActionResponsible = { name: string; role: string; kind: 'employee' | 'client' };
+
+async function resolveActiveActionResponsible(selection: ManualActionResponsible, queryable: Pick<Pool, 'query'> | PoolClient): Promise<ResolvedActionResponsible | null> {
+  if (selection.kind === 'employee') {
+    const employee = await queryable.query<{ name: string | null; role: string | null }>(
+      `SELECT NULLIF(TRIM(CONCAT_WS(' ', e.nombre, e.apellido)), '') AS name,
+              COALESCE((SELECT r.nombre FROM usuario_rol ur
+                        INNER JOIN roles r ON r.id = ur.rol_id
+                        WHERE ur.empleado_id = e.id
+                        ORDER BY CASE WHEN LOWER(r.nombre) SIMILAR TO '%(subcontrata|proveedor)%' THEN 0 ELSE 1 END, r.nombre ASC
+                        LIMIT 1), 'Empleado') AS role
+       FROM empleados e
+       WHERE e.id = $1 AND e.activo = TRUE`,
+      [selection.id],
+    );
+    if (employee.rows[0]?.name) return { name: employee.rows[0].name, role: employee.rows[0].role || 'Empleado', kind: 'employee' };
+    return null;
+  }
+  const customer = await queryable.query<{ name: string | null }>(
+    `SELECT NULLIF(TRIM(CONCAT_WS(' ', nombre, apellido)), '') AS name
+     FROM clientes WHERE id = $1 AND activo = TRUE`,
+    [selection.id],
+  );
+  return customer.rows[0]?.name ? { name: customer.rows[0].name, role: 'Cliente', kind: 'client' } : null;
+}
+
+async function upsertMeetingActionResponsible(actionId: string, selection: ManualActionResponsible, responsible: ResolvedActionResponsible, queryable: Pick<Pool, 'query'> | PoolClient): Promise<void> {
+  await queryable.query(
+    `INSERT INTO meeting_review_action_responsibles (action_id, responsible_kind, responsible_id, employee_id, responsible_name, responsible_role, match_confidence)
+     VALUES ($1, $2, $3, $4, $5, $6, 'manual')
+     ON CONFLICT (action_id, responsible_kind, responsible_id) DO UPDATE
+     SET employee_id = EXCLUDED.employee_id, responsible_name = EXCLUDED.responsible_name, responsible_role = EXCLUDED.responsible_role, match_confidence = EXCLUDED.match_confidence`,
+    [actionId, responsible.kind, selection.id, responsible.kind === 'employee' ? selection.id : null, responsible.name, responsible.role],
+  );
+}
 function meetingActionFields(body: Record<string, unknown>): { title: string; projectName: string | null; responsible: string | null; dueDate: string | null; estimatedMinutes: number | null; sourceRef: string | null; status: string } {
   const title = String(body.title || '').trim().slice(0, 2000);
   const projectName = String(body.project_name || '').trim().slice(0, 255) || null;
@@ -4448,6 +4796,57 @@ function meetingActionFields(body: Record<string, unknown>): { title: string; pr
   return { title, projectName, responsible, dueDate, estimatedMinutes, sourceRef, status };
 }
 
+function meetingAuditActor(res: Response): string {
+  const session = res.locals.ceoSession as CeoSession | undefined;
+  return String(session?.nombre || session?.usuario || 'sistema').trim().slice(0, 120) || 'sistema';
+}
+
+function auditValue(value: unknown, fallback = 'sin asignar'): string {
+  const text = String(value ?? '').trim();
+  return text ? `«${text.slice(0, 180)}»` : fallback;
+}
+
+function auditFieldChange(label: string, before: unknown, after: unknown, fallback?: string): string | null {
+  const beforeText = String(before ?? '').trim();
+  const afterText = String(after ?? '').trim();
+  if (beforeText === afterText) return null;
+  return `${label}: ${auditValue(beforeText, fallback)} → ${auditValue(afterText, fallback)}`;
+}
+
+function meetingKindAuditLabel(value: unknown): string {
+  return ({ COMITE_OBRA: 'Comité de obra', REUNION_CLIENTE: 'Reunión cliente', MEET: 'Reunión' } as Record<string, string>)[String(value || '')] || 'Reunión';
+}
+
+function actionStatusAuditLabel(value: unknown): string {
+  return ({ pending: 'Pendiente', done: 'Completada', cancelled: 'Cancelada' } as Record<string, string>)[String(value || '')] || 'Pendiente';
+}
+
+function describeMeetingChanges(previous: Record<string, unknown> | undefined, next: Record<string, unknown>): string | null {
+  if (!previous) return 'Datos de reunión actualizados manualmente.';
+  const changes = [
+    String(previous.summary || '') === String(next.summary || '') ? null : 'Resumen actualizado',
+    String(previous.decisions || '') === String(next.decisions || '') ? null : 'Decisiones actualizadas',
+    auditFieldChange('Obra', previous.project_name, next.project_name),
+    auditFieldChange('Contacto', previous.contact_name, next.contact_name),
+    auditFieldChange('PMC', previous.pmc, next.pmc),
+    auditFieldChange('Tipo', meetingKindAuditLabel(previous.meeting_kind), meetingKindAuditLabel(next.meeting_kind)),
+    auditFieldChange('Fecha de reunión', previous.meeting_date, next.meeting_date, 'sin fecha'),
+  ].filter((value): value is string => Boolean(value));
+  return changes.length ? `Datos de reunión actualizados: ${changes.join('; ')}.` : null;
+}
+
+function describeActionChanges(previous: Record<string, unknown> | undefined, next: Record<string, unknown>): string | null {
+  if (!previous) return `Acción ${auditValue(next.title, 'sin título')} actualizada.`;
+  const changes = [
+    auditFieldChange('Título', previous.title, next.title, 'sin título'),
+    auditFieldChange('Obra', previous.project_name, next.project_name),
+    auditFieldChange('Fecha límite', previous.due_date, next.due_date, 'sin fecha'),
+    auditFieldChange('Duración estimada', previous.estimated_minutes, next.estimated_minutes, 'sin estimación'),
+    auditFieldChange('Evidencia', previous.source_ref, next.source_ref, 'sin evidencia'),
+    auditFieldChange('Estado', actionStatusAuditLabel(previous.status), actionStatusAuditLabel(next.status)),
+  ].filter((value): value is string => Boolean(value));
+  return changes.length ? `Acción ${auditValue(previous.title || next.title, 'sin título')} actualizada: ${changes.join('; ')}.` : null;
+}
 export function meetingApprovalBlockers(actions: Array<{ responsible?: string | null; due_date?: string | null; status?: string; has_responsible?: boolean; responsibles?: unknown }>): { missingResponsible: number; missingDueDate: number } {
   return actions.reduce((totals, action) => {
     if (action.status === 'done' || action.status === 'cancelled') return totals;
@@ -4494,7 +4893,34 @@ export function meetingDirectoryFilterId(value: unknown): string | null {
   return raw ? raw.slice(0, 255) : null;
 }
 
-app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => {
+app.get('/api/meetings/work-items', requireCeoMeetingAccess, async (_req: Request, res: Response) => {
+  try {
+    res.json(await meetingWorkSummary(res.locals.ceoSession as CeoSession, res.locals.meetingAccessScope as MeetingAccessScope));
+  } catch (error) {
+    console.error('[meetings/work-items] Error listando pendientes:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudieron cargar tus pendientes' });
+  }
+});
+
+app.post('/api/meetings/work-items/read', requireCeoMeetingAccess, async (req: Request, res: Response) => {
+  try {
+    const session = res.locals.ceoSession as CeoSession;
+    if (!session.id) return res.status(401).json({ error: 'Sesión inválida o vencida. Inicia sesión nuevamente.' });
+    const requested = Array.isArray(req.body?.keys) ? req.body.keys.map((value: unknown) => String(value || '').trim()).filter(Boolean).slice(0, 250) : [];
+    if (!requested.length) return res.json({ marked: 0 });
+    const work = await loadMeetingWorkItems(session, res.locals.meetingAccessScope as MeetingAccessScope);
+    const allowed = new Set(work.map((item) => item.key));
+    const keys = requested.filter((key: string) => allowed.has(key));
+    if (!keys.length) return res.json({ marked: 0 });
+    await pool.query('INSERT INTO meeting_notification_reads (user_id, notification_key) SELECT $1, key FROM unnest($2::text[]) AS key ON CONFLICT (user_id, notification_key) DO UPDATE SET read_at = NOW()', [session.id, keys]);
+    res.json({ marked: keys.length });
+  } catch (error) {
+    console.error('[meetings/work-items] Error marcando pendientes:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudieron actualizar tus notificaciones' });
+  }
+});
+
+app.get('/api/meetings', requireCeoMeetingAccess, async (req: Request, res: Response) => {
   try {
     const { page, pageSize, offset } = meetingListPagination(req.query.page, req.query.page_size);
     const listFilters = meetingListFilters(req.query.date_from, req.query.date_to, req.query.recent_days, req.query.sort);
@@ -4507,12 +4933,20 @@ app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => 
     const role = meetingDirectoryFilterId(req.query.role);
     const requestedFilter = String(req.query.filter || 'all').trim();
     const filter = ['all', 'mine', 'pending', 'approved'].includes(requestedFilter) ? requestedFilter : 'all';
-    const artifacts = await pool.query<{ id: string }>(
-      `SELECT a.id FROM google_drive_artifacts a LEFT JOIN meeting_reviews r ON r.artifact_id = a.id WHERE a.artifact_type IN ('transcript', 'notes', 'document') AND r.artifact_id IS NULL ORDER BY a.source_modified_at DESC NULLS LAST LIMIT ${MEETING_IMPORT_BATCH_SIZE}`,
-    );
-    await Promise.all(artifacts.rows.map((artifact) => ensureMeetingReview(artifact.id, 'sistema')));
+    const scope = res.locals.meetingAccessScope as MeetingAccessScope;
+    const isFullMeetingAccess = !scope.employeeId;
+    if (isFullMeetingAccess) {
+      const artifacts = await pool.query<{ id: string }>(
+        `SELECT a.id FROM google_drive_artifacts a LEFT JOIN meeting_reviews r ON r.artifact_id = a.id WHERE a.artifact_type IN ('transcript', 'notes', 'document') AND r.artifact_id IS NULL ORDER BY a.source_modified_at DESC NULLS LAST LIMIT ${MEETING_IMPORT_BATCH_SIZE}`,
+      );
+      await Promise.all(artifacts.rows.map((artifact) => ensureMeetingReview(artifact.id, 'sistema')));
+    }
     const where: string[] = ["a.artifact_type IN ('transcript', 'notes', 'document')"];
     const parameters: unknown[] = [];
+    if (scope.employeeId) {
+      parameters.push(scope.employeeId);
+      where.push(meetingVisibilityCondition('r', '$' + parameters.length));
+    }
     if (search) {
       parameters.push('%' + search + '%');
       const placeholder = '$' + parameters.length;
@@ -4561,9 +4995,11 @@ app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => 
         parameters,
       ),
       pool.query(
-        "SELECT COUNT(DISTINCT r.artifact_id) FILTER (WHERE r.status = 'pending')::int AS pending, COUNT(DISTINCT r.artifact_id) FILTER (WHERE r.workflow_stage = 'pmc')::int AS awaiting, COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND ma.responsible_id IS NULL AND NOT EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id))::int AS unassigned, COUNT(DISTINCT r.artifact_id) FILTER (WHERE r.project_id IS NULL)::int AS no_project FROM meeting_reviews r LEFT JOIN meeting_review_actions ma ON ma.artifact_id = r.artifact_id",
+        `SELECT COUNT(DISTINCT r.artifact_id) FILTER (WHERE r.status = 'pending')::int AS pending, COUNT(DISTINCT r.artifact_id) FILTER (WHERE r.workflow_stage = 'pmc')::int AS awaiting, COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND ma.responsible_id IS NULL AND NOT EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id))::int AS unassigned, COUNT(DISTINCT r.artifact_id) FILTER (WHERE r.project_id IS NULL)::int AS no_project FROM meeting_reviews r LEFT JOIN meeting_review_actions ma ON ma.artifact_id = r.artifact_id ${scope.employeeId ? `WHERE ${meetingVisibilityCondition('r', '$1')}` : ''}`,
+        scope.employeeId ? [scope.employeeId] : [],
       ),
     ]);
+    const personalWork = await meetingWorkSummary(res.locals.ceoSession as CeoSession, scope);
     const total = Number(listResult.rows[0]?.total_count || 0);
     const items = listResult.rows.map((row) => {
       const named = meetingRowWithName(row);
@@ -4572,7 +5008,7 @@ app.get('/api/meetings', requireCeoAuth, async (req: Request, res: Response) => 
     });
     res.json({
       items, page, pageSize, total, totalPages: total ? Math.ceil(total / pageSize) : 0,
-      metrics: metricsResult.rows[0] || { pending: 0, awaiting: 0, unassigned: 0, no_project: 0 },
+      metrics: { ...(metricsResult.rows[0] || { pending: 0, awaiting: 0, unassigned: 0, no_project: 0 }), awaiting: personalWork.reviews, pending: Math.max(Number(metricsResult.rows[0]?.pending || 0), personalWork.reviews) },
     });
   } catch (error) {
     console.error('[meetings] Error listando:', (error as Error).message);
@@ -4594,7 +5030,7 @@ async function requeueMeetingsMissingPmc(): Promise<number> {
   return rows.length;
 }
 
-app.post('/api/meetings/reanalyze-missing-pmc', requireCeoAuth, async (_req: Request, res: Response) => {
+app.post('/api/meetings/reanalyze-missing-pmc', requireMeetingEditor, async (_req: Request, res: Response) => {
   try {
     const queued = await requeueMeetingsMissingPmc();
     if (queued) void processPendingMeetingAnalyses();
@@ -4606,23 +5042,62 @@ app.post('/api/meetings/reanalyze-missing-pmc', requireCeoAuth, async (_req: Req
   }
 });
 
-app.get('/api/meetings/filter-options', requireCeoAuth, async (_req: Request, res: Response) => {
+app.get('/api/meetings/filter-options', requireCeoMeetingAccess, async (_req: Request, res: Response) => {
   try {
-    const { rows } = await pool.query<{ pmc: string }>(
-      `SELECT TRIM(pmc) AS pmc
-       FROM meeting_reviews
-       WHERE NULLIF(TRIM(COALESCE(pmc, '')), '') IS NOT NULL
-       GROUP BY TRIM(pmc)
-       ORDER BY TRIM(pmc) ASC`,
-    );
-    res.json({ pmcs: rows.map((row) => row.pmc) });
+    const scope = res.locals.meetingAccessScope as MeetingAccessScope;
+    const visibility = scope.employeeId ? meetingVisibilityCondition('r', '$1') : 'TRUE';
+    const parameters = scope.employeeId ? [scope.employeeId] : [];
+    const [pmcsResult, projectsResult, contactsResult, rolesResult] = await Promise.all([
+      pool.query<{ pmc: string }>(
+        `SELECT TRIM(r.pmc) AS pmc
+         FROM meeting_reviews r
+         WHERE NULLIF(TRIM(r.pmc), '') IS NOT NULL AND (${visibility})
+         GROUP BY TRIM(r.pmc)
+         ORDER BY TRIM(r.pmc) ASC`, parameters,
+      ),
+      pool.query<{ id: string; nombre: string }>(
+        `SELECT DISTINCT p.id, p.nombre
+         FROM proyectos p INNER JOIN meeting_reviews r ON r.project_id = p.id
+         WHERE p.activo = TRUE AND (${visibility})
+         ORDER BY p.nombre ASC`, parameters,
+      ),
+      pool.query<{ id: string; nombre: string; apellido: string | null }>(
+        `SELECT DISTINCT c.id, c.nombre, c.apellido
+         FROM clientes c INNER JOIN meeting_reviews r ON r.contact_id = c.id
+         WHERE c.activo = TRUE AND (${visibility})
+         ORDER BY c.nombre ASC, c.apellido ASC`, parameters,
+      ),
+      pool.query<{ nombre: string }>(
+        `SELECT DISTINCT role_values.nombre
+         FROM (
+           SELECT role_lookup.nombre
+           FROM meeting_reviews r
+           INNER JOIN usuario_rol role_link ON role_link.empleado_id = r.pmc_employee_id
+           INNER JOIN roles role_lookup ON role_lookup.id = role_link.rol_id
+           WHERE (${visibility})
+           UNION
+           SELECT action.responsible_role AS nombre
+           FROM meeting_reviews r
+           INNER JOIN meeting_review_actions action ON action.artifact_id = r.artifact_id
+           WHERE NULLIF(TRIM(COALESCE(action.responsible_role, '')), '') IS NOT NULL AND (${visibility})
+         ) AS role_values
+         WHERE NULLIF(TRIM(role_values.nombre), '') IS NOT NULL
+         ORDER BY role_values.nombre ASC`, parameters,
+      ),
+    ]);
+    res.json({
+      pmcs: pmcsResult.rows.map((row) => row.pmc),
+      projects: projectsResult.rows,
+      contacts: contactsResult.rows,
+      roles: rolesResult.rows.map((row) => row.nombre),
+    });
   } catch (error) {
-    console.error('[meetings] Error cargando opciones de PMC:', (error as Error).message);
-    res.status(500).json({ error: 'No se pudieron cargar los PMC detectados' });
+    console.error('[meetings] Error cargando opciones de filtro:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudieron cargar las opciones de filtro' });
   }
 });
 
-app.post('/api/meetings/retag', requireCeoAuth, async (_req: Request, res: Response) => {
+app.post('/api/meetings/retag', requireMeetingEditor, async (_req: Request, res: Response) => {
   try {
     const result = await backfillMeetingDirectoryTags();
     publish('meetings-updated', { source: 'directory-retag', ...result });
@@ -4632,7 +5107,7 @@ app.post('/api/meetings/retag', requireCeoAuth, async (_req: Request, res: Respo
     res.status(500).json({ error: 'No se pudieron vincular las reuniones con el directorio' });
   }
 });
-type MeetingAiRunResult = { provider: string; model: string; actions: number; blockers: number };
+type MeetingAiRunResult = { provider: string; model: string; actions: number; blockers: number; routed?: number };
 let meetingAnalysisWorkerRunning = false;
 
 async function runMeetingAiAnalysis(artifactId: string, actor: string): Promise<MeetingAiRunResult> {
@@ -4719,7 +5194,8 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string): Promise<
   } finally {
     client.release();
   }
-  return { provider: generation.provider, model: generation.model, actions: taggedActions.length, blockers: analysis.blockers.length };
+  const routed = await routeReadyMeetingReviews();
+  return { provider: generation.provider, model: generation.model, actions: taggedActions.length, blockers: analysis.blockers.length, routed };
 }
 
 async function queueMeetingAiAnalysis(artifactId: string): Promise<void> {
@@ -4734,6 +5210,7 @@ async function processPendingMeetingAnalyses(): Promise<void> {
   if (meetingAnalysisWorkerRunning) return;
   meetingAnalysisWorkerRunning = true;
   try {
+    await routeReadyMeetingReviews();
     await pool.query("UPDATE meeting_reviews SET analysis_status = 'pending', analysis_error = 'La ejecución anterior venció y fue reencolada.', updated_at = NOW() WHERE analysis_status = 'processing' AND updated_at < NOW() - INTERVAL '10 minutes'");
     await pool.query("UPDATE meeting_reviews r SET analysis_status = 'failed', analysis_error = 'No se pudo extraer texto del documento para analizarlo.', analysis_version = $1, updated_at = NOW() FROM google_drive_artifacts a WHERE r.artifact_id = a.id AND r.analysis_status = 'pending' AND (a.content_text IS NULL OR length(trim(a.content_text)) = 0)", [MEETING_AI_ANALYSIS_VERSION]);
     await pool.query("UPDATE meeting_reviews r SET analysis_status = 'pending', analysis_error = NULL, updated_at = NOW() FROM google_drive_artifacts a WHERE r.artifact_id = a.id AND r.analysis_status <> 'processing' AND a.content_text IS NOT NULL AND length(trim(a.content_text)) > 0 AND (r.analysis_version < $1 OR (r.analysis_status = 'failed' AND r.analysis_error = 'No se pudo extraer texto del documento para analizarlo.') OR r.analysis_source_modified_at IS DISTINCT FROM a.source_modified_at)", [MEETING_AI_ANALYSIS_VERSION]);
@@ -4762,9 +5239,9 @@ async function processPendingMeetingAnalyses(): Promise<void> {
   }
 }
 
-app.post('/api/meetings/:artifactId/analyze', requireCeoAuth, async (req: Request, res: Response) => {
+app.post('/api/meetings/:artifactId/analyze', requireMeetingEditor, async (req: Request, res: Response) => {
   const artifactId = String(req.params.artifactId || '').trim();
-  const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
+  const actor = meetingAuditActor(res);
   try {
     if (!await ensureMeetingReview(artifactId, actor)) return res.status(404).json({ error: 'Reunión no encontrada' });
     const claim = await pool.query("UPDATE meeting_reviews SET analysis_status = 'processing', analysis_error = NULL, updated_at = NOW() WHERE artifact_id = $1 AND analysis_status <> 'processing' RETURNING artifact_id", [artifactId]);
@@ -4779,10 +5256,15 @@ app.post('/api/meetings/:artifactId/analyze', requireCeoAuth, async (req: Reques
   }
 });
 
-app.get('/api/meetings/:artifactId', requireCeoAuth, async (req: Request, res: Response) => {
+app.get('/api/meetings/:artifactId', requireCeoMeetingAccess, async (req: Request, res: Response) => {
   try {
     const artifactId = String(req.params.artifactId || '').trim();
-    await ensureMeetingReview(artifactId, String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema'));
+    const scope = res.locals.meetingAccessScope as MeetingAccessScope;
+    if (!scope.employeeId) await ensureMeetingReview(artifactId, String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema'));
+    const artifactParameters: unknown[] = [artifactId];
+    const visibilityWhere = scope.employeeId
+      ? (() => { artifactParameters.push(scope.employeeId); return ` AND ${meetingVisibilityCondition('r', '$' + artifactParameters.length)}`; })()
+      : '';
     const artifactResult = await pool.query(
       `SELECT a.id, a.name, a.metadata, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_text, a.content_truncated,
               f.label AS folder_label, c.google_email, r.summary, r.decisions, r.project_name, r.project_id, r.contact_name, r.contact_id,
@@ -4791,15 +5273,15 @@ app.get('/api/meetings/:artifactId', requireCeoAuth, async (req: Request, res: R
        INNER JOIN meeting_reviews r ON r.artifact_id = a.id
        LEFT JOIN google_drive_folders f ON f.id = a.folder_id
        LEFT JOIN google_drive_connections c ON c.id = a.connection_id
-       WHERE a.id = $1`, [artifactId],
+       WHERE a.id = $1${visibilityWhere}`, artifactParameters,
     );
     if (!artifactResult.rows.length) return res.status(404).json({ error: 'Reunión no encontrada' });
     const [actionsResult, versionsResult, detectedBlockersResult] = await Promise.all([
-      pool.query(`SELECT ma.id, ma.title, ma.project_name, ma.project_id, ma.responsible, ma.responsible_id, ma.responsible_role, ma.match_confidence, ma.due_date, ma.estimated_minutes, ma.source_ref, ma.status, ma.origin, ma.created_at, ma.updated_at,
-        COALESCE(json_agg(json_build_object('employee_id', mar.employee_id, 'name', mar.responsible_name, 'role', mar.responsible_role, 'match_confidence', mar.match_confidence) ORDER BY mar.responsible_name) FILTER (WHERE mar.employee_id IS NOT NULL), '[]'::json) AS responsibles
+      pool.query(`SELECT ma.id, ma.title, ma.project_name, ma.project_id, ma.responsible, ma.responsible_id, ma.responsible_kind, ma.responsible_source, ma.responsible_role, ma.match_confidence, ma.due_date, ma.estimated_minutes, ma.source_ref, ma.status, ma.origin, ma.created_at, ma.updated_at,
+        COALESCE(json_agg(json_build_object('responsible_id', mar.responsible_id, 'responsible_kind', mar.responsible_kind, 'employee_id', mar.employee_id, 'name', mar.responsible_name, 'role', mar.responsible_role, 'match_confidence', mar.match_confidence) ORDER BY mar.responsible_name) FILTER (WHERE mar.responsible_id IS NOT NULL), '[]'::json) AS responsibles
         FROM meeting_review_actions ma LEFT JOIN meeting_review_action_responsibles mar ON mar.action_id = ma.id
         WHERE ma.artifact_id = $1 GROUP BY ma.id ORDER BY ma.created_at ASC`, [artifactId]),
-      pool.query(`SELECT id, actor, stage, detail, created_at FROM meeting_review_versions WHERE artifact_id = $1 ORDER BY created_at DESC LIMIT 30`, [artifactId]),
+      pool.query(`SELECT id, actor, stage, detail, created_at FROM meeting_review_versions WHERE artifact_id = $1 ORDER BY created_at DESC LIMIT 250`, [artifactId]),
       pool.query(`SELECT id, title, detail, severity, source_ref, created_at FROM meeting_review_blockers WHERE artifact_id = $1 ORDER BY created_at DESC`, [artifactId]),
     ]);
     res.json({ ...meetingRowWithName(artifactResult.rows[0]), actions: actionsResult.rows, versions: versionsResult.rows, blockers: meetingApprovalBlockers(actionsResult.rows), detected_blockers: detectedBlockersResult.rows });
@@ -4809,12 +5291,14 @@ app.get('/api/meetings/:artifactId', requireCeoAuth, async (req: Request, res: R
   }
 });
 
-app.put('/api/meetings/:artifactId', requireCeoAuth, async (req: Request, res: Response) => {
+app.put('/api/meetings/:artifactId', requireMeetingEditor, async (req: Request, res: Response) => {
   try {
     const artifactId = String(req.params.artifactId || '').trim();
-    const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
+    const actor = meetingAuditActor(res);
     await ensureMeetingReview(artifactId, actor);
     const body = (req.body || {}) as Record<string, unknown>;
+    const previousResult = await pool.query<Record<string, unknown>>('SELECT summary, decisions, project_name, contact_name, pmc, meeting_kind, meeting_date FROM meeting_reviews WHERE artifact_id = $1', [artifactId]);
+    const previous = previousResult.rows[0];
     const requestedMeetingDate = meetingAnalysisDate(body.meeting_date);
     const meetingDateInput = String(body.meeting_date || '').trim();
     if (meetingDateInput && !requestedMeetingDate) return res.status(400).json({ error: 'La fecha de reunión debe usar YYYY-MM-DD' });
@@ -4829,87 +5313,433 @@ app.put('/api/meetings/:artifactId', requireCeoAuth, async (req: Request, res: R
     );
     if (!rows.length) return res.status(404).json({ error: 'Reunión no encontrada' });
     await backfillMeetingDirectoryTags();
-    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', 'Resumen, decisiones o datos de reunión actualizados y vinculados al directorio')`, [randomUUID(), artifactId, actor]);
+    const detail = describeMeetingChanges(previous, {
+      summary: String(body.summary || '').slice(0, 20_000), decisions: String(body.decisions || '').slice(0, 20_000),
+      project_name: String(body.project_name || '').trim().slice(0, 255) || null, contact_name: String(body.contact_name || '').trim().slice(0, 255) || null,
+      pmc: String(body.pmc || '').trim().slice(0, 255) || null, meeting_kind: meetingKind, meeting_date: requestedMeetingDate,
+    });
+    if (detail) await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', $4)`, [randomUUID(), artifactId, actor, detail]);
     res.json(rows[0]);
   } catch (error) { res.status(500).json({ error: 'No se pudo guardar la reunión' }); }
 });
 
-app.post('/api/meetings/:artifactId/actions', requireCeoAuth, async (req: Request, res: Response) => {
+app.post('/api/meetings/:artifactId/actions', requireMeetingEditor, async (req: Request, res: Response) => {
   try {
     const artifactId = String(req.params.artifactId || '').trim();
-    const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
+    const actor = meetingAuditActor(res);
     await ensureMeetingReview(artifactId, actor);
     const action = meetingActionFields((req.body || {}) as Record<string, unknown>);
     if (!action.title) return res.status(400).json({ error: 'El título de la acción es obligatorio' });
+
     const { rows } = await pool.query(
       `INSERT INTO meeting_review_actions (id, artifact_id, title, project_name, responsible, due_date, estimated_minutes, source_ref, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [randomUUID(), artifactId, action.title, action.projectName, action.responsible, action.dueDate, action.estimatedMinutes, action.sourceRef, action.status],
     );
     await backfillMeetingDirectoryTags();
-    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', 'Acción añadida y vinculada al directorio cuando hubo coincidencia exacta')`, [randomUUID(), artifactId, actor]);
+    const actionDetail = `Acción ${auditValue(action.title, 'sin título')} añadida${action.projectName ? ` para la obra ${auditValue(action.projectName)}` : ''}${action.dueDate ? ` con fecha límite ${auditValue(action.dueDate)}` : ''}.`;
+    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', $4)`, [randomUUID(), artifactId, actor, actionDetail]);
     res.status(201).json(rows[0]);
   } catch (error) { res.status(500).json({ error: 'No se pudo crear la acción' }); }
 });
 
-app.put('/api/meetings/:artifactId/actions/:actionId', requireCeoAuth, async (req: Request, res: Response) => {
+app.put('/api/meetings/:artifactId/actions/:actionId', requireMeetingEditor, async (req: Request, res: Response) => {
   try {
     const artifactId = String(req.params.artifactId || '').trim();
     const actionId = String(req.params.actionId || '').trim();
-    const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
+    const actor = meetingAuditActor(res);
     const action = meetingActionFields((req.body || {}) as Record<string, unknown>);
     if (!action.title) return res.status(400).json({ error: 'El título de la acción es obligatorio' });
+    const previousResult = await pool.query<Record<string, unknown>>('SELECT title, project_name, due_date, estimated_minutes, source_ref, status FROM meeting_review_actions WHERE id = $1 AND artifact_id = $2', [actionId, artifactId]);
+    const previous = previousResult.rows[0];
     const { rows } = await pool.query(
-      `UPDATE meeting_review_actions SET title = $3, project_name = $4, responsible = $5, due_date = $6,
-       estimated_minutes = $7, source_ref = $8, status = $9, updated_at = NOW()
+      `UPDATE meeting_review_actions SET title = $3, project_name = $4, due_date = $5,
+       estimated_minutes = $6, source_ref = $7, status = $8, updated_at = NOW()
        WHERE id = $1 AND artifact_id = $2 RETURNING *`,
-      [actionId, artifactId, action.title, action.projectName, action.responsible, action.dueDate, action.estimatedMinutes, action.sourceRef, action.status],
+      [actionId, artifactId, action.title, action.projectName, action.dueDate, action.estimatedMinutes, action.sourceRef, action.status],
     );
     if (!rows.length) return res.status(404).json({ error: 'Acción no encontrada' });
     await backfillMeetingDirectoryTags();
-    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', 'Acción actualizada y vinculada al directorio cuando hubo coincidencia exacta')`, [randomUUID(), artifactId, actor]);
+    const detail = describeActionChanges(previous, { title: action.title, project_name: action.projectName, due_date: action.dueDate, estimated_minutes: action.estimatedMinutes, source_ref: action.sourceRef, status: action.status });
+    if (detail) await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', $4)`, [randomUUID(), artifactId, actor, detail]);
     res.json(rows[0]);
   } catch (error) { res.status(500).json({ error: 'No se pudo actualizar la acción' }); }
 });
 
-app.delete('/api/meetings/:artifactId/actions/:actionId', requireCeoAuth, async (req: Request, res: Response) => {
+app.put('/api/meetings/:artifactId/actions/:actionId/responsible', requireMeetingEditor, requireMeetingResponsibleAssigner, async (req: Request, res: Response) => {
+  const artifactId = String(req.params.artifactId || '').trim();
+  const actionId = String(req.params.actionId || '').trim();
+  const actor = meetingAuditActor(res);
+  const selection = manualActionResponsibleInput((req.body || {}) as Record<string, unknown>);
+  if (!selection) return res.status(400).json({ error: 'Seleccioná un empleado, subcontrata o cliente válido.' });
+
+  const client = await pool.connect();
+  try {
+    await ensureMeetingReview(artifactId, actor);
+    await client.query('BEGIN');
+    const previousResult = await client.query<{ responsible: string | null; responsible_id: string | null; responsible_kind: string | null; responsible_role: string | null; responsible_source: string | null }>(
+      `SELECT responsible, responsible_id, responsible_kind, responsible_role, responsible_source
+       FROM meeting_review_actions WHERE id = $1 AND artifact_id = $2 FOR UPDATE`,
+      [actionId, artifactId],
+    );
+    const previous = previousResult.rows[0];
+    if (!previous) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Acción no encontrada' });
+    }
+
+    const responsible = await resolveActiveActionResponsible(selection, client);
+    if (!responsible) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'La persona seleccionada no está activa en el directorio.' });
+    }
+    const alreadyAssigned = previous.responsible_id === selection.id
+      && previous.responsible_kind === responsible.kind
+      && previous.responsible_source === 'manual';
+    if (!alreadyAssigned) {
+      await client.query(
+        `UPDATE meeting_review_actions
+         SET responsible = $3, responsible_id = $4, responsible_kind = $5, responsible_role = $6,
+             responsible_source = 'manual', match_confidence = 'manual', updated_at = NOW()
+         WHERE id = $1 AND artifact_id = $2`,
+        [actionId, artifactId, responsible.name, selection.id, responsible.kind, responsible.role],
+      );
+      if (previous.responsible_id && previous.responsible_kind) {
+        await client.query('DELETE FROM meeting_review_action_responsibles WHERE action_id = $1 AND responsible_kind = $2 AND responsible_id = $3', [actionId, previous.responsible_kind, previous.responsible_id]);
+      }
+      await upsertMeetingActionResponsible(actionId, selection, responsible, client);
+      const previousLabel = previous.responsible ? ` de «${previous.responsible}»` : '';
+      await client.query(
+        `INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail)
+         VALUES ($1, $2, $3, 'asignación', $4)`,
+        [randomUUID(), artifactId, actor, `Responsable${previousLabel} asignado manualmente a «${responsible.name}» (${responsible.role}).`],
+      );
+    }
+    const actionResult = await client.query(
+      `SELECT id, responsible, responsible_id, responsible_kind, responsible_role, responsible_source, match_confidence
+       FROM meeting_review_actions WHERE id = $1 AND artifact_id = $2`,
+      [actionId, artifactId],
+    );
+    await client.query('COMMIT');
+    publish('meetings-updated', { source: 'manual-responsible-assignment', artifactId, actionId, changed: !alreadyAssigned });
+    return res.json({ action: actionResult.rows[0], changed: !alreadyAssigned });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    console.error('[meetings] Error reasignando responsable:', (error as Error).message);
+    return res.status(500).json({ error: 'No se pudo reasignar el responsable' });
+  } finally {
+    client.release();
+  }
+});
+app.delete('/api/meetings/:artifactId/actions/:actionId/responsible', requireMeetingEditor, requireMeetingResponsibleAssigner, async (req: Request, res: Response) => {
+  const artifactId = String(req.params.artifactId || '').trim();
+  const actionId = String(req.params.actionId || '').trim();
+  const actor = meetingAuditActor(res);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query<{ responsible: string | null; responsible_id: string | null; responsible_kind: string | null; responsible_role: string | null }>(
+      `SELECT responsible, responsible_id, responsible_kind, responsible_role
+       FROM meeting_review_actions WHERE id = $1 AND artifact_id = $2 FOR UPDATE`,
+      [actionId, artifactId],
+    );
+    const action = result.rows[0];
+    if (!action) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Acción no encontrada' });
+    }
+    if (!action.responsible_id || !action.responsible_kind) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'La acción no tiene responsable principal asignado.' });
+    }
+    await client.query(
+      `UPDATE meeting_review_actions
+       SET responsible = NULL, responsible_id = NULL, responsible_kind = NULL, responsible_role = NULL,
+           responsible_source = 'manual', match_confidence = 'manual', updated_at = NOW()
+       WHERE id = $1 AND artifact_id = $2`,
+      [actionId, artifactId],
+    );
+    await client.query(
+      'DELETE FROM meeting_review_action_responsibles WHERE action_id = $1 AND responsible_kind = $2 AND responsible_id = $3',
+      [actionId, action.responsible_kind, action.responsible_id],
+    );
+    await client.query(
+      `INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail)
+       VALUES ($1, $2, $3, 'asignación', $4)`,
+      [randomUUID(), artifactId, actor, `Responsable principal ${auditValue(action.responsible, 'sin nombre')} (${action.responsible_role || 'sin rol'}) eliminado manualmente.`],
+    );
+    await client.query('COMMIT');
+    publish('meetings-updated', { source: 'manual-primary-responsible-removal', artifactId, actionId });
+    return res.json({ changed: true });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    console.error('[meetings] Error eliminando responsable principal:', (error as Error).message);
+    return res.status(500).json({ error: 'No se pudo eliminar el responsable principal' });
+  } finally {
+    client.release();
+  }
+});
+app.put('/api/meetings/:artifactId/actions/:actionId/responsibles', requireMeetingEditor, requireMeetingResponsibleAssigner, async (req: Request, res: Response) => {
+  const artifactId = String(req.params.artifactId || '').trim();
+  const actionId = String(req.params.actionId || '').trim();
+  const actor = meetingAuditActor(res);
+  const body = (req.body || {}) as Record<string, unknown>;
+  const selection = manualActionResponsibleInput(body);
+  const previousKind = String(body.previous_kind || '').trim();
+  const previousId = String(body.previous_id || '').trim();
+  const previousSelection = previousKind || previousId ? manualActionResponsibleInput({ kind: previousKind, id: previousId }) : null;
+  if (!selection || ((previousKind || previousId) && !previousSelection)) return res.status(400).json({ error: 'Seleccioná responsables válidos del directorio.' });
+
+  const client = await pool.connect();
+  try {
+    await ensureMeetingReview(artifactId, actor);
+    await client.query('BEGIN');
+    const actionResult = await client.query<{ responsible: string | null; responsible_id: string | null; responsible_kind: string | null }>(
+      `SELECT responsible, responsible_id, responsible_kind
+       FROM meeting_review_actions WHERE id = $1 AND artifact_id = $2 FOR UPDATE`,
+      [actionId, artifactId],
+    );
+    const action = actionResult.rows[0];
+    if (!action) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Acción no encontrada' });
+    }
+    if (action.responsible_id === selection.id && action.responsible_kind === selection.kind) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Esta persona ya es el responsable principal de la acción.' });
+    }
+    if (previousSelection && action.responsible_id === previousSelection.id && action.responsible_kind === previousSelection.kind) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'El responsable principal se reemplaza desde su propia etiqueta.' });
+    }
+
+    const responsible = await resolveActiveActionResponsible(selection, client);
+    if (!responsible) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'La persona seleccionada no está activa en el directorio.' });
+    }
+    let previousName: string | null = null;
+    if (previousSelection) {
+      const previousResult = await client.query<{ responsible_name: string }>(
+        `SELECT responsible_name FROM meeting_review_action_responsibles
+         WHERE action_id = $1 AND responsible_kind = $2 AND responsible_id = $3 FOR UPDATE`,
+        [actionId, previousSelection.kind, previousSelection.id],
+      );
+      previousName = previousResult.rows[0]?.responsible_name || null;
+      if (!previousName) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'El responsable adicional ya no existe en esta acción.' });
+      }
+      if (previousSelection.kind === selection.kind && previousSelection.id === selection.id) {
+        await client.query('COMMIT');
+        return res.json({ changed: false });
+      }
+      await client.query('DELETE FROM meeting_review_action_responsibles WHERE action_id = $1 AND responsible_kind = $2 AND responsible_id = $3', [actionId, previousSelection.kind, previousSelection.id]);
+    } else {
+      const existing = await client.query(`SELECT 1 FROM meeting_review_action_responsibles WHERE action_id = $1 AND responsible_kind = $2 AND responsible_id = $3`, [actionId, selection.kind, selection.id]);
+      if (existing.rows.length) {
+        await client.query('COMMIT');
+        return res.json({ changed: false });
+      }
+    }
+
+    await upsertMeetingActionResponsible(actionId, selection, responsible, client);
+    const detail = previousName
+      ? `Responsable adicional «${previousName}» reemplazado por «${responsible.name}» (${responsible.role}).`
+      : `Responsable adicional «${responsible.name}» (${responsible.role}) añadido manualmente.`;
+    await client.query(
+      `INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail)
+       VALUES ($1, $2, $3, 'asignación', $4)`,
+      [randomUUID(), artifactId, actor, detail],
+    );
+    await client.query('COMMIT');
+    publish('meetings-updated', { source: previousSelection ? 'manual-additional-responsible-replacement' : 'manual-additional-responsible-addition', artifactId, actionId });
+    return res.json({ changed: true });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    console.error('[meetings] Error gestionando responsable adicional:', (error as Error).message);
+    return res.status(500).json({ error: 'No se pudo guardar el responsable adicional' });
+  } finally {
+    client.release();
+  }
+});
+app.delete('/api/meetings/:artifactId/actions/:actionId/responsibles/:responsibleKind/:responsibleId', requireMeetingEditor, requireMeetingResponsibleAssigner, async (req: Request, res: Response) => {
+  const artifactId = String(req.params.artifactId || '').trim();
+  const actionId = String(req.params.actionId || '').trim();
+  const selection = manualActionResponsibleInput({ kind: req.params.responsibleKind, id: req.params.responsibleId });
+  const actor = meetingAuditActor(res);
+  if (!selection) return res.status(400).json({ error: 'El responsable indicado no es válido.' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const actionResult = await client.query<{ responsible_id: string | null; responsible_kind: string | null }>(
+      'SELECT responsible_id, responsible_kind FROM meeting_review_actions WHERE id = $1 AND artifact_id = $2 FOR UPDATE',
+      [actionId, artifactId],
+    );
+    const action = actionResult.rows[0];
+    if (!action) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Acción no encontrada' });
+    }
+    if (action.responsible_id === selection.id && action.responsible_kind === selection.kind) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'El responsable principal se elimina desde su propia opción.' });
+    }
+    const removed = await client.query<{ responsible_name: string; responsible_role: string | null }>(
+      `DELETE FROM meeting_review_action_responsibles
+       WHERE action_id = $1 AND responsible_kind = $2 AND responsible_id = $3
+       RETURNING responsible_name, responsible_role`,
+      [actionId, selection.kind, selection.id],
+    );
+    if (!removed.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'El responsable adicional no existe en esta acción.' });
+    }
+    const person = removed.rows[0];
+    await client.query(
+      `INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail)
+       VALUES ($1, $2, $3, 'asignación', $4)`,
+      [randomUUID(), artifactId, actor, `Responsable adicional ${auditValue(person.responsible_name, 'sin nombre')} (${person.responsible_role || 'sin rol'}) eliminado manualmente.`],
+    );
+    await client.query('COMMIT');
+    publish('meetings-updated', { source: 'manual-additional-responsible-removal', artifactId, actionId });
+    return res.json({ changed: true });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    console.error('[meetings] Error eliminando responsable adicional:', (error as Error).message);
+    return res.status(500).json({ error: 'No se pudo eliminar el responsable adicional' });
+  } finally {
+    client.release();
+  }
+});
+app.delete('/api/meetings/:artifactId/actions/:actionId', requireMeetingEditor, async (req: Request, res: Response) => {
   try {
     const artifactId = String(req.params.artifactId || '').trim();
     const actionId = String(req.params.actionId || '').trim();
-    const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
-    const result = await pool.query(`DELETE FROM meeting_review_actions WHERE id = $1 AND artifact_id = $2 RETURNING id`, [actionId, artifactId]);
+    const actor = meetingAuditActor(res);
+    const result = await pool.query<{ id: string; title: string }>(`DELETE FROM meeting_review_actions WHERE id = $1 AND artifact_id = $2 RETURNING id, title`, [actionId, artifactId]);
     if (!result.rows.length) return res.status(404).json({ error: 'Acción no encontrada' });
-    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', 'Acción eliminada')`, [randomUUID(), artifactId, actor]);
+    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, 'edición', $4)`, [randomUUID(), artifactId, actor, `Acción ${auditValue(result.rows[0].title, 'sin título')} eliminada.`]);
     res.status(204).end();
   } catch (error) { res.status(500).json({ error: 'No se pudo eliminar la acción' }); }
 });
 
-app.post('/api/meetings/:artifactId/workflow', requireCeoAuth, async (req: Request, res: Response) => {
+const MEETING_WORKFLOW_ORDER = [
+  ['delineante', 'Delineante'],
+  ['pmc', 'PMC / Jefe de Proyectos'],
+  ['operations', 'Dirección de Operaciones'],
+  ['director', 'Director General'],
+] as const;
+
+function workflowStageRank(stage: string): number {
+  return Math.max(0, MEETING_WORKFLOW_ORDER.findIndex(([key]) => key === stage));
+}
+
+async function nextAvailableMeetingWorkflowStage(artifactId: string, requestedStage: string): Promise<{ stage: string; label: string } | null> {
+  const review = await pool.query<{ project_id: string | null }>('SELECT project_id FROM meeting_reviews WHERE artifact_id = $1', [artifactId]);
+  if (!review.rows[0]) return null;
+  const { rows } = await pool.query<{ cargo: string }>(
+    `SELECT DISTINCT c.nombre AS cargo
+     FROM organigrama_cargo_asignaciones oca
+     INNER JOIN organigrama_cargos c ON c.id = oca.cargo_id
+     WHERE oca.activo = TRUE AND c.activo = TRUE
+       AND (oca.proyecto_id = $1 OR oca.proyecto_id IS NULL)`,
+    [review.rows[0].project_id],
+  );
+  const availableRanks = new Set(rows.map((row) => meetingEditorRoleRank(row.cargo)));
+  for (const [stage, label] of MEETING_WORKFLOW_ORDER.slice(workflowStageRank(requestedStage))) {
+    const rank = stage === 'delineante' ? 1 : stage === 'pmc' ? 2 : stage === 'operations' ? 3 : 4;
+    if (availableRanks.has(rank)) return { stage, label };
+  }
+  return null;
+}
+
+async function routeReadyMeetingReviews(limit = 500): Promise<number> {
+  const queued = await pool.query<{ artifact_id: string }>(
+    'SELECT artifact_id FROM meeting_reviews WHERE status = \'draft\' AND workflow_stage = \'agent\' AND analysis_status = \'completed\' ORDER BY analysis_completed_at ASC NULLS LAST LIMIT $1',
+    [Math.max(1, Math.min(limit, 500))],
+  );
+  let routed = 0;
+  for (const row of queued.rows) {
+    const next = await nextAvailableMeetingWorkflowStage(row.artifact_id, 'delineante');
+    if (!next) continue;
+    const updated = await pool.query(
+      'UPDATE meeting_reviews SET status = \'pending\', workflow_stage = $2, updated_at = NOW() WHERE artifact_id = $1 AND status = \'draft\' AND workflow_stage = \'agent\' RETURNING artifact_id',
+      [row.artifact_id, next.stage],
+    );
+    if (!updated.rows.length) continue;
+    routed += 1;
+    await pool.query('INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, $4, $5)', [randomUUID(), row.artifact_id, 'agente-reuniones', next.stage, 'Análisis listo y enviado automáticamente a ' + next.label + '.']);
+  }
+  if (routed) publish('meetings-updated', { source: 'automatic-workflow-routing', routed });
+  return routed;
+}
+
+async function canSessionReviewWorkflowStage(session: CeoSession, scope: MeetingAccessScope, artifactId: string, stage: string): Promise<boolean> {
+  const normalizedRole = String(session.rol || '').trim().toLowerCase();
+  if (['superadmin', 'admin', 'ceo'].includes(normalizedRole)) return true;
+  const employeeId = await resolveSessionEmployeeId(session, scope);
+  if (!employeeId) return false;
+  const result = await pool.query<{ cargo: string | null }>(
+    'SELECT c.nombre AS cargo FROM meeting_reviews r INNER JOIN organigrama_cargo_asignaciones oca ON (oca.proyecto_id = r.project_id OR oca.proyecto_id IS NULL) INNER JOIN organigrama_cargos c ON c.id = oca.cargo_id WHERE r.artifact_id = $1 AND oca.empleado_id = $2 AND oca.activo = TRUE AND c.activo = TRUE',
+    [artifactId, employeeId],
+  );
+  return result.rows.some((row) => workflowStageForOrganizationRole(row.cargo) === stage);
+}
+
+app.post('/api/meetings/:artifactId/workflow', requireMeetingEditor, async (req: Request, res: Response) => {
   try {
     const artifactId = String(req.params.artifactId || '').trim();
-    const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
+    const session = res.locals.ceoSession as CeoSession;
+    const scope = res.locals.meetingAccessScope as MeetingAccessScope;
+    const actor = meetingAuditActor(res);
     const command = String(req.body?.command || '').trim();
     if (!['approve', 'return', 'save'].includes(command)) return res.status(400).json({ error: 'Comando de flujo inválido' });
-    const actionsResult = await pool.query<{ responsible: string | null; due_date: string | null; status: string; has_responsible: boolean }>(`SELECT ma.responsible, ma.due_date, ma.status, EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id) AS has_responsible FROM meeting_review_actions ma WHERE ma.artifact_id = $1`, [artifactId]);
-    const blockers = meetingApprovalBlockers(actionsResult.rows);
-    if (command === 'approve' && blockers.missingResponsible) {
-      return res.status(409).json({ error: 'La aprobación está bloqueada hasta asignar responsable a todas las acciones pendientes. La fecha es opcional.', blockers });
+    const reviewResult = await pool.query<{ workflow_stage: string; status: string }>('SELECT workflow_stage, status FROM meeting_reviews WHERE artifact_id = $1', [artifactId]);
+    const review = reviewResult.rows[0];
+    if (!review) return res.status(404).json({ error: 'Reunión no encontrada' });
+    if (review.workflow_stage !== 'agent' && command !== 'save' && !(await canSessionReviewWorkflowStage(session, scope, artifactId, review.workflow_stage))) {
+      return res.status(403).json({ error: 'Esta reunión está pendiente de revisión por el responsable asignado a la etapa actual.' });
     }
-    const update = command === 'approve'
-      ? { status: 'approved', stage: 'operations', detail: 'Aprobada y enviada a Dirección de Operaciones' }
-      : command === 'return'
-        ? { status: 'returned', stage: 'delineante', detail: 'Devuelta al delineante para corrección' }
-        : { status: 'pending', stage: 'pmc', detail: 'Guardada para revisión del PMC' };
+    const actionsResult = await pool.query<{ responsible: string | null; due_date: string | null; status: string; has_responsible: boolean }>('SELECT ma.responsible, ma.due_date, ma.status, EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id) AS has_responsible FROM meeting_review_actions ma WHERE ma.artifact_id = $1', [artifactId]);
+    const blockers = meetingApprovalBlockers(actionsResult.rows);
+    if (command === 'approve' && blockers.missingResponsible) return res.status(409).json({ error: 'La aprobación está bloqueada hasta asignar responsable a todas las acciones pendientes. La fecha es opcional.', blockers });
+
+    let status = review.status;
+    let stage = review.workflow_stage;
+    let detail = 'Borrador guardado.';
+    if (command === 'return') {
+      const next = await nextAvailableMeetingWorkflowStage(artifactId, 'delineante');
+      if (!next) return res.status(409).json({ error: 'No hay una persona activa en la cadena de revisión de esta obra. Regulariza el organigrama o asigna manualmente el responsable.' });
+      status = 'returned'; stage = next.stage; detail = 'Devuelta a ' + next.label;
+    } else if (command === 'approve') {
+      const currentRank = workflowStageRank(review.workflow_stage);
+      const requestedStage = review.workflow_stage === 'agent' ? 'delineante' : MEETING_WORKFLOW_ORDER[currentRank + 1]?.[0];
+      const next = requestedStage ? await nextAvailableMeetingWorkflowStage(artifactId, requestedStage) : null;
+      if (next) {
+        status = 'pending'; stage = next.stage; detail = (review.workflow_stage === 'agent' ? 'Enviada a ' : 'Revisada y enviada a ') + next.label;
+      } else {
+        status = 'approved'; stage = review.workflow_stage; detail = 'Aprobada definitivamente.';
+      }
+    } else if (review.workflow_stage === 'agent') {
+      const next = await nextAvailableMeetingWorkflowStage(artifactId, 'delineante');
+      if (!next) return res.status(409).json({ error: 'No hay una persona activa en la cadena de revisión de esta obra. Regulariza el organigrama o asigna manualmente el responsable.' });
+      status = 'pending'; stage = next.stage; detail = 'Guardada y enviada a ' + next.label;
+    }
+
+    const returnReason = String(req.body?.reason || '').trim().slice(0, 500);
+    const finalDetail = command === 'return' && returnReason ? detail + ': «' + returnReason + '».' : detail;
     const { rows } = await pool.query(
-      `UPDATE meeting_reviews SET status = $2, workflow_stage = $3, approved_at = CASE WHEN $2 = 'approved' THEN NOW() ELSE NULL END,
-       approved_by = CASE WHEN $2 = 'approved' THEN $4 ELSE NULL END, returned_reason = CASE WHEN $2 = 'returned' THEN COALESCE($5, '') ELSE NULL END,
-       updated_at = NOW() WHERE artifact_id = $1 RETURNING *`,
-      [artifactId, update.status, update.stage, actor, String(req.body?.reason || '').slice(0, 2000)],
+      'UPDATE meeting_reviews SET status = $2, workflow_stage = $3, approved_at = CASE WHEN $2 = \'approved\' THEN NOW() ELSE NULL END, approved_by = CASE WHEN $2 = \'approved\' THEN $4 ELSE NULL END, returned_reason = CASE WHEN $2 = \'returned\' THEN COALESCE($5, \'\') ELSE NULL END, updated_at = NOW() WHERE artifact_id = $1 RETURNING *',
+      [artifactId, status, stage, actor, String(req.body?.reason || '').slice(0, 2000)],
     );
-    if (!rows.length) return res.status(404).json({ error: 'Reunión no encontrada' });
-    await pool.query(`INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, $4, $5)`, [randomUUID(), artifactId, actor, update.stage, update.detail]);
+    await pool.query('INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, $4, $5)', [randomUUID(), artifactId, actor, stage, finalDetail]);
+    publish('meetings-updated', { source: 'workflow', artifactId, stage, status });
     res.json({ meeting: rows[0], blockers });
-  } catch (error) { res.status(500).json({ error: 'No se pudo actualizar la cadena de revisión' }); }
+  } catch (error) {
+    console.error('[meetings/workflow] Error:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudo actualizar la cadena de revisión' });
+  }
 });
 
 app.post('/api/ceo/ask', requireCeoSession, async (req: Request, res: Response) => {
@@ -5594,7 +6424,7 @@ app.post('/api/empleados', requireCeoAuth, async (req: Request, res: Response) =
   }
 });
 
-app.get('/api/directory', requireCeoAuth, async (_req: Request, res: Response) => {
+app.get('/api/directory', requireMeetingEditor, async (_req: Request, res: Response) => {
   try {
     const [employeesResult, clientsResult, projectsResult, syncResult] = await Promise.all([
       pool.query(`SELECT e.id, e.nombre, e.apellido, e.email, e.numero, e.empresa, e.activo, e.source_updated_at, e.synced_at,
@@ -5634,7 +6464,7 @@ app.post('/api/directory/projects/:projectId/aliases', requireCeoAuth, async (re
     if (!projectId || alias.length < 3 || alias.length > 255 || normalizedAlias.length < 3) return res.status(400).json({ error: 'El alias debe tener entre 3 y 255 caracteres.' });
     const project = await pool.query('SELECT id FROM proyectos WHERE id = $1', [projectId]);
     if (!project.rows.length) return res.status(404).json({ error: 'Proyecto no encontrado.' });
-    const actor = String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema');
+    const actor = meetingAuditActor(res);
     const { rows } = await pool.query(
       `INSERT INTO proyecto_aliases (id, proyecto_id, alias, normalized_alias, origen, creado_por)
        VALUES ($1, $2, $3, $4, 'manual', $5)
@@ -5711,28 +6541,114 @@ app.post('/api/auth/demo', async (_req: Request, res: Response) => {
   setImmediate(() => { syncEvolutionData().catch(() => {}); });
 });
 
+type CeoUserRow = {
+  id: number;
+  usuario: string;
+  nombre: string | null;
+  rol: string;
+  password_hash: string | null;
+};
+
+type DirectoryLoginProfile = {
+  id: string;
+  nombre: string;
+  role_id: string | null;
+};
+
+function dashboardRoleFromDirectory(role: string | null | undefined): string {
+  const normalized = String(role || '').trim().toLowerCase();
+  return normalized ? `employee:${normalized}` : 'employee:member';
+}
+
+async function resolveSupabaseDashboardUser(identifier: string, password: string): Promise<CeoUserRow | null> {
+  if (!isSupabaseAuthConfigured(SUPABASE_AUTH_CONFIG)) return null;
+  const email = identifier.includes('@') ? identifier.toLowerCase() : '';
+  if (!email) return null;
+  const remoteUser = await authenticateWithSupabasePassword(email, password, SUPABASE_AUTH_CONFIG);
+  if (!remoteUser) return null;
+
+  const employee = await pool.query<DirectoryLoginProfile>(
+    `SELECT e.id, CONCAT_WS(' ', e.nombre, e.apellido) AS nombre, COALESCE(org_cargo.nombre, MIN(r.id)) AS role_id
+     FROM empleados e
+     LEFT JOIN usuario_rol ur ON ur.empleado_id = e.id
+     LEFT JOIN roles r ON r.id = ur.rol_id
+     LEFT JOIN LATERAL (
+       SELECT oc.nombre
+       FROM organigrama_cargo_asignaciones oca
+       INNER JOIN organigrama_cargos oc ON oc.id = oca.cargo_id
+       WHERE oca.empleado_id = e.id AND oca.activo = TRUE AND oc.activo = TRUE
+       ORDER BY CASE WHEN LOWER(oc.nombre) = 'director general' THEN 4 WHEN LOWER(oc.nombre) = 'direccion de operaciones' THEN 3 WHEN LOWER(oc.nombre) LIKE '%pmc%' OR LOWER(oc.nombre) LIKE '%jefe de proyectos%' THEN 2 WHEN LOWER(oc.nombre) LIKE '%delineante%' THEN 1 ELSE 0 END DESC, oc.nombre ASC
+       LIMIT 1
+     ) org_cargo ON TRUE
+     WHERE LOWER(e.email) = LOWER($1) AND e.activo = TRUE
+     GROUP BY e.id, e.nombre, e.apellido, org_cargo.nombre
+     ORDER BY e.id ASC
+     LIMIT 1`,
+    [remoteUser.email],
+  );
+  const client = employee.rows[0] ? null : await pool.query<DirectoryLoginProfile>(
+    `SELECT id, CONCAT_WS(' ', nombre, apellido) AS nombre, NULL::varchar AS role_id
+     FROM clientes WHERE LOWER(email) = LOWER($1) AND activo = TRUE
+     ORDER BY id ASC LIMIT 1`,
+    [remoteUser.email],
+  );
+  const profile = employee.rows[0] || client?.rows[0];
+  if (!profile) return null;
+
+  const role = employee.rows[0] ? dashboardRoleFromOrgPosition(profile.role_id) : 'consulta_publica';
+  const displayName = remoteUser.name || profile.nombre || remoteUser.email;
+  const existing = await pool.query<CeoUserRow>(
+    `SELECT id, usuario, nombre, rol, password_hash FROM usuarios
+     WHERE auth_provider = 'supabase' AND external_auth_user_id = $1 AND activo = TRUE`,
+    [remoteUser.id],
+  );
+  if (existing.rows[0]) {
+    const current = existing.rows[0];
+    const updated = await pool.query<CeoUserRow>(
+      `UPDATE usuarios SET nombre = $2, email = $3, rol = $4, activo = TRUE WHERE id = $1
+       RETURNING id, usuario, nombre, rol, password_hash`,
+      [current.id, displayName, remoteUser.email, role],
+    );
+    return updated.rows[0];
+  }
+
+  const username = `sb_${remoteUser.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 90)}`;
+  const created = await pool.query<CeoUserRow>(
+    `INSERT INTO usuarios (usuario, contraseña, password_hash, nombre, rol, activo, auth_provider, external_auth_user_id, email)
+     VALUES ($1, '', '', $2, $3, TRUE, 'supabase', $4, $5)
+     RETURNING id, usuario, nombre, rol, password_hash`,
+    [username, displayName, role, remoteUser.id, remoteUser.email],
+  );
+  return created.rows[0];
+}
+
 app.post('/api/auth/ceo-login', ceoLoginLimiter, async (req: Request, res: Response) => {
   try {
     const { usuario, contraseña } = req.body as { usuario?: string; contraseña?: string };
     const user = String(usuario || '').trim();
     const suppliedPassword = String((req.body as { password?: string }).password || '').trim();
     const pass = String(contraseña || '').trim();
-    if (!user || !(suppliedPassword || pass)) {
+    const password = suppliedPassword || pass;
+    if (!user || !password) {
       return res.status(400).json({ error: 'Usuario y contraseña son obligatorios' });
     }
-    const { rows } = await pool.query<{ id: number; usuario: string; nombre: string; rol: string; password_hash: string | null }>(
+    const local = await pool.query<CeoUserRow>(
       'SELECT id, usuario, nombre, rol, password_hash FROM usuarios WHERE usuario = $1 AND activo = true',
       [user],
     );
-    if (!rows.length || !verifyPassword(suppliedPassword || pass, rows[0].password_hash)) {
-      return res.status(401).json({ error: 'Credenciales inválidas' });
-    }
-    const u = rows[0];
-    const ceoUser = { id: u.id, usuario: u.usuario, nombre: u.nombre, rol: u.rol };
+    const authenticated = local.rows[0] && verifyPassword(password, local.rows[0].password_hash)
+      ? local.rows[0]
+      : await resolveSupabaseDashboardUser(user, password);
+    if (!authenticated) return res.status(401).json({ error: 'Credenciales inválidas o cuenta no habilitada en el directorio' });
+    const ceoUser = { id: authenticated.id, usuario: authenticated.usuario, nombre: authenticated.nombre, rol: authenticated.rol };
     res.json({ usuario: ceoUser, token: createCeoToken(ceoUser) });
   } catch (error) {
+    if (error instanceof SupabaseAuthServiceError) {
+      console.error('[auth/ceo-login] Supabase:', error.message);
+      return res.status(502).json({ error: 'No se pudo verificar la cuenta con Supabase. Inténtalo de nuevo.' });
+    }
     console.error('[auth/ceo-login] Error:', (error as Error).message);
-    res.status(500).json({ error: (error as Error).message });
+    res.status(500).json({ error: 'No se pudo iniciar sesión' });
   }
 });
 

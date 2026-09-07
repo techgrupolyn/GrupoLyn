@@ -11,7 +11,7 @@ describe('Acceso del panel CEO', () => {
   it('opens the CEO login by default on the CEO subdomain', () => {
     expect(initialDashboardView('', 'ceo.grupolyn.com')).toBe('ceo');
     expect(initialDashboardView('?view=settings', 'ceo.grupolyn.com')).toBe('settings');
-    expect(initialDashboardView('', '127.0.0.1')).toBe('home');
+    expect(initialDashboardView('', '127.0.0.1')).toBe('ceo');
   });
   it('never polls the WhatsApp QR flow from CEO views', () => {
     expect(shouldPollWhatsappConnection('ceo', false)).toBe(false);
@@ -35,7 +35,7 @@ describe('Acceso del panel CEO', () => {
     render(<CeoLogin onSubmit={vi.fn()} />);
 
     expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Usuario')).toBeRequired();
+    expect(screen.getByPlaceholderText('Usuario o correo corporativo')).toBeRequired();
     expect(screen.getByPlaceholderText('Contraseña')).toBeRequired();
     expect(screen.queryByText(/superadmin/i)).not.toBeInTheDocument();
   });
