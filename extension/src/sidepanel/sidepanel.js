@@ -20,6 +20,9 @@ const state = {
   selectedSendInFlight: false,
   chatOrder: [],
   openChatId: null,
+  mainTab: 'global',
+  globalReport: null,
+  globalReportLoading: false,
 };
 
 let connectionPollTimer = null;
@@ -157,11 +160,19 @@ async function directBackendRequest(path, options = {}, retries = 2) {
   return attempt(0);
 }
 
-async function hasActivation() {
-  const storage = await chrome.storage.local.get({ extensionActivationId: '' });
-  return Boolean(String(storage.extensionActivationId || '').trim());
+function isLocalDevelopmentBackend(value) {
+  try {
+    const host = new URL(String(value || '')).hostname.toLowerCase();
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  } catch {
+    return false;
+  }
 }
 
+async function hasActivation() {
+  const storage = await chrome.storage.local.get({ backendUrl: 'http://127.0.0.1:3003', extensionActivationId: '' });
+  return Boolean(String(storage.extensionActivationId || '').trim()) || isLocalDevelopmentBackend(storage.backendUrl);
+}
 function showActivationRequired() {
   const output = $('qr-output');
   if (output) {
@@ -314,13 +325,23 @@ async function confirmDefaultRole() {
   await generatePendingSummariesForRole(roleId);
 }
 function mergeVisibleChats(chats) {
-    const activeChats = Array.isArray(chats) ? chats : [];
-    const activeIds = new Set(activeChats.map((chat) => String(chat.id)));
-    const reviewedChats = Object.values(state.reviewedChats).filter((chat) => !activeIds.has(String(chat.id)));
-    return [...activeChats, ...reviewedChats];
-  }
+  const activeChats = Array.isArray(chats) ? chats : [];
+  const activeIds = new Set(activeChats.map((chat) => String(chat.id)));
+  const reviewedChats = Object.values(state.reviewedChats).filter((chat) => !activeIds.has(String(chat.id)));
+  return [...activeChats, ...reviewedChats];
+}
 
-  async function loadChats() {
+function renderPendingUnreadCounter(chats = state.chats) {
+  const total = (Array.isArray(chats) ? chats : []).reduce((sum, chat) => (
+    sum + Math.max(0, Number(chat?.unread_count) || 0)
+  ), 0);
+  const counter = $('tab-pending-count');
+  const tab = $('tab-pending-chats');
+  if (counter) counter.textContent = String(total);
+  if (tab) tab.setAttribute('aria-label', `Chats a analizar: ${total} ${total === 1 ? 'mensaje sin leer' : 'mensajes sin leer'}`);
+}
+
+async function loadChats() {
     const chatList = $('chat-list');
     if (!chatList) return;
     try {
@@ -401,6 +422,7 @@ function renderCardBody(body, chat) {
       if (summaryEl) {
         summaryEl.innerHTML = text ? `${escapeHtml(text)}<div class="empty">${escapeHtml(contextDescription(data))}</div>` : '<div class="error">Sin resumen generado</div>';
       }
+      await loadChats();
     } catch (error) {
       if (summaryEl) summaryEl.innerHTML = `<div class="error">Error: ${escapeHtml(error.message || 'Error')}</div>`;
     }
@@ -612,6 +634,7 @@ async function generateSummary() {
       const text = data?.resumen || data?.summary || '';
       output.innerHTML = text ? `<div class="summary-box">${escapeHtml(text)}</div><div class="empty">${escapeHtml(contextDescription(data))}</div>` : '<div class="error">Sin resumen generado</div>';
     }
+    await loadChats();
   } catch (error) {
     if (output) output.innerHTML = `<div class="error">Error generando resumen: ${escapeHtml(error.message || 'Error')}</div>`;
   } finally {
@@ -711,6 +734,83 @@ function setLoading(loading) {
   });
 }
 
+function setMainTab(tab) {
+  state.mainTab = tab === 'global' ? 'global' : 'pending';
+  const pendingTab = $('tab-pending-chats');
+  const globalTab = $('tab-global-report');
+  const pendingView = $('pending-chats-view');
+  const globalView = $('global-report-view');
+  const isGlobal = state.mainTab === 'global';
+  pendingTab?.classList.toggle('active', !isGlobal);
+  globalTab?.classList.toggle('active', isGlobal);
+  pendingTab?.setAttribute('aria-selected', String(!isGlobal));
+  globalTab?.setAttribute('aria-selected', String(isGlobal));
+  pendingView?.classList.toggle('hidden', isGlobal);
+  globalView?.classList.toggle('hidden', !isGlobal);
+  if (isGlobal) void loadLatestGlobalReport();
+}
+
+function globalReportDescription(data) {
+  if (!data) return '';
+  const groups = Number(data.grupos_analizados ?? data.chats_contexto);
+  const messages = Number(data.mensajes_analizados ?? data.mensajes_contexto);
+  const pending = Number(data.mensajes_pendientes);
+  const parts = [];
+  if (Number.isFinite(groups)) parts.push(`${groups} grupos`);
+  if (Number.isFinite(messages)) parts.push(`${messages} mensajes analizados`);
+  if (Number.isFinite(pending)) parts.push(`${pending} mensajes pendientes al iniciar`);
+  return parts.join(' · ');
+}
+
+function renderGlobalReport(data, prefix = '') {
+  const output = $('global-report-output');
+  const meta = $('global-report-meta');
+  const text = String(data?.resumen || data?.summary || '').trim();
+  if (meta) meta.textContent = globalReportDescription(data);
+  if (!output) return;
+  output.innerHTML = text
+    ? `${prefix ? `<div class="empty">${escapeHtml(prefix)}</div>` : ''}<div class="summary-box">${escapeHtml(text)}</div>`
+    : '<div class="empty">No hay un informe global guardado para este rol.</div>';
+}
+
+async function loadLatestGlobalReport() {
+  const specialistId = $('specialist-select')?.value || '';
+  if (!specialistId || state.globalReportLoading) return;
+  try {
+    const data = await directBackendRequest(`/chat/global-summaries/latest?specialistId=${encodeURIComponent(specialistId)}`);
+    state.globalReport = data || null;
+    renderGlobalReport(state.globalReport);
+  } catch (error) {
+    const output = $('global-report-output');
+    if (output) output.innerHTML = `<div class="error">No se pudo recuperar el informe: ${escapeHtml(error?.message || 'Error')}</div>`;
+  }
+}
+
+async function generateGlobalReport() {
+  const specialistId = $('specialist-select')?.value || '';
+  const output = $('global-report-output');
+  const button = $('btn-generate-global-report');
+  if (!specialistId) {
+    if (output) output.innerHTML = '<div class="error">Seleccioná un rol antes de generar el informe.</div>';
+    return;
+  }
+  if (state.globalReportLoading) return;
+  state.globalReportLoading = true;
+  if (button) button.disabled = true;
+  if (output) output.innerHTML = '<div class="empty">Sincronizando y analizando todos los grupos pendientes…</div>';
+  try {
+    await backendMessage('SYNC_NOW');
+    const data = await directBackendRequest('/chat/global-summary', { method: 'POST', body: JSON.stringify({ specialistId }) }, 1);
+    state.globalReport = data;
+    renderGlobalReport(data, `Informe generado. ${globalReportDescription(data)}`);
+    await loadChats();
+  } catch (error) {
+    if (output) output.innerHTML = `<div class="error">No se pudo generar el informe: ${escapeHtml(error?.message || 'Error')}</div>`;
+  } finally {
+    state.globalReportLoading = false;
+    if (button) button.disabled = false;
+  }
+}
 async function getPendingChats({ throwOnError = false } = {}) {
   try {
     const data = await directBackendRequest('/pendientes');
@@ -756,6 +856,7 @@ async function generateAllSummaries({ pending: suppliedPending, specialistId: se
   }
   const success = results.filter((r) => r.ok).length;
   const firstError = results.find((r) => !r.ok)?.error;
+  if (success) await loadChats();
   if (status) {
     if (!success && firstError) status.innerHTML = `<span class="error">No se generaron resúmenes: ${escapeHtml(firstError)}</span>`;
     else status.textContent = `Resúmenes generados: ${success}/${results.length}. Abre un chat para ver su sugerencia.`;
@@ -976,11 +1077,15 @@ function init() {
   $('btn-open-qr')?.addEventListener('click', loadQR);
   $('btn-refresh-chats')?.addEventListener('click', loadChats);
   $('btn-send-selected')?.addEventListener('click', sendSelectedReplies);
+  $('tab-pending-chats')?.addEventListener('click', () => setMainTab('pending'));
+  $('tab-global-report')?.addEventListener('click', () => setMainTab('global'));
+  $('btn-generate-global-report')?.addEventListener('click', generateGlobalReport);
   $('specialist-select')?.addEventListener('change', async (event) => {
     const roleId = event.target.value;
     if (!await saveDefaultRole(roleId)) return;
     resetRoleWorkspace();
     generatePendingSummariesForRole(roleId);
+    if (state.mainTab === 'global') void loadLatestGlobalReport();
   });
   $('btn-confirm-default-role')?.addEventListener('click', confirmDefaultRole);
   $('privacy-mode-toggle')?.addEventListener('change', async (e) => {
@@ -1064,6 +1169,7 @@ function init() {
     if (!chatList) return;
     chatList.innerHTML = '';
     const chats = Array.isArray(state.chats) ? state.chats : [];
+    renderPendingUnreadCounter(chats);
     if (!chats.length) {
       chatList.innerHTML = '<div class="empty">Sin chats pendientes</div>';
       return;

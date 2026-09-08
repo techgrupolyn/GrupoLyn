@@ -16,3 +16,9 @@ test('el icono de la extensión abre el panel lateral en cada ciclo de inicio', 
   assert.match(worker, /initialized = true;\s+await configureSidePanel\(\);\s+await startActivatedWorkspace\(\);/);
   assert.match(worker, /chrome\.runtime\.onStartup\.addListener[\s\S]*?await configureSidePanel\(\);\s+await startActivatedWorkspace\(\);/);
 });
+
+test('una actualización preserva la activación y reinicia el espacio de trabajo sin pedir un código nuevo', () => {
+  assert.match(worker, /chrome\.runtime\.onInstalled\.addListener[\s\S]*?extensionActivationId: ''/);
+  assert.match(worker, /const existing = await chrome\.storage\.local\.get\(defaults\);\s+await chrome\.storage\.local\.set\(existing\);/);
+  assert.match(worker, /await configureSidePanel\(\);\s+await startActivatedWorkspace\(\);/);
+});

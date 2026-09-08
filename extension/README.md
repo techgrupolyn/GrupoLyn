@@ -36,3 +36,5 @@ npm run check
 - La extensión solo llama rutas explícitamente aisladas por cuenta.
 - El backend valida la activación, cuenta activa y origen de los eventos en vivo.
 - Las operaciones globales y administrativas pertenecen al Dashboard CEO.
+
+- **Informe global:** consolida los mensajes no leídos de todos los grupos de la cuenta activada en un único reporte persistido.

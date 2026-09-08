@@ -12,12 +12,10 @@
   ],
   "host_permissions": [
     "https://ceo.grupolyn.com/*",
-    "http://127.0.0.1:3003/*",
-    "http://localhost:3003/*",
     "https://web.whatsapp.com/*"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://ceo.grupolyn.com http://127.0.0.1:3003 http://localhost:3003;",
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://ceo.grupolyn.com;",
     "service_worker": "script-src 'self'; object-src 'self';"
   },
   "content_scripts": [

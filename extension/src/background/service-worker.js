@@ -4,7 +4,7 @@ const SYNC_MESSAGES_ALARM = 'lyn-sync-messages';
 const MAX_MESSAGES_PER_CHAT = 200;
 const EXTENSION_API_PATHS = [
   /^\/auth\/(status|qr|authorize)$/, /^\/chats$/, /^\/chats\/ensure$/, /^\/chats\/unread-reconcile$/, /^\/chats\/[^/]+\/mensajes(?:\/latest)?$/, /^\/chats\/[^/]+\/(read|name|resolve-name)$/,
-  /^\/mensajes\/changes$/, /^\/enviar$/, /^\/classify$/, /^\/specialists(?:\/[^/]+)?$/, /^\/chat\/summary$/, /^\/chat\/reply$/, /^\/chat\/[^/]+\/(summaries|replies)$/, /^\/ai\/auto-reply$/, /^\/sincronizar$/, /^\/pendientes$/,
+  /^\/mensajes\/changes$/, /^\/enviar$/, /^\/classify$/, /^\/specialists(?:\/[^/]+)?$/, /^\/chat\/summary$/, /^\/chat\/global-summary$/, /^\/chat\/global-summaries\/latest$/, /^\/chat\/reply$/, /^\/chat\/[^/]+\/(summaries|replies)$/, /^\/ai\/auto-reply$/, /^\/sincronizar$/, /^\/pendientes$/,
 ];
 
 function isAllowedExtensionApiPath(path) {
@@ -60,11 +60,19 @@ async function backendRequest(path, options = {}, retries = 2) {
   return null;
 }
 
-async function isWorkspaceActivated() {
-  const storage = await getStorage({ extensionActivationId: '' });
-  return Boolean(String(storage.extensionActivationId || '').trim());
+function isLocalDevelopmentBackend(value) {
+  try {
+    const host = new URL(String(value || '')).hostname.toLowerCase();
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  } catch {
+    return false;
+  }
 }
 
+async function isWorkspaceActivated() {
+  const storage = await getStorage({ backendUrl: 'http://127.0.0.1:3003', extensionActivationId: '' });
+  return Boolean(String(storage.extensionActivationId || '').trim()) || isLocalDevelopmentBackend(storage.backendUrl);
+}
 async function syncChats() {
   if (!(await isWorkspaceActivated())) return;
   if (chatSyncPromise) return chatSyncPromise;

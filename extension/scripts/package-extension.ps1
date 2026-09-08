@@ -1,4 +1,6 @@
 param(
+  [ValidateSet('production', 'local')]
+  [string]$Profile = 'production',
   [string]$OutputPath = 'dist\lyn-superagente-extension.zip'
 )
 
@@ -10,6 +12,7 @@ $outputFile = if ([System.IO.Path]::IsPathRooted($OutputPath)) {
 }
 $outputDirectory = Split-Path -Parent $outputFile
 $stage = Join-Path $outputDirectory 'package-stage'
+$manifestName = if ($Profile -eq 'production') { 'manifest.production.json' } else { 'manifest.json' }
 
 New-Item -ItemType Directory -Force $outputDirectory | Out-Null
 if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
@@ -17,9 +20,9 @@ if (Test-Path -LiteralPath $outputFile) { Remove-Item -LiteralPath $outputFile -
 New-Item -ItemType Directory -Force $stage | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $stage 'scripts') | Out-Null
 
-Copy-Item -LiteralPath (Join-Path $extensionRoot 'manifest.json') -Destination $stage
+Copy-Item -LiteralPath (Join-Path $extensionRoot $manifestName) -Destination (Join-Path $stage 'manifest.json')
 Copy-Item -LiteralPath (Join-Path $extensionRoot 'src') -Destination $stage -Recurse
 Copy-Item -LiteralPath (Join-Path $extensionRoot 'scripts\icons') -Destination (Join-Path $stage 'scripts') -Recurse
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $outputFile -Force
 Remove-Item -LiteralPath $stage -Recurse -Force
-Write-Output "Extensión empaquetada en: $outputFile"
+Write-Output "Extensión $Profile empaquetada en: $outputFile"
