@@ -27,5 +27,5 @@ test('el panel prioriza el informe global y muestra el contador de mensajes pend
   assert.match(html, /tab-pending-count/);
   assert.match(sidepanel, /function renderPendingUnreadCounter/);
   assert.match(sidepanel, /if \(success\) await loadChats\(\);/);
-  assert.equal(manifest.version, '1.0.11');
+  assert.equal(manifest.version, '1.1.1');
 });
