@@ -28,9 +28,42 @@ async function getStorage(keys, defaults = {}) {
   }
 }
 
+function productionBackendUrlFromManifest() {
+  const permissions = chrome.runtime.getManifest().host_permissions || [];
+  return permissions
+    .map((permission) => String(permission || '').replace(/\/\*$/, ''))
+    .find((origin) => {
+      try {
+        const url = new URL(origin);
+        return url.protocol === 'https:' && url.hostname !== 'web.whatsapp.com';
+      } catch {
+        return false;
+      }
+    }) || '';
+}
+
+function localBackendAllowedByManifest() {
+  return (chrome.runtime.getManifest().host_permissions || []).some((permission) => {
+    try {
+      const host = new URL(String(permission || '').replace(/\/\*$/, '')).hostname.toLowerCase();
+      return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function getConfiguredBackendStorage() {
+  const storage = await getConfiguredBackendStorage();
+  if (!isLocalDevelopmentBackend(storage.backendUrl) || localBackendAllowedByManifest()) return storage;
+  const productionUrl = productionBackendUrlFromManifest();
+  if (!productionUrl) return storage;
+  await chrome.storage.local.set({ backendUrl: productionUrl });
+  return { ...storage, backendUrl: productionUrl };
+}
 async function backendRequest(path, options = {}, retries = 2) {
   if (!isAllowedExtensionApiPath(path)) throw new Error('Ruta no disponible para la extensión activada.');
-  const storage = await getStorage(['backendUrl', 'extensionActivationId'], { backendUrl: 'http://127.0.0.1:3003', extensionActivationId: '' });
+  const storage = await getConfiguredBackendStorage();
   const base = String(storage.backendUrl || 'http://127.0.0.1:3003').replace(/\/$/, '');
   const url = `${base}/api${path}`;
   for (let attempt = 0; attempt < retries; attempt += 1) {
@@ -70,7 +103,7 @@ function isLocalDevelopmentBackend(value) {
 }
 
 async function isWorkspaceActivated() {
-  const storage = await getStorage({ backendUrl: 'http://127.0.0.1:3003', extensionActivationId: '' });
+  const storage = await getConfiguredBackendStorage();
   return Boolean(String(storage.extensionActivationId || '').trim()) || isLocalDevelopmentBackend(storage.backendUrl);
 }
 async function syncChats() {
@@ -205,9 +238,8 @@ async function startActivatedWorkspace() {
 }
 
 (async function init() {
-  const defaults = { backendUrl: 'http://127.0.0.1:3003', extensionActivationId: '' };
-  const storage = await getStorage(['backendUrl', 'extensionActivationId'], defaults);
-  if (!storage.backendUrl) await chrome.storage.local.set({ backendUrl: defaults.backendUrl });
+  const storage = await getConfiguredBackendStorage();
+  if (!storage.backendUrl) await chrome.storage.local.set({ backendUrl: productionBackendUrlFromManifest() || 'http://127.0.0.1:3003' });
   initialized = true;
   await configureSidePanel();
   await startActivatedWorkspace();
@@ -348,6 +380,7 @@ chrome.runtime.onInstalled.addListener(async () => {
       privacyMode: false
     };
     // En una actualización se conserva la sesión, configuración y caché del usuario.
+    await getConfiguredBackendStorage();
     const existing = await chrome.storage.local.get(defaults);
     await chrome.storage.local.set(existing);
     await configureSidePanel();
@@ -368,11 +401,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 chrome.runtime.onStartup.addListener(async () => {
   try {
     if (!initialized) {
-      const defaults = {
-        backendUrl: 'http://127.0.0.1:3003',
-        extensionActivationId: ''
-      };
-      await getStorage(['backendUrl', 'extensionActivationId'], defaults);
+      await getConfiguredBackendStorage();
       initialized = true;
     }
     await configureSidePanel();

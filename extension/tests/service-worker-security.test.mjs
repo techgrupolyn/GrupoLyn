@@ -22,3 +22,9 @@ test('una actualización preserva la activación y reinicia el espacio de trabaj
   assert.match(worker, /const existing = await chrome\.storage\.local\.get\(defaults\);\s+await chrome\.storage\.local\.set\(existing\);/);
   assert.match(worker, /await configureSidePanel\(\);\s+await startActivatedWorkspace\(\);/);
 });
+test('la edición de producción migra una URL local guardada sin borrar la activación', () => {
+  assert.match(worker, /function productionBackendUrlFromManifest\(\)/);
+  assert.match(worker, /function localBackendAllowedByManifest\(\)/);
+  assert.match(worker, /async function getConfiguredBackendStorage\(\)/);
+  assert.match(worker, /await chrome\.storage\.local\.set\(\{ backendUrl: productionUrl \}\)/);
+});
