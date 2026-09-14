@@ -26,5 +26,7 @@ test('la edición de producción migra una URL local guardada sin borrar la acti
   assert.match(worker, /function productionBackendUrlFromManifest\(\)/);
   assert.match(worker, /function localBackendAllowedByManifest\(\)/);
   assert.match(worker, /async function getConfiguredBackendStorage\(\)/);
+  assert.match(worker, /const storage = await getStorage\(\['backendUrl', 'extensionActivationId'\], \{/);
+  assert.doesNotMatch(worker, /async function getConfiguredBackendStorage\(\) \{\s+const storage = await getConfiguredBackendStorage\(\);/);
   assert.match(worker, /await chrome\.storage\.local\.set\(\{ backendUrl: productionUrl \}\)/);
 });

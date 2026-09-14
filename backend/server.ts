@@ -3592,7 +3592,7 @@ No uses saludos ni introducciones genéricas.
 
 HISTORIAL AGRUPADO:
 ${history}`;
-    const generation = await callGeminiWithPromptResult(prompt, spec.modelo || 'flash', spec.system_prompt, 45_000, history);
+    const generation = await callGeminiWithPromptResult(prompt, spec.modelo || 'flash', spec.system_prompt, 55_000, history);
     const summary = String(generation.text || '').trim();
     if (generation.fallback) return aiUnavailable(res);
     if (!summary) return res.status(502).json({ error: 'La IA no devolvió un informe global utilizable.' });

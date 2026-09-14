@@ -164,6 +164,17 @@ describe('callGeminiWithPrompt', () => {
       .resolves.toContain('datos locales');
   });
 
+  it('maneja el aborto reportado por Node sin AbortError', async () => {
+    global.fetch = vi.fn().mockImplementation((_url, options?: any) => {
+      const { signal } = options || {};
+      return new Promise((_, reject) => {
+        signal?.addEventListener('abort', () => reject(new TypeError('signal is aborted without reason')));
+      });
+    });
+
+    await expect(callGeminiWithPrompt('Consulta', 'flash', undefined, 100))
+      .resolves.toContain('datos locales');
+  });
   it('conserva JSON válido cuando Gemini lo devuelve en un bloque de código', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,

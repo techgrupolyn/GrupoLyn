@@ -136,7 +136,10 @@ async function requestGeminiInteraction(
     const cleaned = cleanGeminiResponse(text);
     return { text: cleaned || '[sin respuesta de IA]', provider: 'gemini', model: modelId, fallback: false };
   } catch (error) {
-    if ((error as any)?.name === 'AbortError') {
+    const requestWasAborted = controller.signal.aborted
+      || (error as any)?.name === 'AbortError'
+      || /signal is aborted|request aborted|aborted without reason/i.test(String((error as Error)?.message || ''));
+    if (requestWasAborted) {
       console.error('[gemini] Timeout o aborto de la petición; usando fallback local');
       return localExecution(prompt, historial, systemInstruction);
     }

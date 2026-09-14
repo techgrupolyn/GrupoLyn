@@ -54,7 +54,10 @@ function localBackendAllowedByManifest() {
 }
 
 async function getConfiguredBackendStorage() {
-  const storage = await getConfiguredBackendStorage();
+  const storage = await getStorage(['backendUrl', 'extensionActivationId'], {
+    backendUrl: 'http://127.0.0.1:3003',
+    extensionActivationId: '',
+  });
   if (!isLocalDevelopmentBackend(storage.backendUrl) || localBackendAllowedByManifest()) return storage;
   const productionUrl = productionBackendUrlFromManifest();
   if (!productionUrl) return storage;
