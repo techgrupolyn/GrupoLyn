@@ -101,6 +101,7 @@ function defaultRuntimeAccount(): WhatsAppAccount {
   return { id: DEFAULT_WHATSAPP_ACCOUNT_ID, nombre: 'Cuenta principal', evolutionInstanceName: INSTANCE_NAME, activo: true };
 }
 const outgoingSendLocks = new Set<string>();
+const globalSummaryWorkerToken = randomBytes(32).toString('hex');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/superagente',
@@ -2462,7 +2463,7 @@ function resolveChatIdVariants(chatId: string): string[] {
   return variants;
 }
 
-async function getUnreadMessageContext(chatId: string, account: WhatsAppAccount = defaultRuntimeAccount()): Promise<{ variants: string[]; pendingCount: number; rows: Mensaje[] }> {
+async function getUnreadMessageContext(chatId: string, account: WhatsAppAccount = defaultRuntimeAccount(), options: { unlimited?: boolean } = {}): Promise<{ variants: string[]; pendingCount: number; rows: Mensaje[] }> {
   if (!String(chatId || '').includes('@g.us')) return { variants: [], pendingCount: 0, rows: [] };
 
   const variants = scopedChatIdVariants(account.id, chatId);
@@ -2479,7 +2480,7 @@ async function getUnreadMessageContext(chatId: string, account: WhatsAppAccount 
   const pendingCount = Math.max(0, Number(chatRows[0]?.unread_count || 0));
   if (!pendingCount) return { variants, pendingCount: 0, rows: [] };
 
-  const contextLimit = Math.min(pendingCount, PENDING_CONTEXT_MESSAGE_LIMIT);
+  const contextLimit = options.unlimited ? pendingCount : Math.min(pendingCount, PENDING_CONTEXT_MESSAGE_LIMIT);
   const { rows } = await pool.query<Mensaje>(
     `SELECT id, chat_id, remitente, remitente_jid, texto, timestamp, tipo, media, raw, enviado_por_mi
      FROM mensajes
@@ -3520,6 +3521,14 @@ app.get('/api/chat/global-summaries/latest', async (req: Request, res: Response)
 });
 
 app.post('/api/chat/global-summary', async (req: Request, res: Response) => {
+  const worker = String(req.header('x-lyn-global-summary-worker') || '') === globalSummaryWorkerToken;
+  if (!worker) {
+    const headers: Record<string, string> = { 'content-type': 'application/json', 'x-lyn-global-summary-worker': globalSummaryWorkerToken };
+    for (const name of ['x-extension-activation', 'authorization', 'cookie']) { const value = req.header(name); if (value) headers[name] = value; }
+    res.status(202).json({ resumen: 'El informe global se está generando en segundo plano. Volvé a abrir esta pestaña en unos minutos para ver el resultado.', en_progreso: true });
+    void fetch(`http://127.0.0.1:${PORT}/api/chat/global-summary`, { method: 'POST', headers, body: JSON.stringify(req.body || {}) }).catch((error) => console.error('[chat/global-summary] Error de trabajo en segundo plano:', error));
+    return;
+  }
   try {
     const account = await getRequestWhatsappAccount(res);
     if (!account) return res.status(404).json({ error: 'Cuenta de WhatsApp no disponible' });
@@ -3537,10 +3546,9 @@ app.post('/api/chat/global-summary', async (req: Request, res: Response) => {
     if (!groups.length) return res.status(422).json({ error: 'No hay mensajes no leídos pendientes en grupos.' });
 
     const selected: Array<{ chatId: string; variants: string[]; name: string; pendingCount: number; items: Array<{ id: string; timestamp: Date; line: string }> }> = [];
-    let historyLength = 0;
     const totalPending = groups.reduce((total, group) => total + Math.max(0, Number(group.unread_count || 0)), 0);
     for (const group of groups) {
-      const context = await getUnreadMessageContext(unscopedAccountValue(group.id), account);
+      const context = await getUnreadMessageContext(unscopedAccountValue(group.id), account, { unlimited: true });
       const candidates = context.rows
         .filter((message) => {
           const text = String(message.texto || '').trim();
@@ -3552,18 +3560,11 @@ app.post('/api/chat/global-summary', async (req: Request, res: Response) => {
           const stamp = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
           const sender = String(message.remitente || message.remitente_jid || 'Contacto').trim();
           const text = String(message.texto || '').trim() || `[Adjunto: ${String(message.tipo || 'archivo').toLowerCase()} sin transcripción]`;
-          return { id: String(message.id), timestamp: date, line: `${stamp} - ${sender}: ${text.slice(0, 900)}` };
+          return { id: String(message.id), timestamp: date, line: `${stamp} - ${sender}: ${text}` };
         })
         .reverse();
-      const items: Array<{ id: string; timestamp: Date; line: string }> = [];
-      for (const item of candidates) {
-        const nextLength = historyLength + item.line.length + group.nombre.length + 32;
-        if (nextLength > SUMMARY_HISTORY_MAX_CHARS && selected.length) break;
-        items.push(item);
-        historyLength = nextLength;
-      }
+      const items = candidates;
       if (items.length) selected.push({ chatId: unscopedAccountValue(group.id), variants: context.variants, name: group.nombre || 'Grupo sin nombre', pendingCount: context.pendingCount, items });
-      if (historyLength >= SUMMARY_HISTORY_MAX_CHARS) break;
     }
     if (!selected.length) return res.status(422).json({ error: 'No hay mensajes analizables para el informe global.' });
 
@@ -3592,7 +3593,7 @@ No uses saludos ni introducciones genéricas.
 
 HISTORIAL AGRUPADO:
 ${history}`;
-    const generation = await callGeminiWithPromptResult(prompt, spec.modelo || 'flash', spec.system_prompt, 55_000, history);
+    const generation = await callGeminiWithPromptResult(prompt, spec.modelo || 'flash', spec.system_prompt, 600_000, history);
     const summary = String(generation.text || '').trim();
     if (generation.fallback) return aiUnavailable(res);
     if (!summary) return res.status(502).json({ error: 'La IA no devolvió un informe global utilizable.' });
