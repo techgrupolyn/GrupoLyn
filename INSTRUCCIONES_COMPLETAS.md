@@ -1,541 +1,304 @@
-# Superagente WhatsApp - Guía de Instalación Completa
+# LYN Superagente — Instrucciones completas
 
-## 📋 Resumen del Proyecto
+Guía operativa y técnica para desarrollar, probar y desplegar LYN Superagente. Esta plataforma centraliza conversaciones de WhatsApp, análisis con IA, reuniones de Google Drive y el directorio corporativo en un único dashboard.
 
-Sistema de orquestación local para WhatsApp usando:
-- **Evolution API** (Motor WhatsApp en puerto 8080)
-- **PostgreSQL** (Base de datos en puerto 5432)
-- **Node.js + Express** (Backend orquestador en puerto 3000)
-- **React + Vite + Tailwind** (Dashboard en puerto 5173)
+> **No guardes contraseñas, claves API, tokens OAuth ni archivos `.env` en Git.** Usa siempre las plantillas `.env.example` y el gestor de secretos del entorno correspondiente.
 
----
+## 1. Alcance y arquitectura
 
-## 🔧 Requisitos Previos
+La solución está compuesta por cuatro piezas:
 
-### 1. Node.js 20+
-```powershell
-node --version
-# Debe mostrar v20.x o superior
+```text
+Extensión Chromium / Dashboard web
+                │ HTTPS
+                ▼
+             Nginx público
+                │ localhost
+                ▼
+      Backend Node.js + PostgreSQL
+          │           │
+          │           ├─ Google Drive / Gemini / Supabase (salida autenticada)
+          ▼
+   Evolution API (local)
 ```
 
-### 2. PostgreSQL 14+ (puerto 5432)
-```powershell
-# Verificar instalación
-psql --version
+| Componente | Directorio | Responsabilidad | Puerto local |
+| --- | --- | --- | --- |
+| Backend | `backend/` | API, seguridad, IA, sincronización y datos | `3003` |
+| Dashboard | `frontend/` | Interfaz CEO, reuniones y backoffice | `5173` |
+| Extensión | `extension/` | Asistente de WhatsApp y reportes globales | — |
+| Evolution API | `evolution-api/` | Conexión técnica con WhatsApp | `8080` |
+| PostgreSQL | — | Datos operativos y auditoría | `5432` |
+| Nginx | `deploy/nginx/` | TLS y proxy inverso de producción | `443` |
 
-# Ruta típica en Windows:
-# C:\Program Files\PostgreSQL\16\bin\psql.exe
+El navegador nunca se conecta directamente a PostgreSQL, Evolution, Google Drive, Gemini ni Supabase. El backend es el único componente que usa esas credenciales.
+
+## 2. Funcionalidades actuales
+
+### WhatsApp y extensión
+
+- Cuentas WhatsApp independientes sobre Evolution API, con datos centralizados por cuenta.
+- Activación de la extensión mediante código emitido desde el dashboard.
+- Validación de origen contra `CHROME_EXTENSION_IDS`; la extensión publicada usa el ID `aegllelflhplgbcemoadjdlohfkbbkpj`.
+- Copilotos configurables desde el dashboard y respuestas sugeridas por IA.
+- Análisis individual de chats pendientes y un informe global de mensajes pendientes.
+- El análisis no marca mensajes como vistos en WhatsApp: solo registra internamente qué mensajes ya fueron procesados.
+- La activación y la URL configurada se conservan al actualizar la extensión, salvo que el usuario borre sus datos de Chrome o revoque la activación.
+
+### Dashboard y permisos
+
+- Inicio de sesión propio para el dashboard CEO, independiente de la cuenta de WhatsApp.
+- `superadmin` y Dirección tienen acceso total.
+- El resto de usuarios puede consultar IA y sus reuniones vinculadas; no ve reuniones ajenas.
+- Backoffice con empleados, clientes, subcontratas, proyectos y asignaciones por proyecto.
+- El directorio se sincroniza desde Supabase en modo lectura: este proyecto no modifica datos en Supabase.
+
+### Gestión de reuniones
+
+- Importación automática desde carpetas autorizadas de Google Drive.
+- Análisis una sola vez y persistencia de resumen, decisiones, acciones, bloqueos, tipo de reunión, PMC, proyecto, contacto y fecha de reunión.
+- Reprocesamiento controlado para reuniones que no pudieron identificarse correctamente.
+- Acciones con responsable principal, responsables adicionales, fechas opcionales, asignación manual y trazabilidad de cambios.
+- Jerarquía operativa: Delineante → PMC/Jefe de proyectos → Dirección de operaciones → Director general. Cuando la IA no identifica un responsable, se prioriza la asignación por proyecto y, como último recurso, el PMC.
+- Acceso y paneles personalizados con contadores de revisión, tareas y reuniones vinculadas.
+
+## 3. Estructura del repositorio
+
+```text
+backend/                 API, PostgreSQL, IA, Drive, Supabase y tests
+frontend/                Dashboard React/Vite
+extension/               Extensión Chromium Manifest V3
+evolution-api/           Servicio Evolution API y sus instrucciones propias
+deploy/                  systemd, Nginx, scripts y ejemplos de producción
+docs/                    Guías específicas de operación y seguridad
+INSTRUCCIONES_COMPLETAS.md  Esta guía
+README.md                Resumen técnico rápido
+TESTING.md               Estrategia y comandos de pruebas
 ```
 
-### 3. Git
-```powershell
-git --version
-```
+Consulta además:
 
----
+- `docs/GOOGLE_DRIVE_REUNIONES.md` para Drive y reuniones.
+- `docs/SECURITY.md` para controles de seguridad.
+- `docs/PRODUCCION_LIGHTSAIL.md` y `docs/PRODUCCION_MULTIINSTANCIA_LIGHTSAIL.md` para servidor.
+- `docs/RELEASE_CHECKLIST.md` antes de publicar una extensión o desplegar.
+- `evolution-api/AGENTS.md` antes de modificar ese subproyecto.
 
-## 📁 Estructura del Proyecto
+## 4. Requisitos locales
 
-```
-superagente-whatsapp/
-├── evolution-api/          # Motor WhatsApp (clonado de GitHub)
-├── backend/                # Backend orquestador
-│   ├── server.js
-│   ├── .env
-│   └── package.json
-├── frontend/               # Dashboard React
-│   ├── src/
-│   │   ├── App.jsx
-│   │   ├── main.jsx
-│   │   └── index.css
-│   └── package.json
-├── schema.sql              # Esquema de base de datos
-├── start.bat              # Script de inicialización Windows
-└── README.md              # Documentación básica
-```
+- Node.js 20 o superior y npm.
+- PostgreSQL disponible localmente.
+- Una instancia local de Evolution API si se va a probar WhatsApp/QR.
+- Credenciales de prueba para Gemini, Google Drive y Supabase solo si se prueban esas integraciones.
 
----
+No copies valores reales de producción en archivos que vayan a quedar en el repositorio.
 
-## 🚀 PASO 1: Configuración de Base de Datos PostgreSQL
+## 5. Puesta en marcha local
 
-### 1.1 Crear bases de datos necesarias
-
-```powershell
-# Abrir terminal y ejecutar:
-& "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -c "CREATE DATABASE evolution_db;"
-& "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -c "CREATE DATABASE superagente;"
-```
-
-### 1.2 Aplicar esquema SQL
-
-```powershell
-# Desde la raíz del proyecto:
-& "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d superagente -f schema.sql
-```
-
-**Verificación:**
-```powershell
-& "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d superagente -c "\dt"
-# Debe mostrar las tablas: chats y mensajes
-```
-
----
-
-## 🔌 PASO 2: Configuración de Evolution API
-
-### 2.1 Verificar que Evolution API está clonado
-
-```powershell
-cd evolution-api
-git status
-```
-
-Si no existe, clonarlo:
-```powershell
-cd ..
-git clone https://github.com/EvolutionAPI/evolution-api.git evolution-api
-```
-
-### 2.2 Crear archivo .env de Evolution API
-
-```powershell
-cd evolution-api
-```
-
-Crear archivo `.env` con el siguiente contenido:
-
-```env
-SERVER_NAME=evolution
-SERVER_TYPE=http
-SERVER_PORT=8080
-SERVER_URL=http://localhost:8080
-
-DATABASE_PROVIDER=postgresql
-DATABASE_CONNECTION_URI=postgresql://postgres:postgres@localhost:5432/evolution_db?schema=evolution_api
-DATABASE_CONNECTION_CLIENT_NAME=superagente_local
-
-DATABASE_SAVE_DATA_INSTANCE=true
-DATABASE_SAVE_DATA_NEW_MESSAGE=true
-DATABASE_SAVE_MESSAGE_UPDATE=true
-DATABASE_SAVE_DATA_CONTACTS=true
-DATABASE_SAVE_DATA_CHATS=true
-
-CACHE_REDIS_ENABLED=false
-CACHE_LOCAL_ENABLED=true
-CACHE_REDIS_PREFIX_KEY=evolution
-
-AUTHENTICATION_API_KEY=429683C4C977415CAAFCCE10F7D57E11
-AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
-
-CORS_ORIGIN=*
-LOG_LEVEL=ERROR,WARN,INFO,WEBHOOKS
-LOG_BAILEYS=error
-DEL_INSTANCE=false
-QRCODE_LIMIT=30
-LANGUAGE=es
-```
-
-### 2.3 Resolver problema de paquetes Git en npm
-
-```powershell
-# Crear archivo .npmrc en evolution-api/
-cd evolution-api
-```
-
-Crear archivo `.npmrc` con:
-```
-git=all
-```
-
-### 2.4 Instalar dependencias de Evolution API
-
-```powershell
-cd evolution-api
-
-# Opción 1: Instalación estándar
-npm install --legacy-peer-deps
-
-# Opción 2: Si falla por paquetes git, instalar manualmente libsignal
-git clone https://github.com/whiskeysockets/libsignal-node.git temp-libsignal
-cd temp-libsignal
-npm install
-cd ..
-npm install ./temp-libsignal --save
-Remove-Item -Recurse -Force temp-libsignal
-npm install --legacy-peer-deps
-```
-
-### 2.5 Generar y deployar base de datos de Evolution API
-
-```powershell
-cd evolution-api
-
-# Generar cliente Prisma
-npm run db:generate
-
-# Deployar migraciones (Windows)
-npm run db:deploy:win
-```
-
----
-
-## ⚙️ PASO 3: Configuración del Backend
-
-### 3.1 Verificar archivo .env del backend
-
-```powershell
-cd backend
-```
-
-El archivo `.env` debe contener:
-
-```env
-PORT=3003
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/superagente
-
-EVOLUTION_API_URL=http://localhost:8080
-EVOLUTION_API_KEY=429683C4C977415CAAFCCE10F7D57E11
-INSTANCE_NAME=lyn-local
-WEBHOOK_URL=http://localhost:3003/webhook/evolution
-```
-
-Si no existe, copiar desde `.env.example`:
-```powershell
-cd backend
-Copy-Item .env.example .env
-```
-
-### 3.2 Instalar dependencias del backend
+### 5.1 Instalar dependencias
 
 ```powershell
 cd backend
 npm install
+
+cd ..\frontend
+npm install
+
+cd ..\extension
+npm install
 ```
 
----
+Sigue las instrucciones de `evolution-api/` únicamente si necesitas levantar también ese servicio.
 
-## 🎨 PASO 4: Configuración del Frontend
-
-### 4.1 Instalar dependencias del frontend
+### 5.2 Configurar el backend
 
 ```powershell
+Copy-Item backend\.env.example backend\.env
+```
+
+Edita `backend/.env`. Como mínimo configura:
+
+- `DATABASE_URL` para la base local.
+- `EVOLUTION_API_URL`, `EVOLUTION_API_KEY` e `INSTANCE_NAME` si habrá WhatsApp local.
+- `CEO_INITIAL_PASSWORD` y `CEO_SESSION_SECRET` para el dashboard.
+- `CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173,http://localhost:5173`.
+- `GOOGLE_GEMINI_API_KEY` para análisis con IA.
+
+Configuraciones opcionales, según la funcionalidad que vayas a probar:
+
+- Google Drive: `GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET`, `GOOGLE_DRIVE_OAUTH_REDIRECT_URI` y `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY`.
+- Directorio Supabase de solo lectura: `SUPABASE_SOURCE_URL`, `SUPABASE_SOURCE_SECRET_KEY`, `SUPABASE_SYNC_ENABLED=true` y sus intervalos.
+- Autenticación con usuarios corporativos: `SUPABASE_AUTH_ENABLED=true` solo cuando esas credenciales y el flujo estén configurados para el entorno.
+- Extensión local sin activación: `ALLOW_UNAUTHENTICATED_LOCAL_EXTENSION=true` **solo en local**. Nunca se debe usar en producción.
+
+La lista completa y actualizada de variables está en `backend/.env.example`.
+
+### 5.3 Crear o actualizar el esquema
+
+```powershell
+cd backend
+npm run migrate
+```
+
+Ejecuta las migraciones antes de arrancar una versión que incorpore cambios de base de datos.
+
+### 5.4 Arrancar servicios
+
+En terminales separadas:
+
+```powershell
+# Backend
+cd backend
+npm run dev
+
+# Dashboard
 cd frontend
-npm install
+npm run dev
+
+# Evolution API, solo cuando sea necesaria
+cd evolution-api
+# Ejecutar según sus instrucciones propias
 ```
 
-### 4.2 Verificar configuración de Tailwind
+Abre `http://127.0.0.1:5173/?view=ceo` para el dashboard o `http://127.0.0.1:5173/?view=meetings` para Gestión de reuniones. El proxy Vite envía `/api` a `http://127.0.0.1:3003`.
 
-El archivo `tailwind.config.js` debe tener los colores personalizados:
-
-```javascript
-/** @type {import('tailwindcss').Config} */
-export default {
-  content: ['./index.html', './src/**/*.{js,jsx}'],
-  theme: {
-    extend: {
-      colors: {
-        'main-bg': '#0D0D0D',
-        'surface': '#141414',
-        'border': '#2E2E2E',
-        'primary-text': '#F2F2F2',
-        'secondary-text': '#737373',
-        'accent': '#BFBFBF',
-      },
-    },
-  },
-  plugins: [],
-};
-```
-
----
-
-## 🚀 PASO 5: Iniciar el Sistema (3 Terminales)
-
-### Terminal 1: Evolution API (Puerto 8080)
+Comprobación básica:
 
 ```powershell
-cd C:\Users\albin\Projects\superagente-whatsapp\evolution-api
+Invoke-RestMethod http://127.0.0.1:3003/health
+```
 
-# Opción A: Modo desarrollo (recomendado para inicio)
-npm run dev:server
+## 6. Extensión Chromium
 
-# Opción B: Modo producción (requiere build previo)
+### Desarrollo local
+
+1. Configura la URL del backend local desde la pantalla de activación de la extensión.
+2. En Chrome abre `chrome://extensions` y activa **Modo de desarrollador**.
+3. Selecciona **Cargar descomprimida** y elige `extension/`.
+4. Para generar un paquete verificable:
+
+```powershell
+cd extension
+npm run check
+npm test
+npm run package:local
+```
+
+### Producción y Chrome Web Store
+
+```powershell
+cd extension
+npm run check
+npm test
+npm run package
+```
+
+- Incrementa la versión en `extension/manifest.production.json` antes de empaquetar. Debe ser mayor que la última versión publicada.
+- La extensión de producción debe usar `https://ceo.grupolyn.com` y el ID publicado debe estar incluido en `CHROME_EXTENSION_IDS` del backend.
+- La instalación pública no da acceso a datos corporativos: cada navegador necesita una activación válida y el backend valida el origen de Chrome.
+- Cualquier cambio de código de la extensión exige una nueva publicación y la revisión que aplique Chrome. Los cambios exclusivos de backend no requieren publicar la extensión.
+
+## 7. Google Drive y análisis de reuniones
+
+1. Crea el cliente OAuth en Google Cloud y habilita Google Drive API.
+2. Configura la redirección del backend y guarda las credenciales solamente en `backend/.env` o `/etc/lyn/backend.env`.
+3. Autoriza la cuenta que tiene acceso de lectura a las carpetas de reuniones.
+4. Añade y habilita las carpetas desde Configuración del dashboard.
+5. El proceso periódico detecta archivos nuevos, los almacena y programa su análisis automático.
+
+La sincronización es centralizada: los usuarios autorizados ven sus reuniones vinculadas sin necesidad de conectar cada uno su propio Drive. Si una reunión no se identifica, el panel permite corregir PMC, proyecto, contacto, tipo o responsables de forma manual; la auditoría conserva esos cambios.
+
+## 8. Sincronización corporativa desde Supabase
+
+Supabase se usa como fuente de directorio, no como destino:
+
+- El backend descarga empleados, roles, clientes, subcontratas, proyectos, asignaciones y la jerarquía disponibles para la integración.
+- Los datos se copian a PostgreSQL de LYN para búsquedas rápidas, asignación automática y control de permisos.
+- La sincronización periódica incorpora altas y cambios de la fuente sin alterar sus tablas, políticas RLS ni credenciales.
+- Si faltan datos en el dashboard, verifica `SUPABASE_SYNC_ENABLED`, URL, clave secreta de servicio y los logs del backend antes de modificar la interfaz.
+
+## 9. Pruebas obligatorias
+
+Ejecuta estos controles antes de pedir un despliegue:
+
+```powershell
+cd backend
+npm run typecheck
+npm test
+
+cd ..\frontend
+npm test
 npm run build
-npm run start:prod
+
+cd ..\extension
+npm run check
+npm test
+npm run package
 ```
 
-**Verificación:**
-```powershell
-# En otra terminal, verificar que está funcionando
-curl http://localhost:8080/health
+Además comprueba manualmente, con cuentas autorizadas:
+
+- Inicio y cierre de sesión del dashboard.
+- Restricciones por rol y visibilidad de reuniones propias.
+- Carga de opciones de filtros (proyecto, PMC, rol, contacto y fecha).
+- Apertura de una reunión, edición de responsables y registro de auditoría.
+- Importación de una reunión de Drive y su análisis persistido.
+- Activación de extensión, listado de chats, análisis individual e informe global.
+
+No se debe desplegar si fallan pruebas, el build, migraciones o el chequeo de seguridad de la extensión.
+
+## 10. Producción
+
+La instalación actual usa:
+
+- Aplicación: `/opt/lyn`.
+- Variables privadas: `/etc/lyn/backend.env`.
+- Servicios: `lyn-backend`, `lyn-evolution` y `nginx`.
+- URL pública: `https://ceo.grupolyn.com`.
+
+### Flujo de despliegue
+
+1. En local, deja el árbol de trabajo limpio y ejecuta las pruebas de la sección anterior.
+2. Sube a Git solo el código y migraciones necesarios; nunca `.env`, tokens o paquetes temporales.
+3. En el servidor, actualiza el repositorio, instala dependencias si cambiaron, ejecuta migraciones y compila el frontend.
+4. Reinicia únicamente los servicios que correspondan y valida salud, interfaz y logs.
+
+Comandos de comprobación en el servidor:
+
+```bash
+sudo systemctl is-active lyn-backend lyn-evolution nginx
+curl -fsS https://ceo.grupolyn.com/health
+sudo journalctl -u lyn-backend -n 100 --no-pager
+sudo git -C /opt/lyn rev-parse --short HEAD
 ```
 
-### Terminal 2: Backend Orquestador (Puerto 3000)
+Para el procedimiento completo, incluidos backups, Nginx, systemd y rollback, usa `docs/PRODUCCION_LIGHTSAIL.md` y `docs/RELEASE_CHECKLIST.md`.
 
-```powershell
-cd C:\Users\albin\Projects\superagente-whatsapp\backend
+### Reglas de producción
 
-# Iniciar en modo desarrollo con auto-reload
-npm run dev
-```
+- El backend y Evolution API deben escuchar solo en `127.0.0.1`; Nginx es el único punto público.
+- Usa HTTPS, secretos fuertes y rotables, y cookies de sesión seguras.
+- `ALLOW_UNAUTHENTICATED_LOCAL_EXTENSION` debe permanecer desactivado.
+- Define exclusivamente IDs reales en `CHROME_EXTENSION_IDS`.
+- Mantén copias de seguridad de PostgreSQL antes de migraciones sensibles.
+- Tras desplegar frontend, recarga forzada el navegador si conserva assets antiguos.
 
-**Output esperado:**
-```
-[server] Backend escuchando en http://localhost:3003
-[boot] Iniciando auto-configuración con Evolution API...
-[boot] Evolution API disponible
-[boot] Instancia "lyn-local" ya existe (o creándola)
-[boot] Configurando webhook -> http://localhost:3003/webhook/evolution
-[boot] Auto-configuración completada
-```
+## 11. Diagnóstico rápido
 
-**Verificación:**
-```powershell
-curl http://localhost:3003/health
-```
+| Síntoma | Comprobación inicial |
+| --- | --- |
+| `502 Bad Gateway` | `systemctl status lyn-backend`, logs y `curl http://127.0.0.1:3003/health` desde el servidor. |
+| `401` en extensión | Verifica activación válida, URL del backend y que no se haya borrado el almacenamiento de Chrome. |
+| `403 Origen de extensión no autorizado` | Comprueba el ID de Chrome y `CHROME_EXTENSION_IDS`; reinicia el backend tras cambiar variables. |
+| Drive no incorpora reuniones | Revisa credenciales OAuth, token autorizado, carpetas habilitadas y `last_sync_error` en `google_drive_folders`. |
+| No llega directorio corporativo | Verifica variables `SUPABASE_*`, sincronización habilitada y logs que contengan `supabase` o `directory`. |
+| IA falla o queda pendiente | Revisa la clave/modelo Gemini, cuota, conectividad y logs de `lyn-backend`. |
+| Pantalla antigua o módulo no carga | Comprueba el build desplegado, la versión Git y realiza recarga forzada del navegador. |
 
-### Terminal 3: Dashboard React (Puerto 5173)
+## 12. Principios de mantenimiento
 
-```powershell
-cd C:\Users\albin\Projects\superagente-whatsapp\frontend
-
-# Iniciar servidor de desarrollo
-npm run dev
-```
-
-**Output esperado:**
-```
-VITE v6.4.3  ready in 737 ms
-➜  Local:   http://localhost:5173/
-```
-
----
-
-## 📱 PASO 6: Conectar WhatsApp
-
-### 6.1 Abrir el Dashboard
-
-Navegar a: `http://localhost:5173`
-
-### 6.2 Escanear Código QR
-
-1. Verás la pantalla de autenticación con el código QR
-2. Abre WhatsApp en tu teléfono
-3. Ve a Configuración → Dispositivos vinculados
-4. Escanea el QR mostrado en el dashboard
-
-### 6.3 Verificar conexión
-
-Una vez escaneado, el dashboard cambiará automáticamente a la vista de chats.
-
----
-
-## 🔍 Solución de Problemas
-
-### Problema 1: npm install falla con EALLOWGIT
-
-**Causa:** npm tiene deshabilitados los paquetes git por defecto.
-
-**Solución:**
-```powershell
-# Crear .npmrc en evolution-api/
-cd evolution-api
-echo "git=all" > .npmrc
-
-# O configurar globalmente
-npm config set git all --global
-```
-
-### Problema 2: Evolution API no inicia
-
-**Verificar:**
-1. PostgreSQL está corriendo en puerto 5432
-2. Las bases de datos evolution_db y superagente existen
-3. El archivo .env de Evolution API está configurado correctamente
-
-**Logs de Evolution API:**
-```powershell
-cd evolution-api
-npm run dev:server
-# Revisar logs en consola
-```
-
-### Problema 3: Backend no conecta con Evolution API
-
-**Verificar:**
-```powershell
-# Test de conexión a Evolution API
-curl http://localhost:8080/instance/fetchInstances -H "apikey: 429683C4C977415CAAFCCE10F7D57E11"
-```
-
-### Problema 4: Frontend no conecta con Backend
-
-**Verificar:**
-1. Backend está corriendo en puerto 3000
-2. Vite proxy está configurado en `vite.config.js`:
-```javascript
-   server: {
-     port: 5173,
-     proxy: {
-       '/api': 'http://localhost:3003',
-       '/webhook': 'http://localhost:3003',
-     },
-   },
-```
-
-### Problema 5: PostgreSQL connection refused
-
-**Solución:**
-```powershell
-# Verificar que PostgreSQL está corriendo
-# En Windows: Services.msc → PostgreSQL 16
-
-# O iniciar manualmente
-& "C:\Program Files\PostgreSQL\16\bin\pg_ctl.exe" -D "C:\Program Files\PostgreSQL\16\data" start
-```
-
----
-
-## 📊 Flujo de Auto-configuración del Backend
-
-Al iniciar el backend (`server.js`), se ejecuta automáticamente:
-
-1. **Espera a Evolution API** (máximo 30 intentos, 2 segundos cada uno)
-2. **Verifica instancia "lyn-local"** (`GET /instance/fetchInstances`)
-3. **Crea instancia si no existe** (`POST /instance/create`)
-4. **Configura webhook** (`POST /webhook/set/lyn-local`)
-   - URL: `http://localhost:3003/webhook/evolution`
-   - Eventos: `MESSAGES_UPSERT`, `CONNECTION_UPDATE`
-
----
-
-## 🗄️ Estructura de Base de Datos
-
-### Tabla `chats`
-```sql
-CREATE TABLE chats (
-    id         VARCHAR(255) PRIMARY KEY,
-    nombre     VARCHAR(255) NOT NULL DEFAULT 'Sin nombre',
-    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-);
-```
-
-### Tabla `mensajes`
-```sql
-CREATE TABLE mensajes (
-    id         VARCHAR(255) PRIMARY KEY,
-    chat_id    VARCHAR(255) NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
-    remitente  VARCHAR(255) NOT NULL,
-    texto      TEXT         NOT NULL,
-    timestamp  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-);
-```
-
-### Función de deduplicación
-```sql
-CREATE OR REPLACE FUNCTION insert_mensaje_idempotente(
-    p_id        VARCHAR(255),
-    p_chat_id   VARCHAR(255),
-    p_remitente VARCHAR(255),
-    p_texto     TEXT,
-    p_timestamp TIMESTAMPTZ DEFAULT NOW()
-) RETURNS VOID AS $$
-BEGIN
-    INSERT INTO chats (id, nombre, updated_at)
-    VALUES (p_chat_id, p_remitente, p_timestamp)
-    ON CONFLICT (id) DO UPDATE
-        SET updated_at = EXCLUDED.updated_at,
-            nombre     = CASE
-                WHEN chats.nombre = 'Sin nombre' THEN EXCLUDED.nombre
-                ELSE chats.nombre
-            END;
-
-    INSERT INTO mensajes (id, chat_id, remitente, texto, timestamp)
-    VALUES (p_id, p_chat_id, p_remitente, p_texto, p_timestamp)
-    ON CONFLICT (id) DO NOTHING;
-END;
-$$ LANGUAGE plpgsql;
-```
-
----
-
-## 🌐 API REST del Backend
-
-| Método | Ruta | Descripción |
-|--------|------|-------------|
-| GET | `/api/auth/status` | Estado de conexión WhatsApp |
-| GET | `/api/auth/qr` | QR base64 si no está conectado |
-| POST | `/webhook/evolution` | Receptor de eventos Evolution |
-| GET | `/api/chats` | Lista de conversaciones |
-| GET | `/api/chats/:id/mensajes` | Mensajes de un chat |
-| POST | `/api/enviar` | Enviar texto vía Evolution |
-
----
-
-## 🎨 Diseño del Frontend
-
-### Paleta de Colores
-- **Main Background:** `#0D0D0D` (Negro profundo)
-- **Surface/Cards:** `#141414` (Gris oscuro)
-- **Borders:** `#2E2E2E`
-- **Primary Text:** `#F2F2F2`
-- **Secondary Text:** `#737373`
-- **Primary Accent & Buttons:** `#BFBFBF` (con texto negro)
-
-### Vistas del Dashboard
-1. **Vista de Autenticación:** Muestra QR para conectar WhatsApp
-2. **Vista de Dashboard:** Panel izquierdo con lista de chats, panel derecho con mensajes y área de borrador
-
----
-
-## 📝 Checklist Final de Instalación
-
-- [ ] PostgreSQL instalado y corriendo (puerto 5432)
-- [ ] Bases de datos `evolution_db` y `superagente` creadas
-- [ ] Schema SQL aplicado a base de datos `superagente`
-- [ ] Evolution API clonado y configurado
-- [ ] Archivo `.env` de Evolution API creado
-- [ ] Dependencias de Evolution API instaladas
-- [ ] Migraciones de Evolution API deployadas
-- [ ] Backend configurado con archivo `.env`
-- [ ] Dependencias del backend instaladas
-- [ ] Frontend configurado con Tailwind
-- [ ] Dependencias del frontend instaladas
-- [ ] Evolution API iniciado en puerto 8080
-- [ ] Backend iniciado en puerto 3000
-- [ ] Frontend iniciado en puerto 5173
-- [ ] QR escaneado y WhatsApp conectado
-
----
-
-## 🚀 Comandos Rápidos de Inicio
-
-```powershell
-# Terminal 1 - Evolution API
-cd C:\Users\albin\Projects\superagente-whatsapp\evolution-api
-npm run dev:server
-
-# Terminal 2 - Backend
-cd C:\Users\albin\Projects\superagente-whatsapp\backend
-npm run dev
-
-# Terminal 3 - Frontend
-cd C:\Users\albin\Projects\superagente-whatsapp\frontend
-npm run dev
-```
-
-Luego abrir: `http://localhost:5173`
-
----
-
-## 📞 Soporte
-
-Si encuentras problemas:
-1. Revisa los logs de cada servicio en su terminal correspondiente
-2. Verifica que todos los puertos estén disponibles (8080, 3000, 5173, 5432)
-3. Confirma que PostgreSQL esté corriendo
-4. Verifica los archivos `.env` en cada componente
-
----
-
-**¡Sistema listo para usar! Una vez escaneado el QR, el dashboard mostrará tus conversaciones de WhatsApp.**
+- Mantén los cambios pequeños, con migración y prueba asociada cuando afectan datos.
+- Primero se valida en local; después se publica en Git y finalmente se despliega con checklist.
+- No se modifica Supabase desde LYN: cualquier cambio de estructura debe acordarse con el equipo dueño de esa fuente.
+- Toda reasignación, edición o eliminación relevante en reuniones debe quedar registrada con actor y fecha.
+- Ante una duda operativa, prioriza consistencia de datos, seguridad y trazabilidad antes que automatizar sin validación.
