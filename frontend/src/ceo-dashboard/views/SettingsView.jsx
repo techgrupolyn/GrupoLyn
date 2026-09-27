@@ -128,7 +128,7 @@ export function WhatsAppSettingsPanel() {
   return (
     <div className="ceo-page p-4 sm:p-6 xl:p-8">
       <h2 className="font-display text-2xl font-medium text-[#F2F2F2] tracking-wide">WhatsApp</h2>
-      <p className="mt-2 text-xs text-[#737373]">Instancia Evolution, presencia, proxy, cuentas, códigos de activación y webhooks.</p>
+      <p className="mt-2 text-xs text-[#737373]">Instancia Evolution, presencia, proxy, cuentas y códigos de activación.</p>
 
       <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
         <form onSubmit={saveSettings} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">

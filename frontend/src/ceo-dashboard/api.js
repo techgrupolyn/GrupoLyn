@@ -13,9 +13,14 @@ async function request(path, options = {}) {
       localStorage.removeItem('ceo_token');
       window.location.assign('/?view=ceo');
     }
-    let err = new Error(`HTTP ${res.status}: ${text || res.statusText}`);
+    let message = text || res.statusText;
+    try {
+      const payload = JSON.parse(text);
+      if (payload && typeof payload.error === 'string') message = payload.error;
+    } catch { /* A response that is not JSON keeps its safe status text. */ }
+    let err = new Error(`HTTP ${res.status}: ${message}`);
     err.status = res.status;
-    err.body = text;
+    err.body = message;
     throw err;
   }
   return res.json().catch(() => null);
@@ -127,10 +132,13 @@ export const api = {
     removeAdditionalResponsible: (artifactId, actionId, person) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}/responsibles/${encodeURIComponent(person.kind)}/${encodeURIComponent(person.id)}`, { method: 'DELETE' }),
     deleteAction: (artifactId, actionId) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}`, { method: 'DELETE' }),
     workflow: (artifactId, command, reason = '') => request(`/meetings/${encodeURIComponent(artifactId)}/workflow`, { method: 'POST', body: JSON.stringify({ command, reason }) }),
+    configuration: () => request('/meetings/configuration'),
+    updateConfiguration: (payload) => request('/meetings/configuration', { method: 'PUT', body: JSON.stringify(payload) }),
   },
   googleDrive: {
     status: () => request('/google-drive/status'),
     connect: () => request('/google-drive/connect', { method: 'POST' }),
+    removeConnection: (id) => request(`/google-drive/connections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     addFolder: (payload) => request('/google-drive/folders', { method: 'POST', body: JSON.stringify(payload) }),
     removeFolder: (id) => request(`/google-drive/folders/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     syncFolder: (id) => request(`/google-drive/folders/${encodeURIComponent(id)}/sync`, { method: 'POST' }),

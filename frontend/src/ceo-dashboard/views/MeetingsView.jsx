@@ -10,6 +10,13 @@ const ARTIFACT_TYPES = [
   { key: 'audio', label: 'Audios' },
 ];
 
+const REVIEW_STAGES = [
+  { key: 'delineante', label: 'Delineante' },
+  { key: 'pmc', label: 'PMC / Jefe de proyectos' },
+  { key: 'operations', label: 'Dirección de operaciones' },
+  { key: 'director', label: 'Director general' },
+];
+
 function formatDate(value) {
   return value ? new Date(value).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' }) : '—';
 }
@@ -92,15 +99,22 @@ export default function MeetingsView({ mode = 'operations' }) {
   const [query, setQuery] = useState('');
   const [type, setType] = useState('all');
   const [period, setPeriod] = useState('all');
+  const [meetingConfiguration, setMeetingConfiguration] = useState(null);
+  const [configurationSaving, setConfigurationSaving] = useState(false);
   const isConfiguration = mode === 'configuration';
 
   const load = async () => {
     setLoading(true);
     setError('');
     try {
-      const [nextStatus, nextArtifacts] = await Promise.all([api.googleDrive.status(), api.googleDrive.artifacts()]);
+      const [nextStatus, nextArtifacts, nextConfiguration] = await Promise.all([
+        api.googleDrive.status(),
+        api.googleDrive.artifacts(),
+        isConfiguration ? api.meetings.configuration() : Promise.resolve(null),
+      ]);
       setStatus(nextStatus || {});
       setArtifacts(Array.isArray(nextArtifacts) ? nextArtifacts : []);
+      if (nextConfiguration) setMeetingConfiguration(nextConfiguration);
       setFolderForm((current) => ({ ...current, connection_id: current.connection_id || nextStatus?.connections?.[0]?.id || '' }));
     } catch (requestError) {
       setError(requestError?.body || requestError?.message || 'No se pudo cargar Google Drive.');
@@ -171,6 +185,43 @@ export default function MeetingsView({ mode = 'operations' }) {
     }
   };
 
+  const disconnectGoogleAccount = async (connectionId) => {
+    if (!window.confirm('¿Desconectar esta cuenta y detener sus carpetas? Los archivos ya importados se conservarán.')) return;
+    setAction(`disconnect-${connectionId}`);
+    setError('');
+    try {
+      await api.googleDrive.removeConnection(connectionId);
+      await load();
+    } catch (requestError) {
+      setError(requestError?.body || requestError?.message || 'No se pudo desconectar la cuenta.');
+    } finally {
+      setAction('');
+    }
+  };
+
+  const toggleWorkflowStage = (field, stage) => {
+    setMeetingConfiguration((current) => {
+      const existing = Array.isArray(current?.[field]) ? current[field] : [];
+      const next = existing.includes(stage) ? existing.filter((item) => item !== stage) : [...existing, stage];
+      return { ...current, [field]: REVIEW_STAGES.map((item) => item.key).filter((item) => next.includes(item)) };
+    });
+  };
+
+  const saveMeetingConfiguration = async (event) => {
+    event.preventDefault();
+    if (!meetingConfiguration) return;
+    setConfigurationSaving(true);
+    setError('');
+    try {
+      const saved = await api.meetings.updateConfiguration(meetingConfiguration);
+      setMeetingConfiguration(saved);
+    } catch (requestError) {
+      setError(requestError?.body || requestError?.message || 'No se pudo guardar la configuración.');
+    } finally {
+      setConfigurationSaving(false);
+    }
+  };
+
   const openArtifact = async (artifact) => {
     setAction(`artifact-${artifact.id}`);
     try {
@@ -214,7 +265,7 @@ export default function MeetingsView({ mode = 'operations' }) {
                 </button>
                 <span className="text-xs text-[#737373]">{connected ? `${status.connections.length} cuenta${status.connections.length === 1 ? '' : 's'} conectada${status.connections.length === 1 ? '' : 's'}` : 'Sin cuentas conectadas'}</span>
               </div>
-              {connected && <div className="mt-4 space-y-1 border-t border-[#2E2E2E] pt-3 text-xs text-[#BFBFBF]">{status.connections.map((connection) => <p key={connection.id}>{connection.display_name || connection.google_email} <span className="text-[#737373]">· {connection.google_email}</span></p>)}</div>}
+              {connected && <div className="mt-4 space-y-2 border-t border-[#2E2E2E] pt-3 text-xs text-[#BFBFBF]">{status.connections.map((connection) => <div key={connection.id} className="flex items-center justify-between gap-3"><p className="truncate">{connection.display_name || connection.google_email} <span className="text-[#737373]">· {connection.google_email}</span></p><button type="button" onClick={() => disconnectGoogleAccount(connection.id)} disabled={action === `disconnect-${connection.id}`} className="shrink-0 rounded border border-red-950/70 px-2 py-1 text-[10px] text-red-200 hover:border-red-800 disabled:opacity-40">{action === `disconnect-${connection.id}` ? 'Desconectando…' : 'Desconectar'}</button></div>)}</div>}
             </div>
 
             <form onSubmit={addFolder} className="rounded-md border border-[#2E2E2E] bg-[#141414] p-5">
@@ -302,6 +353,15 @@ export default function MeetingsView({ mode = 'operations' }) {
             {!loading && !hasFolders && <p className="px-4 py-5 text-xs text-[#737373]">Configura una carpeta fuente para iniciar la sincronización.</p>}
           </div>
         </div>}
+
+        {isConfiguration && meetingConfiguration && <form onSubmit={saveMeetingConfiguration} className="mt-5 rounded-md border border-[#2E2E2E] bg-[#141414] p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-mono text-[10px] uppercase tracking-[0.13em] text-[#737373]">Reglas del agente</p><p className="mt-1 text-xs text-[#737373]">Estas reglas se aplican en análisis nuevos y en el enrutamiento de cada tipo de reunión.</p></div><button type="submit" disabled={configurationSaving} className="ceo-button-primary rounded bg-[#BFBFBF] px-3 py-2 text-xs font-semibold text-black disabled:opacity-40">{configurationSaving ? 'Guardando…' : 'Guardar reglas'}</button></div>
+          <label className="mt-5 block text-xs text-[#BFBFBF]">Convención de nombrado<textarea value={meetingConfiguration.naming_convention || ''} onChange={(event) => setMeetingConfiguration((current) => ({ ...current, naming_convention: event.target.value }))} rows="2" className="mt-2 w-full rounded border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-xs text-[#F2F2F2] outline-none focus:border-[#737373]" /></label>
+          <div className="mt-5 grid gap-4 lg:grid-cols-2">{[{ field: 'committee_workflow', title: 'Cadena · Comité de obra' }, { field: 'client_workflow', title: 'Cadena · Reunión con cliente' }].map((workflow) => <fieldset key={workflow.field} className="rounded border border-[#2E2E2E] bg-[#0D0D0D] p-4"><legend className="px-1 text-xs font-medium text-[#F2F2F2]">{workflow.title}</legend><p className="mb-3 text-[11px] text-[#737373]">Se omiten automáticamente los escalones sin responsables activos.</p><div className="space-y-2">{REVIEW_STAGES.map((stage) => <label key={stage.key} className="flex items-center gap-2 text-xs text-[#BFBFBF]"><input type="checkbox" checked={Boolean(meetingConfiguration[workflow.field]?.includes(stage.key))} onChange={() => toggleWorkflowStage(workflow.field, stage.key)} />{stage.label}</label>)}</div></fieldset>)}</div>
+          <label className="mt-5 block text-xs text-[#BFBFBF]">Aviso de grabación<textarea value={meetingConfiguration.recording_notice || ''} onChange={(event) => setMeetingConfiguration((current) => ({ ...current, recording_notice: event.target.value }))} rows="3" className="mt-2 w-full rounded border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-xs text-[#F2F2F2] outline-none focus:border-[#737373]" /></label>
+        </form>}
+
+        {isConfiguration && <div className="mt-5 rounded-md border border-[#2E2E2E] bg-[#141414] p-5"><p className="font-mono text-[10px] uppercase tracking-[0.13em] text-[#737373]">Últimos archivos importados</p><p className="mt-1 text-xs text-[#737373]">Consulta rápida de las fuentes; la operación y aprobación continúan en Gestión de reuniones.</p><div className="mt-4 divide-y divide-[#2E2E2E]">{artifacts.slice(0, 10).map((artifact) => <div key={artifact.id} className="flex items-center justify-between gap-4 py-2 text-xs"><div className="min-w-0"><p className="truncate text-[#F2F2F2]">{artifact.name}</p><p className="mt-0.5 text-[#737373]">{artifact.folder_label || 'Carpeta'} · {artifactLabel(artifact.artifact_type)}</p></div><span className="shrink-0 font-mono text-[10px] text-[#737373]">{formatDate(artifact.source_modified_at)}</span></div>)}{!loading && !artifacts.length && <p className="py-3 text-xs text-[#737373]">Aún no hay archivos importados.</p>}</div></div>}
       </div>
 
       {selected && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 sm:p-6"><div role="dialog" aria-modal="true" aria-label="Detalle del archivo" className="max-h-[88vh] w-full max-w-4xl overflow-y-auto rounded-md border border-[#2E2E2E] bg-[#141414] shadow-2xl"><div className="sticky top-0 flex items-start justify-between gap-4 border-b border-[#2E2E2E] bg-[#141414] p-5"><div className="min-w-0"><p className="font-mono text-[10px] uppercase tracking-[0.13em] text-[#737373]">{artifactLabel(selected.artifact_type)} · {selected.folder_label || 'Google Drive'}</p><h3 className="mt-1 truncate text-lg font-semibold text-[#F2F2F2]">{selected.name}</h3></div><button type="button" onClick={() => setSelected(null)} className="rounded border border-[#2E2E2E] px-3 py-2 text-xs text-[#BFBFBF] hover:border-[#737373]">Cerrar</button></div><div className="p-5">{selected.web_view_link && <a href={selected.web_view_link} target="_blank" rel="noreferrer" className="inline-flex rounded border border-[#2E2E2E] px-3 py-2 text-xs text-[#BFBFBF] hover:border-[#737373]">Abrir original en Google Drive</a>}<pre className="mt-4 whitespace-pre-wrap rounded border border-[#2E2E2E] bg-[#0D0D0D] p-4 text-xs leading-5 text-[#D4D4D4]">{selected.content_text || 'Este tipo de archivo se conserva como referencia. Su contenido no se extrae automáticamente.'}</pre>{selected.content_truncated && <p className="mt-3 text-xs text-amber-200">El texto se guardó parcialmente por el límite de seguridad configurado.</p>}</div></div></div>}
