@@ -9,7 +9,7 @@ export function hasUsableCeoToken(token) {
 }
 
 const CEO_VIEWS = new Set([
-  'ceo', 'dashboard', 'inbox', 'groups', 'labels', 'business', 'settings', 'templates', 'specialists', 'backoffice', 'meetings',
+  'ceo', 'dashboard', 'inbox', 'groups', 'labels', 'business', 'settings', 'templates', 'specialists', 'backoffice', 'meetings', 'work',
 ]);
 
 export function isCeoView(view) {

@@ -234,6 +234,12 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
         const notices = response.body.items.filter((item: { artifactId: string; kind: string }) => item.artifactId === reviewId && item.kind === 'review');
         expect(notices.length, `${meetingKind}: turno ${stage}, usuario ${stages[index]}`).toBe(stages[index] === stage ? 1 : 0);
         if (notices.length) expect(notices[0].unread).toBe(true);
+        const mine = await request(server.app).get('/api/meetings?filter=mine').set('Authorization', person.auth);
+        expect(mine.status).toBe(200);
+        expect(mine.body.items.some((item: { id: string }) => item.id === reviewId)).toBe(stages[index] === stage);
+        const approved = await request(server.app).get('/api/meetings?filter=approved').set('Authorization', person.auth);
+        expect(approved.status).toBe(200);
+        expect(approved.body.items.some((item: { id: string }) => item.id === reviewId)).toBe(stage === null);
       }
     };
     try {
@@ -302,6 +308,55 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       await server.pool.query('DELETE FROM empleados WHERE id=ANY($1::text[])', [people.map((person) => person.id)]);
       await server.pool.query('DELETE FROM proyectos WHERE id=$1', [prefix]);
       await server.pool.query('UPDATE meeting_agent_settings SET committee_workflow=$1::jsonb,client_workflow=$2::jsonb WHERE id=TRUE', [JSON.stringify(originalSettings.committee_workflow), JSON.stringify(originalSettings.client_workflow)]);
+    }
+  });
+
+  it.each(['employee:interiorista', 'employee:director_general', 'superadmin'])('tareas propias principales y adicionales sin mezclarlas con aprobaciones para %s', async (role) => {
+    const ownEmployeeId = `qa-work-${randomUUID()}`;
+    const ownReviewId = randomUUID();
+    const ids = [randomUUID(), randomUUID(), randomUUID()];
+    try {
+      await server.pool.query("INSERT INTO empleados(id,nombre,numero,email) VALUES($1,'Usuario tareas QA',$1,$2)", [ownEmployeeId, `${ownEmployeeId}@example.test`]);
+      const ownUserId = (await server.pool.query("INSERT INTO usuarios(usuario,email,auth_provider,rol) VALUES($1,$2,'supabase',$3) RETURNING id", [ownEmployeeId, `${ownEmployeeId}@example.test`, role])).rows[0].id;
+      const session = Buffer.from(JSON.stringify({ id: ownUserId, usuario: ownEmployeeId, nombre: 'Usuario tareas QA', rol: role, exp: Date.now() + 60000 })).toString('base64url');
+      const auth = `Bearer ${session}.${createHmac('sha256', secret).update(session).digest('base64url')}`;
+      await server.pool.query("INSERT INTO google_drive_artifacts(id,connection_id,google_file_id,name,mime_type,artifact_type,content_text) VALUES($1,$2,$3,'Tareas QA','text/plain','transcript','Sintético')", [ownReviewId, connectionId, ownReviewId]);
+      await server.pool.query("INSERT INTO meeting_reviews(artifact_id,analysis_status,status,workflow_stage) VALUES($1,'completed','approved','director')", [ownReviewId]);
+      for (const [index, id] of ids.entries()) {
+        await server.pool.query("INSERT INTO meeting_review_actions(id,artifact_id,title,status,responsible_id,responsible_kind) VALUES($1,$2,$3,'pending',$4,'employee')", [id, ownReviewId, `Tarea QA ${index}`, index === 0 ? ownEmployeeId : employeeId]);
+      }
+      await server.pool.query("INSERT INTO meeting_review_action_responsibles(action_id,employee_id,responsible_id,responsible_kind,responsible_name) VALUES($1,$2,$2,'employee','Usuario tareas QA')", [ids[1], ownEmployeeId]);
+      const work = await request(server.app).get('/api/meetings/work-items').set('Authorization', auth);
+      expect(work.status, JSON.stringify(work.body)).toBe(200);
+      const tasks = work.body.items.filter((item: { kind: string }) => item.kind === 'action');
+      expect(tasks.map((item: { actionId: string }) => item.actionId).sort()).toEqual(ids.slice(0, 2).sort());
+      const read = await request(server.app).post('/api/meetings/work-items/read').set('Authorization', auth).send({ keys: tasks.map((item: { key: string }) => item.key) });
+      expect(read.status).toBe(200);
+      const afterRead = await request(server.app).get('/api/meetings/work-items').set('Authorization', auth);
+      expect(afterRead.body.actions).toBe(2);
+      expect(afterRead.body.items.filter((item: { kind: string }) => item.kind === 'action').every((item: { unread: boolean }) => !item.unread)).toBe(true);
+      const mine = await request(server.app).get('/api/meetings?filter=mine').set('Authorization', auth);
+      expect(mine.status).toBe(200);
+      expect(mine.body.items).toEqual([]);
+      const approved = await request(server.app).get('/api/meetings?filter=approved').set('Authorization', auth);
+      expect(approved.status).toBe(200);
+      expect(approved.body.items.some((item: { id: string }) => item.id === ownReviewId)).toBe(true);
+      if (role === 'employee:interiorista') {
+        expect((await request(server.app).post(`/api/meetings/${ownReviewId}/workflow`).set('Authorization', auth).send({ command: 'approve' })).status).toBe(403);
+      }
+      await server.pool.query("UPDATE meeting_review_actions SET status='done' WHERE id=$1", [ids[0]]);
+      await server.pool.query('DELETE FROM meeting_review_action_responsibles WHERE action_id=$1 AND employee_id=$2', [ids[1], ownEmployeeId]);
+      const cleared = await request(server.app).get('/api/meetings/work-items').set('Authorization', auth);
+      expect(cleared.body.actions).toBe(0);
+      if (role === 'employee:interiorista') {
+        await server.pool.query('UPDATE meeting_review_actions SET responsible_id=NULL,responsible_kind=NULL WHERE id=$1', [ids[0]]);
+        const hidden = await request(server.app).get('/api/meetings?filter=approved').set('Authorization', auth);
+        expect(hidden.body.items.some((item: { id: string }) => item.id === ownReviewId)).toBe(false);
+      }
+    } finally {
+      await server.pool.query('DELETE FROM google_drive_artifacts WHERE id=$1', [ownReviewId]);
+      await server.pool.query('DELETE FROM usuarios WHERE usuario=$1', [ownEmployeeId]);
+      await server.pool.query('DELETE FROM empleados WHERE id=$1', [ownEmployeeId]);
     }
   });
 
@@ -375,6 +430,28 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       expect(response.body.meeting.workflow_stage).toBe('operations');
     } finally {
       await server.pool.query('UPDATE meeting_agent_settings SET client_workflow = $1::jsonb WHERE id = TRUE', [JSON.stringify(settings.rows[0].client_workflow)]);
+    }
+  });
+
+  it('M-06: migra la convención antigua a PMC sin sobrescribir convenciones personalizadas', async () => {
+    const original = (await server.pool.query('SELECT naming_convention FROM meeting_agent_settings WHERE id=TRUE')).rows[0].naming_convention;
+    const corrected = 'Comité de obra · NOMBRE DEL PMC | Reunión cliente · NOMBRE DE LA OBRA';
+    try {
+      await server.pool.query('UPDATE meeting_agent_settings SET naming_convention=$1 WHERE id=TRUE', ['Comité de obra · NOMBRE DE LA OBRA | Reunión cliente · NOMBRE DE LA OBRA']);
+      await server.ensureDatabaseSchema();
+      const response = await request(server.app).get('/api/meetings/configuration').set('Authorization', authorization);
+      expect(response.status).toBe(200);
+      expect(response.body.naming_convention).toBe(corrected);
+      const column = await server.pool.query("SELECT column_default FROM information_schema.columns WHERE table_schema='public' AND table_name='meeting_agent_settings' AND column_name='naming_convention'");
+      expect(column.rows[0].column_default).toContain(corrected);
+      await server.ensureDatabaseSchema();
+      expect((await server.pool.query('SELECT naming_convention FROM meeting_agent_settings WHERE id=TRUE')).rows[0].naming_convention).toBe(corrected);
+      const custom = 'Comité de obra · PMC · FECHA | Reunión cliente · OBRA';
+      await server.pool.query('UPDATE meeting_agent_settings SET naming_convention=$1 WHERE id=TRUE', [custom]);
+      await server.ensureDatabaseSchema();
+      expect((await server.pool.query('SELECT naming_convention FROM meeting_agent_settings WHERE id=TRUE')).rows[0].naming_convention).toBe(custom);
+    } finally {
+      await server.pool.query('UPDATE meeting_agent_settings SET naming_convention=$1 WHERE id=TRUE', [original]);
     }
   });
 

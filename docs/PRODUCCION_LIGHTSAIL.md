@@ -16,7 +16,7 @@ AWS recomienda respaldos con snapshots; configura snapshots automáticos y prueb
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y nginx postgresql-client rsync certbot python3-certbot-nginx
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 sudo useradd --system --create-home --home-dir /opt/lyn --shell /usr/sbin/nologin lyn
 sudo mkdir -p /opt/lyn /etc/lyn /var/backups/lyn
@@ -25,7 +25,7 @@ sudo chown root:lyn /etc/lyn
 sudo chmod 750 /etc/lyn
 ```
 
-Instala el proyecto en `/opt/lyn` con el usuario `lyn`. No copies `node_modules`, `.env`, ni bases de datos desde desarrollo.
+Instala el proyecto en `/opt/lyn` con el usuario `lyn`. Usa Node 22.16 o posterior de la rama 22, o Node 24, según el preflight del repositorio. No copies `node_modules`, `.env`, ni bases de datos desde desarrollo. Para actualizar una instalación existente, sigue `docs/RELEASE_20260928.md`; no sobrescribas sus archivos de configuración.
 
 ## 3. Variables de entorno
 

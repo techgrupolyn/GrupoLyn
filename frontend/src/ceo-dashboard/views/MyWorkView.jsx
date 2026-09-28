@@ -1,4 +1,5 @@
-import { BellRing, CalendarClock, CheckCircle2, ClipboardCheck, ExternalLink } from 'lucide-react';
+import { useState } from 'react';
+import { BellRing, CalendarClock, CheckCircle2, ExternalLink } from 'lucide-react';
 
 function displayDate(value) {
   if (!value) return 'Sin fecha límite';
@@ -11,23 +12,28 @@ function Stat({ label, value }) {
 }
 
 export default function MyWorkView({ work, loading = false, onOpen, onMarkRead }) {
-  const items = work?.items || [];
-  const unread = Number(work?.unread || 0);
+  const items = (work?.items || []).filter((item) => item.kind === 'action');
+  const unread = items.filter((item) => item.unread).length;
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(items.length / 25));
+  const currentPage = Math.min(page, totalPages);
+  const visibleItems = items.slice((currentPage - 1) * 25, currentPage * 25);
   return <section className="ceo-page p-4 sm:p-6 xl:p-8">
     <div className="mb-5 flex flex-col gap-3 border-b border-[#2E2E2E] pb-5 sm:flex-row sm:items-end sm:justify-between">
-      <div><p className="font-mono text-[10px] uppercase tracking-[.16em] text-amber-200">Centro personal</p><h2 className="mt-1 text-xl font-semibold tracking-tight text-[#F2F2F2]">Mis pendientes</h2><p className="mt-1 text-xs text-[#737373]">Revisiones y acciones que requieren tu atención.</p></div>
-      <div className="flex items-center gap-2 rounded border border-amber-300/30 bg-amber-300/[.06] px-3 py-2 text-xs text-amber-100"><BellRing size={14} />{unread ? `${unread} notificaciones nuevas` : 'Todo revisado'}</div>
+      <div><p className="font-mono text-[10px] uppercase tracking-[.16em] text-amber-200">Centro personal</p><h2 className="mt-1 text-xl font-semibold tracking-tight text-[#F2F2F2]">Mis pendientes</h2><p className="mt-1 text-xs text-[#737373]">Tareas asignadas a ti como responsable principal o adicional. Las aprobaciones están en Gestión de reuniones › Mi turno.</p></div>
+      <div className="flex items-center gap-2 rounded border border-amber-300/30 bg-amber-300/[.06] px-3 py-2 text-xs text-amber-100"><BellRing size={14} />{unread ? `${unread} tareas nuevas` : 'Sin tareas nuevas'}</div>
     </div>
-    <div className="grid gap-3 sm:grid-cols-3"><Stat label="Pendientes" value={work?.total || 0} /><Stat label="Revisiones" value={work?.reviews || 0} /><Stat label="Acciones asignadas" value={work?.actions || 0} /></div>
+    <div className="grid gap-3 sm:grid-cols-3"><Stat label="Tareas pendientes" value={items.length} /><Stat label="Con fecha límite" value={items.filter((item) => item.dueDate).length} /><Stat label="Sin fecha límite" value={items.filter((item) => !item.dueDate).length} /></div>
     <div className="mt-5 overflow-hidden rounded-md border border-[#2E2E2E] bg-[#141414]">
-      <div className="border-b border-[#2E2E2E] px-4 py-3"><p className="text-sm font-medium text-[#F2F2F2]">Bandeja de trabajo</p><p className="mt-1 text-[11px] text-[#737373]">Al abrir un elemento se muestra su reunión y se marca la notificación como leída.</p></div>
+      <div className="border-b border-[#2E2E2E] px-4 py-3"><p className="text-sm font-medium text-[#F2F2F2]">Tareas a realizar</p><p className="mt-1 text-[11px] text-[#737373]">Al abrir una tarea se muestra su reunión. Leer la notificación no completa la tarea.</p></div>
       {loading && <p className="px-4 py-8 text-center text-xs text-[#737373]">Cargando tus pendientes…</p>}
-      {!loading && !items.length && <div className="px-4 py-12 text-center"><CheckCircle2 className="mx-auto text-emerald-300" size={26} /><p className="mt-3 text-sm font-medium text-[#F2F2F2]">No tienes pendientes</p><p className="mt-1 text-xs text-[#737373]">Cuando te asignen una acción o una revisión aparecerá aquí.</p></div>}
-      <div className="divide-y divide-[#2E2E2E]">{items.map((item) => <button key={item.key} type="button" onClick={() => { void onMarkRead?.([item.key]); onOpen?.(item); }} className="group flex w-full items-start gap-3 px-4 py-4 text-left hover:bg-[#0D0D0D]">
-        <span className={`mt-0.5 flex size-8 shrink-0 items-center justify-center rounded border ${item.kind === 'review' ? 'border-violet-300/35 bg-violet-300/[.08] text-violet-200' : 'border-amber-300/35 bg-amber-300/[.08] text-amber-100'}`}>{item.kind === 'review' ? <ClipboardCheck size={15} /> : <CalendarClock size={15} />}</span>
+      {!loading && !items.length && <div className="px-4 py-12 text-center"><CheckCircle2 className="mx-auto text-emerald-300" size={26} /><p className="mt-3 text-sm font-medium text-[#F2F2F2]">No tienes tareas pendientes</p><p className="mt-1 text-xs text-[#737373]">Cuando te asignen una tarea aparecerá aquí.</p></div>}
+      <div className="divide-y divide-[#2E2E2E]">{visibleItems.map((item) => <button key={item.key} type="button" onClick={() => { void onMarkRead?.([item.key]); onOpen?.(item); }} className="group flex w-full items-start gap-3 px-4 py-4 text-left hover:bg-[#0D0D0D]">
+        <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded border border-amber-300/35 bg-amber-300/[.08] text-amber-100"><CalendarClock size={15} /></span>
         <span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="truncate text-sm font-medium text-[#F2F2F2]">{item.title}</span>{item.unread && <span className="size-1.5 shrink-0 rounded-full bg-amber-300" title="Nueva" />}</span><span className="mt-1 block text-xs text-[#BFBFBF]">{item.detail}</span><span className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[#737373]"><span className="text-amber-200">{item.meetingName}</span>{item.projectName && <span>{item.projectName}</span>}{item.kind === 'action' && <span className="text-amber-100">{displayDate(item.dueDate)}</span>}</span></span>
         <ExternalLink size={14} className="mt-1 shrink-0 text-[#4A4A4A] group-hover:text-amber-200" />
       </button>)}</div>
+      {totalPages > 1 && <div className="flex items-center justify-between border-t border-[#2E2E2E] px-4 py-3 text-xs"><button type="button" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)} className="disabled:opacity-40">Anterior</button><span>Página {currentPage} de {totalPages}</span><button type="button" disabled={currentPage === totalPages} onClick={() => setPage(currentPage + 1)} className="disabled:opacity-40">Siguiente</button></div>}
     </div>
   </section>;
 }

@@ -793,7 +793,7 @@ async function ensureDatabaseSchema(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_meeting_review_ai_runs_artifact ON meeting_review_ai_runs(artifact_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS meeting_agent_settings (
       id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id = TRUE),
-      naming_convention TEXT NOT NULL DEFAULT 'Comité de obra · NOMBRE DE LA OBRA | Reunión cliente · NOMBRE DE LA OBRA',
+      naming_convention TEXT NOT NULL DEFAULT 'Comité de obra · NOMBRE DEL PMC | Reunión cliente · NOMBRE DE LA OBRA',
       committee_workflow JSONB NOT NULL DEFAULT '["delineante","pmc","operations","director"]'::jsonb,
       client_workflow JSONB NOT NULL DEFAULT '["delineante","pmc","operations","director"]'::jsonb,
       recording_notice TEXT NOT NULL DEFAULT 'La grabación y la transcripción de esta reunión se gestionan para fines operativos internos.',
@@ -801,6 +801,10 @@ async function ensureDatabaseSchema(): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     INSERT INTO meeting_agent_settings (id) VALUES (TRUE) ON CONFLICT (id) DO NOTHING;
+    ALTER TABLE meeting_agent_settings ALTER COLUMN naming_convention SET DEFAULT 'Comité de obra · NOMBRE DEL PMC | Reunión cliente · NOMBRE DE LA OBRA';
+    UPDATE meeting_agent_settings
+      SET naming_convention = 'Comité de obra · NOMBRE DEL PMC | Reunión cliente · NOMBRE DE LA OBRA'
+      WHERE naming_convention = 'Comité de obra · NOMBRE DE LA OBRA | Reunión cliente · NOMBRE DE LA OBRA';
     ALTER TABLE chats ADD COLUMN IF NOT EXISTS account_id VARCHAR(120) NOT NULL DEFAULT 'default';
     ALTER TABLE grupos ADD COLUMN IF NOT EXISTS account_id VARCHAR(120) NOT NULL DEFAULT 'default';
     ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS account_id VARCHAR(120) NOT NULL DEFAULT 'default';
@@ -1305,16 +1309,15 @@ async function loadMeetingWorkItems(session: CeoSession, scope: MeetingAccessSco
   const employeeId = await resolveSessionEmployeeId(session, scope);
   const reviewVisibility = scope.employeeId ? ' AND ' + meetingVisibilityCondition('r', '$1') : '';
   const actionVisibility = scope.employeeId ? ' AND ' + meetingVisibilityCondition('r', '$2') : '';
-  const reviewQuery = 'SELECT r.artifact_id, a.name, r.project_id, r.project_name, r.workflow_stage, r.status, r.updated_at FROM meeting_reviews r INNER JOIN google_drive_artifacts a ON a.id = r.artifact_id WHERE r.status IN (\'draft\', \'pending\', \'returned\')' + reviewVisibility + ' ORDER BY r.updated_at DESC LIMIT 250';
-  const actionQuery = 'SELECT ma.id, ma.artifact_id, ma.title, ma.project_name, ma.due_date, ma.updated_at, a.name AS meeting_name FROM meeting_review_actions ma INNER JOIN meeting_reviews r ON r.artifact_id = ma.artifact_id INNER JOIN google_drive_artifacts a ON a.id = ma.artifact_id WHERE ma.status = \'pending\' AND ((ma.responsible_kind = \'employee\' AND ma.responsible_id = $1) OR EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id AND (mar.employee_id = $1 OR (mar.responsible_kind = \'employee\' AND mar.responsible_id = $1))))' + actionVisibility + ' ORDER BY ma.due_date ASC NULLS LAST, ma.updated_at DESC LIMIT 250';
+  const reviewQuery = 'SELECT r.artifact_id, a.name, r.project_id, r.project_name, r.workflow_stage, r.status, r.updated_at FROM meeting_reviews r INNER JOIN google_drive_artifacts a ON a.id = r.artifact_id WHERE r.analysis_status = \'completed\' AND r.status IN (\'draft\', \'pending\', \'returned\')' + reviewVisibility + ' ORDER BY r.updated_at DESC';
+  const actionQuery = 'SELECT ma.id, ma.artifact_id, ma.title, ma.project_name, ma.due_date, ma.updated_at, a.name AS meeting_name FROM meeting_review_actions ma INNER JOIN meeting_reviews r ON r.artifact_id = ma.artifact_id INNER JOIN google_drive_artifacts a ON a.id = ma.artifact_id WHERE ma.status = \'pending\' AND ((ma.responsible_kind = \'employee\' AND ma.responsible_id = $1) OR EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id AND (mar.employee_id = $1 OR (mar.responsible_kind = \'employee\' AND mar.responsible_id = $1))))' + actionVisibility + ' ORDER BY ma.due_date ASC NULLS LAST, ma.updated_at DESC';
   const [reviewResult, actionResult, positions] = await Promise.all([
     pool.query<{ artifact_id: string; name: string | null; project_id: string | null; project_name: string | null; workflow_stage: string; status: string; updated_at: string }>(reviewQuery, scope.employeeId ? [scope.employeeId] : []),
     employeeId ? pool.query<{ id: string; artifact_id: string; title: string; project_name: string | null; due_date: string | null; updated_at: string; meeting_name: string | null }>(actionQuery, scope.employeeId ? [employeeId, scope.employeeId] : [employeeId]) : Promise.resolve({ rows: [] }),
     employeeId ? meetingReviewerPositions(employeeId) : Promise.resolve([]),
   ]);
-  const canSeeAllReviews = isCeoAdministratorRole(session.rol) && !employeeId;
   const stageLabels: Record<string, string> = { delineante: 'Delineante', pmc: 'PMC / Jefe de Proyectos', operations: 'Dirección de Operaciones', director: 'Director General' };
-  const reviewItems = reviewResult.rows.filter((row) => canSeeAllReviews || positions.some((position) => position.stage === row.workflow_stage && (position.projectId === null || position.projectId === row.project_id))).map((row) => ({
+  const reviewItems = reviewResult.rows.filter((row) => positions.some((position) => position.stage === row.workflow_stage && (position.projectId === null || position.projectId === row.project_id))).map((row) => ({
     key: ['review', row.artifact_id, row.workflow_stage, row.updated_at].join(':'), kind: 'review' as const, artifactId: row.artifact_id,
     title: 'Revisión requerida · ' + (stageLabels[row.workflow_stage] || 'Revisión'), detail: row.status === 'returned' ? 'El documento fue devuelto y requiere una nueva revisión.' : 'Hay un documento pendiente de tu revisión.',
     meetingName: row.name || 'Reunión sin título', projectName: row.project_name, dueDate: null, updatedAt: row.updated_at,
@@ -1336,7 +1339,7 @@ async function loadMeetingWorkItems(session: CeoSession, scope: MeetingAccessSco
     projectName: null, dueDate: null, updatedAt: row.updated_at,
   }));
   for (const item of [...issueItems, ...actionItems, ...reviewItems]) unique.set(item.key, item);
-  return [...unique.values()].sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt))).slice(0, 250);
+  return [...unique.values()].sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
 }
 
 async function meetingWorkSummary(session: CeoSession, scope: MeetingAccessScope): Promise<{ items: Array<MeetingWorkItem & { unread: boolean }>; unread: number; total: number; actions: number; reviews: number }> {
@@ -4256,7 +4259,7 @@ type MeetingAgentSettings = { naming_convention: string; committee_workflow: str
 
 async function loadMeetingAgentSettings(): Promise<MeetingAgentSettings> {
   const fallback: MeetingAgentSettings = {
-    naming_convention: 'Comité de obra · NOMBRE DE LA OBRA | Reunión cliente · NOMBRE DE LA OBRA',
+    naming_convention: 'Comité de obra · NOMBRE DEL PMC | Reunión cliente · NOMBRE DE LA OBRA',
     committee_workflow: ['delineante', 'pmc', 'operations', 'director'],
     client_workflow: ['delineante', 'pmc', 'operations', 'director'],
     recording_notice: 'La grabación y la transcripción de esta reunión se gestionan para fines operativos internos.',
@@ -5374,6 +5377,7 @@ app.get('/api/meetings', requireCeoMeetingAccess, async (req: Request, res: Resp
     }
     if (filter === 'mine') {
       where.push("r.status IN ('draft', 'pending', 'returned')");
+      where.push("r.analysis_status = 'completed'");
       const employeeId = await resolveSessionEmployeeId(res.locals.ceoSession as CeoSession, scope);
       if (employeeId) {
         const positions = await meetingReviewerPositions(employeeId);
@@ -5385,7 +5389,7 @@ app.get('/api/meetings', requireCeoMeetingAccess, async (req: Request, res: Resp
           return `(r.workflow_stage = ${stageParameter} AND r.project_id = $${parameters.length})`;
         });
         where.push(turns.length ? '(' + turns.join(' OR ') + ')' : 'FALSE');
-      } else if (!isCeoAdministratorRole((res.locals.ceoSession as CeoSession).rol)) where.push('FALSE');
+      } else where.push('FALSE');
     }
     if (filter === 'pending') where.push("r.status = 'pending'");
     if (filter === 'approved') where.push("r.status = 'approved'");
