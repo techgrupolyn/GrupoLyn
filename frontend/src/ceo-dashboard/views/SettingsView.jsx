@@ -33,15 +33,37 @@ export function WhatsAppSettingsPanel() {
   const [disconnectingAccountId, setDisconnectingAccountId] = useState('');
   const [accountNotice, setAccountNotice] = useState('');
   const [accountError, setAccountError] = useState('');
+  const [managedAccountId, setManagedAccountId] = useState('');
+  const [connectionStatus, setConnectionStatus] = useState(null);
+  const [connectionError, setConnectionError] = useState('');
+  const [connectionRefresh, setConnectionRefresh] = useState(0);
+  const managedAccount = accounts.find((account) => account.id === managedAccountId);
+  const currentStatus = connectionStatus?.account_id === managedAccountId ? connectionStatus : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    setConnectionStatus(null);
+    setConnectionError('');
+    if (managedAccountId) {
+      api.whatsappAccounts.status(managedAccountId).then((status) => {
+        if (status?.account_id !== managedAccountId || typeof status.connected !== 'boolean') throw new Error('El servidor devolvió un estado de conexión inválido.');
+        if (!cancelled) setConnectionStatus(status);
+      }).catch((error) => {
+        if (!cancelled) setConnectionError(error?.body || error?.message || 'No se pudo consultar el estado de WhatsApp.');
+      });
+    }
+    return () => { cancelled = true; };
+  }, [managedAccountId, connectionRefresh]);
 
   const disconnectAccount = async (account) => {
-    if (disconnectingAccountId) return;
+    if (disconnectingAccountId || !currentStatus?.connected || account.id !== managedAccountId) return;
     if (!window.confirm(`¿Desvincular la cuenta «${account.nombre}» (instancia: ${account.evolution_instance_name})? Se cerrará su sesión de WhatsApp. Los chats, mensajes e informes guardados se conservarán. Para volver a conectarla será necesario escanear un nuevo QR. La activación de la extensión se conserva.`)) return;
     setDisconnectingAccountId(account.id);
     setAccountNotice('');
     setAccountError('');
     try {
       await api.whatsappAccounts.disconnect(account.id);
+      setConnectionStatus({ account_id: account.id, state: 'close', connected: false });
       setAccountNotice(`Cuenta «${account.nombre}» desvinculada. Historial conservado. Para volver a conectarla, escanea un nuevo QR desde la extensión de esa cuenta.`);
     } catch (error) {
       setAccountError(error?.body || error?.message || 'No se pudo desvincular la cuenta.');
@@ -66,6 +88,8 @@ export function WhatsAppSettingsPanel() {
       if (!Array.isArray(data)) throw new Error('El servidor devolvió una lista de cuentas inválida.');
       const next = data;
       setAccounts(next);
+      setConnectionRefresh((current) => current + 1);
+      setManagedAccountId((current) => next.some((account) => account.id === current) ? current : next[0]?.id || '');
       setSelectedAccountId((current) => next.some((account) => account.id === current && account.activo) ? current : next.find((account) => account.activo)?.id || '');
     } catch (error) {
       setAccountsLoadError(error?.body || error?.message || 'No se pudieron cargar las cuentas de WhatsApp.');
@@ -81,6 +105,7 @@ export function WhatsAppSettingsPanel() {
       const account = await api.whatsappAccounts.create(accountForm);
       setAccountForm({ id: '', nombre: '', evolution_instance_name: '' });
       setSelectedAccountId(account.id);
+      setManagedAccountId(account.id);
       await loadAccounts();
     } catch (error) { setInvitationError(error?.body || error?.message || 'No se pudo crear la cuenta.'); }
   };
@@ -199,33 +224,38 @@ export function WhatsAppSettingsPanel() {
           <button type="submit" disabled={saving} className="mt-4 ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:cursor-not-allowed disabled:opacity-40">Guardar proxy</button>
         </form>
 
-        <form onSubmit={createAccount} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
+        <section className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
           <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Cuentas WhatsApp</p>
-          <button type="button" onClick={loadAccounts} disabled={accountsLoading} className="mt-3 rounded-md border border-[#2E2E2E] px-3 py-2 text-xs text-[#F2F2F2] disabled:opacity-40">{accountsLoading ? 'Cargando cuentas…' : 'Actualizar cuentas'}</button>
+          <button type="button" onClick={loadAccounts} disabled={accountsLoading || Boolean(disconnectingAccountId)} className="mt-3 rounded-md border border-[#2E2E2E] px-3 py-2 text-xs text-[#F2F2F2] disabled:opacity-40">{accountsLoading ? 'Cargando cuentas…' : 'Actualizar cuentas'}</button>
           {accountsLoadError && <div role="alert" className="mt-3 rounded-md border border-red-900 bg-red-950/30 p-3 text-xs text-red-200"><p>No se pudieron cargar las cuentas: {accountsLoadError}</p><p className="mt-1">Pulsa «Actualizar cuentas» para reintentar. No crees otra cuenta para recuperar una existente.</p></div>}
           {!accountsLoading && !accountsLoadError && accounts.length === 0 && <p className="mt-3 text-xs text-[#BFBFBF]">No hay cuentas de WhatsApp registradas en este dashboard.</p>}
-          <p className="mt-3 text-xs leading-5 text-[#737373]">Cada cuenta usa una instancia Evolution propia y comparte esta base central sin mezclar chats.</p>
+          <label htmlFor="whatsapp-managed-account" className="mt-4 block text-xs text-[#BFBFBF]">Cuenta de WhatsApp</label>
+          <select id="whatsapp-managed-account" value={managedAccountId} onChange={(event) => { setManagedAccountId(event.target.value); setAccountNotice(''); setAccountError(''); }} disabled={accountsLoading || Boolean(disconnectingAccountId) || !accounts.length} className="mt-2 h-10 w-full rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] disabled:opacity-40">
+            <option value="">Selecciona una cuenta</option>
+            {accounts.map((account) => <option key={account.id} value={account.id}>{account.nombre} · {account.evolution_instance_name}</option>)}
+          </select>
+          {managedAccount && <div className="mt-3 rounded-md border border-[#2E2E2E] p-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className={currentStatus?.connected ? 'text-emerald-300' : 'text-[#BFBFBF]'}>{connectionError ? 'Estado no disponible' : !currentStatus ? 'Consultando conexión…' : currentStatus.connected ? 'Conectada' : currentStatus.state === 'connecting' ? 'Pendiente de vincular' : 'Desvinculada'}</span>
+              {currentStatus?.connected && <button type="button" aria-label={`Desvincular ${managedAccount.nombre}`} disabled={Boolean(disconnectingAccountId) || accountsLoading || Boolean(accountsLoadError)} onClick={() => disconnectAccount(managedAccount)} className="rounded-md border border-red-900 px-3 py-2 text-xs text-red-200 hover:bg-red-950/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:cursor-not-allowed disabled:opacity-40">{disconnectingAccountId === managedAccountId ? 'Desvinculando…' : 'Desvincular'}</button>}
+            </div>
+            <p className="mt-2 text-[#737373]">{managedAccount.chats_count || 0} chats guardados · {managedAccount.activo ? 'Cuenta habilitada' : 'Cuenta inactiva'}</p>
+            {currentStatus && !currentStatus.connected && <p className="mt-2 text-[#BFBFBF]">Historial conservado. Escanea un nuevo QR desde la extensión de esta cuenta para volver a vincularla.</p>}
+            {connectionError && <p role="alert" className="mt-2 text-red-200">{connectionError}</p>}
+          </div>}
+          {accountNotice && <p role="status" className="mt-4 rounded-md border border-emerald-900 bg-emerald-950/30 p-3 text-xs text-emerald-200">{accountNotice}</p>}
+          {accountError && <p role="alert" className="mt-4 rounded-md border border-red-900 bg-red-950/30 p-3 text-xs text-red-200">{accountError}</p>}
+          <p className="mt-3 text-xs leading-5 text-[#737373]">Desvincular cierra la sesión de WhatsApp, sin borrar el historial ni eliminar la cuenta del dashboard.</p>
+          <details className="mt-4 border-t border-[#2E2E2E] pt-3">
+            <summary className="cursor-pointer text-xs text-[#BFBFBF]">Añadir una cuenta</summary>
+            <form onSubmit={createAccount}>
           <input required value={accountForm.id} onChange={(e) => setAccountForm((current) => ({ ...current, id: e.target.value.toLowerCase() }))} placeholder="ID: ventas-caracas" className="mt-4 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
           <input required value={accountForm.nombre} onChange={(e) => setAccountForm((current) => ({ ...current, nombre: e.target.value }))} placeholder="Nombre visible" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
           <input required value={accountForm.evolution_instance_name} onChange={(e) => setAccountForm((current) => ({ ...current, evolution_instance_name: e.target.value }))} placeholder="Instancia Evolution" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
-          <button type="submit" className="mt-3 ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black">Crear cuenta</button>
-          {accountNotice && <p role="status" className="mt-4 rounded-md border border-emerald-900 bg-emerald-950/30 p-3 text-xs text-emerald-200">{accountNotice}</p>}
-          {accountError && <p role="alert" className="mt-4 rounded-md border border-red-900 bg-red-950/30 p-3 text-xs text-red-200">{accountError}</p>}
-          <div className="mt-4 space-y-3 text-xs">
-            {accounts.map((account) => (
-              <div key={account.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[#2E2E2E] p-3">
-                <div className="min-w-0">
-                  <p className="break-words font-medium text-[#F2F2F2]">{account.nombre}</p>
-                  <p className="mt-1 break-words text-[#737373]">{account.evolution_instance_name} · {account.activo ? 'Cuenta habilitada' : 'Cuenta inactiva'} · {account.chats_count || 0} chats</p>
-                </div>
-                <button type="button" aria-label={`Desvincular ${account.nombre}`} disabled={Boolean(disconnectingAccountId)} onClick={() => disconnectAccount(account)} className="rounded-md border border-red-900 px-3 py-2 text-xs text-red-200 hover:bg-red-950/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:cursor-not-allowed disabled:opacity-40">
-                  {disconnectingAccountId === account.id ? 'Desvinculando…' : 'Desvincular'}
-                </button>
-              </div>
-            ))}
-          </div>
-          <p className="mt-3 text-xs leading-5 text-[#737373]">Desvincular cierra la sesión de WhatsApp de esa cuenta, sin borrar su historial ni eliminar la cuenta del dashboard.</p>
-        </form>
+          <button type="submit" disabled={Boolean(disconnectingAccountId)} className="mt-3 ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black disabled:opacity-40">Crear cuenta</button>
+            </form>
+          </details>
+        </section>
 
         <form onSubmit={createInvitation} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
           <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Activar extensión</p>

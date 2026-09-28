@@ -87,6 +87,41 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
+  it.each(['open', 'close', 'connecting', 'unknown', 'network'])('consulta el estado real de la cuenta seleccionada sin modificarla: %s', async (state) => {
+    const accountId = `qa-status-${randomUUID()}`;
+    const instance = `qa-instance-${randomUUID()}`;
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(state === 'unknown' ? {} : { instance: { state } }), { status: 200 }));
+    if (state === 'network') fetcher.mockReset().mockRejectedValue(new Error('Evolution inaccesible'));
+    vi.stubGlobal('fetch', fetcher);
+    try {
+      await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name,activo) VALUES($1,$1,$2,FALSE)', [accountId, instance]);
+      const response = await request(server.app).get(`/api/whatsapp-accounts/${accountId}/status`).set('Authorization', authorization);
+      expect(response.status).toBe(['unknown', 'network'].includes(state) ? 502 : 200);
+      if (response.status === 200) expect(response.body).toEqual({ account_id: accountId, state, connected: state === 'open' });
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(fetcher).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(`/instance/connectionState/${instance}`), expect.any(Object));
+      expect((await server.pool.query('SELECT activo FROM whatsapp_accounts WHERE id=$1', [accountId])).rows[0].activo).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
+    }
+  });
+
+  it('el estado de WhatsApp exige administrador y cuenta existente', async () => {
+    const fetcher = vi.fn().mockRejectedValue(new Error('No debe contactar Evolution'));
+    vi.stubGlobal('fetch', fetcher);
+    try {
+      const url = '/api/whatsapp-accounts/qa-inexistente/status';
+      const limitedPayload = Buffer.from(JSON.stringify({ rol: 'employee:delineante', exp: Date.now() + 60000 })).toString('base64url');
+      const limitedToken = `${limitedPayload}.${createHmac('sha256', secret).update(limitedPayload).digest('base64url')}`;
+      expect((await request(server.app).get(url)).status).toBe(401);
+      expect((await request(server.app).get(url).set('x-extension-activation', randomUUID())).status).toBe(401);
+      expect((await request(server.app).get(url).set('Authorization', `Bearer ${limitedToken}`)).status).toBe(403);
+      expect((await request(server.app).get(url).set('Authorization', authorization)).status).toBe(404);
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it.each([true, false])('desvincula solo la instancia elegida y conserva sus datos (activo=%s)', async (active) => {
     const accountId = `qa-disconnect-${randomUUID()}`;
     const instance = `instance-${randomUUID()}`;

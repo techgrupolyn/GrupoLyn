@@ -7339,6 +7339,21 @@ app.post('/api/whatsapp-accounts', requireCeoAuth, async (req: Request, res: Res
   }
 });
 
+app.get('/api/whatsapp-accounts/:id/status', requireCeoAuth, async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const account = await getWhatsappAccount(String(req.params.id || '').trim(), false);
+    if (!account) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    const status = await evolutionFetch<{ instance?: { state?: string }; state?: string }>(`/instance/connectionState/${encodeURIComponent(account.evolutionInstanceName)}`, { signal: AbortSignal.timeout(10_000) });
+    const state = String(status?.instance?.state ?? status?.state ?? '').toLowerCase();
+    if (!['open', 'connected', 'close', 'closed', 'disconnected', 'connecting'].includes(state)) throw new Error('Estado de Evolution desconocido');
+    res.json({ account_id: account.id, state, connected: isConnected(state) });
+  } catch (error) {
+    console.error('[whatsapp/status] Error:', (error as Error).message);
+    res.status(502).json({ error: 'No se pudo consultar el estado de WhatsApp. Actualiza las cuentas para reintentar.' });
+  }
+});
+
 app.post('/api/whatsapp-accounts/:id/disconnect', requireCeoAuth, async (req: Request, res: Response) => {
   try {
     const account = await getWhatsappAccount(String(req.params.id || '').trim(), false);

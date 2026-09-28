@@ -27,7 +27,9 @@ La configuración se abre en `/?view=settings`. Si no se indica `tab`, se muestr
 
 ## Desvincular WhatsApp
 
-En **Configuración > WhatsApp > Cuentas WhatsApp**, el botón **Desvincular** de cada cuenta solicita confirmación con su nombre e instancia. Cierra únicamente esa sesión de WhatsApp mediante `POST /api/whatsapp-accounts/:id/disconnect`, restringido a los administradores del dashboard. No elimina la instancia, la cuenta, los chats, los mensajes ni los informes almacenados; tampoco revoca la activación de la extensión. Para reconectar se debe escanear un nuevo QR desde la extensión asociada. La etiqueta «Cuenta habilitada» describe su habilitación en el dashboard, no su conexión a WhatsApp. Si Evolution falla, la interfaz muestra el error y permite reintentar sin anunciar una desvinculación exitosa.
+En **Configuración > WhatsApp > Cuentas WhatsApp**, un desplegable permite seleccionar una sola cuenta. Su conexión se consulta en Evolution mediante `GET /api/whatsapp-accounts/:id/status`, sin caché, al seleccionar o actualizar las cuentas. Solo una cuenta conectada muestra **Desvincular**; una sesión cerrada muestra **Desvinculada**, y un QR pendiente muestra **Pendiente de vincular**. Los fallos de consulta muestran **Estado no disponible**, nunca una falsa desconexión. El formulario **Añadir una cuenta** permanece plegado por defecto.
+
+El botón **Desvincular** solicita confirmación con el nombre e instancia y cierra únicamente esa sesión mediante `POST /api/whatsapp-accounts/:id/disconnect`. Ambos endpoints están restringidos a administradores del dashboard. No se eliminan la instancia, la cuenta, los chats, los mensajes ni los informes almacenados; tampoco se revoca la activación de la extensión. Tras confirmar la desvinculación desaparece el botón. Para reconectar se debe escanear un nuevo QR desde la extensión asociada. La etiqueta «Cuenta habilitada» describe su habilitación en el dashboard, no su conexión a WhatsApp. Si Evolution falla, se muestra el error y se permite reintentar sin anunciar una desvinculación exitosa.
 
 ## Compatibilidad
 
