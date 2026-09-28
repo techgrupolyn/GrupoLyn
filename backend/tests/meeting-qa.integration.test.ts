@@ -69,6 +69,24 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
+  it('lista cuentas con historial voluminoso, sin historial e inactivas con conteos independientes', async () => {
+    const accountIds = [`qa-list-${randomUUID()}`, `qa-list-${randomUUID()}`];
+    try {
+      for (const accountId of accountIds) await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$1)', [accountId]);
+      await server.pool.query('UPDATE whatsapp_accounts SET activo=FALSE WHERE id=$1', [accountIds[1]]);
+      await server.pool.query("INSERT INTO chats(id,account_id,nombre) SELECT $1 || '::' || series, $1, 'QA' FROM generate_series(1,250) series", [accountIds[0]]);
+      await server.pool.query("INSERT INTO mensajes(id,chat_id,account_id,remitente,texto) SELECT $1 || '::message-' || series, $1 || '::1', $1, 'QA', 'Historial sintético' FROM generate_series(1,1500) series", [accountIds[0]]);
+      const response = await request(server.app).get('/api/whatsapp-accounts').set('Authorization', authorization);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.find((account: { id: string }) => account.id === accountIds[0])).toMatchObject({ chats_count: 250, messages_count: 1500, activo: true });
+      expect(response.body.find((account: { id: string }) => account.id === accountIds[1])).toMatchObject({ chats_count: 0, messages_count: 0, activo: false });
+      expect((await request(server.app).get('/api/whatsapp-accounts')).status).toBe(401);
+    } finally {
+      await server.pool.query('DELETE FROM chats WHERE account_id=ANY($1::varchar[])', [accountIds]);
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=ANY($1::varchar[])', [accountIds]);
+    }
+  });
+
   it.each([true, false])('desvincula solo la instancia elegida y conserva sus datos (activo=%s)', async (active) => {
     const accountId = `qa-disconnect-${randomUUID()}`;
     const instance = `instance-${randomUUID()}`;

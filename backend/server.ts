@@ -7312,7 +7312,14 @@ app.post('/api/auth/ceo-login', ceoLoginLimiter, async (req: Request, res: Respo
 
 app.get('/api/whatsapp-accounts', requireCeoAuth, async (_req: Request, res: Response) => {
   try {
-    const { rows } = await pool.query(`SELECT wa.id, wa.nombre, wa.evolution_instance_name, wa.activo, wa.created_at, wa.updated_at, COUNT(DISTINCT c.id)::int AS chats_count, COUNT(DISTINCT m.id)::int AS messages_count FROM whatsapp_accounts wa LEFT JOIN chats c ON c.account_id = wa.id LEFT JOIN mensajes m ON m.account_id = wa.id GROUP BY wa.id ORDER BY wa.created_at ASC`);
+    const { rows } = await pool.query(`
+      SELECT wa.id, wa.nombre, wa.evolution_instance_name, wa.activo, wa.created_at, wa.updated_at,
+             COALESCE(c.chats_count, 0) AS chats_count, COALESCE(m.messages_count, 0) AS messages_count
+      FROM whatsapp_accounts wa
+      LEFT JOIN (SELECT account_id, COUNT(*)::int AS chats_count FROM chats GROUP BY account_id) c ON c.account_id = wa.id
+      LEFT JOIN (SELECT account_id, COUNT(*)::int AS messages_count FROM mensajes GROUP BY account_id) m ON m.account_id = wa.id
+      ORDER BY wa.created_at ASC
+    `);
     res.json(rows);
   } catch (error) { res.status(500).json({ error: (error as Error).message }); }
 });

@@ -26,6 +26,8 @@ export function WhatsAppSettingsPanel() {
   const [invitations, setInvitations] = useState([]);
   const [invitationsLoading, setInvitationsLoading] = useState(false);
   const [accounts, setAccounts] = useState([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [accountsLoadError, setAccountsLoadError] = useState('');
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [accountForm, setAccountForm] = useState({ id: '', nombre: '', evolution_instance_name: '' });
   const [disconnectingAccountId, setDisconnectingAccountId] = useState('');
@@ -57,12 +59,19 @@ export function WhatsAppSettingsPanel() {
   };
 
   const loadAccounts = async () => {
+    setAccountsLoading(true);
+    setAccountsLoadError('');
     try {
       const data = await api.whatsappAccounts.list();
-      const next = Array.isArray(data) ? data : [];
+      if (!Array.isArray(data)) throw new Error('El servidor devolvió una lista de cuentas inválida.');
+      const next = data;
       setAccounts(next);
-      setSelectedAccountId((current) => current || next.find((account) => account.activo)?.id || '');
-    } catch { setAccounts([]); }
+      setSelectedAccountId((current) => next.some((account) => account.id === current && account.activo) ? current : next.find((account) => account.activo)?.id || '');
+    } catch (error) {
+      setAccountsLoadError(error?.body || error?.message || 'No se pudieron cargar las cuentas de WhatsApp.');
+    } finally {
+      setAccountsLoading(false);
+    }
   };
 
   const createAccount = async (event) => {
@@ -192,6 +201,9 @@ export function WhatsAppSettingsPanel() {
 
         <form onSubmit={createAccount} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">
           <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#737373]">Cuentas WhatsApp</p>
+          <button type="button" onClick={loadAccounts} disabled={accountsLoading} className="mt-3 rounded-md border border-[#2E2E2E] px-3 py-2 text-xs text-[#F2F2F2] disabled:opacity-40">{accountsLoading ? 'Cargando cuentas…' : 'Actualizar cuentas'}</button>
+          {accountsLoadError && <div role="alert" className="mt-3 rounded-md border border-red-900 bg-red-950/30 p-3 text-xs text-red-200"><p>No se pudieron cargar las cuentas: {accountsLoadError}</p><p className="mt-1">Pulsa «Actualizar cuentas» para reintentar. No crees otra cuenta para recuperar una existente.</p></div>}
+          {!accountsLoading && !accountsLoadError && accounts.length === 0 && <p className="mt-3 text-xs text-[#BFBFBF]">No hay cuentas de WhatsApp registradas en este dashboard.</p>}
           <p className="mt-3 text-xs leading-5 text-[#737373]">Cada cuenta usa una instancia Evolution propia y comparte esta base central sin mezclar chats.</p>
           <input required value={accountForm.id} onChange={(e) => setAccountForm((current) => ({ ...current, id: e.target.value.toLowerCase() }))} placeholder="ID: ventas-caracas" className="mt-4 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
           <input required value={accountForm.nombre} onChange={(e) => setAccountForm((current) => ({ ...current, nombre: e.target.value }))} placeholder="Nombre visible" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
