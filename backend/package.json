@@ -38,11 +38,11 @@
     "@types/node": "^26.1.1",
     "@types/pg": "^8.20.1",
     "@types/supertest": "^7.2.1",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "happy-dom": "^20.11.1",
     "pg-mock": "^1.0.1",
     "supertest": "^7.2.2",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

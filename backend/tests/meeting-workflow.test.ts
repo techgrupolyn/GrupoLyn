@@ -2,6 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { deriveMeetingDate, deriveMeetingIdentity, formatMeetingName, manualActionResponsibleInput, meetingApprovalBlockers, meetingDirectoryFilterId, meetingEditorRoleRank, meetingListFilters, meetingListPagination, normalizeMeetingAiAnalysis, parseMeetingAiAnalysis, resolveMeetingActionTags, resolveMeetingDirectoryReferences, retainExplicitIncompleteActions } from '../server.ts';
 
 describe('Flujo de aprobación de reuniones', () => {
+  it('M-01: conserva compromisos distintos aunque compartan palabras y reconoce tenemos', () => {
+    const analysis = normalizeMeetingAiAnalysis({ summary: 'QA', actions: [{ title: 'Mandar aviso a la comunidad de vecinos' }] });
+    const retained = retainExplicitIncompleteActions('Tenemos que llamar a la comunidad de vecinos para avisar del ruido. No sé en cuál de las dos obras hace falta.', analysis.actions);
+    expect(retained).toHaveLength(2);
+    expect(retained[1]).toMatchObject({ projectUnresolved: true, projectName: null, responsible: null });
+    expect(resolveMeetingActionTags([retained[1]], [], { projectName: 'FLORIDA 7' })[0].projectName).toBeNull();
+  });
+
+  it('A-03: no convierte una cuenta genérica ni un ID de IA sin nombre en responsable', () => {
+    const candidates = [{ project_id: 'obra', project_name: 'Mirador 9', client_id: null, client_name: null, employee_id: 'visor', employee_name: 'Planos', employee_role: 'visor_planos', role_in_project: 'visor_planos' }];
+    const analysis = normalizeMeetingAiAnalysis({ summary: 'QA', actions: [{ title: 'Mandar plano al cliente', responsible: 'Planos', responsible_id: 'visor' }, { title: 'Revisar plano', responsible_id: 'visor' }] });
+    for (const action of resolveMeetingActionTags(analysis.actions, candidates)) {
+      expect(action.responsibleId).toBeNull();
+      expect(action.responsible).toBeNull();
+    }
+  });
+
+  it('B-01: un ID primario vinculado cuenta igual que los adicionales', () => {
+    expect(meetingApprovalBlockers([{ status: 'pending', responsible_id: 'persona-qa' }])).toEqual({ missingResponsible: 0, missingDueDate: 1 });
+  });
   it('normaliza límites de paginación para reuniones', () => {
     expect(meetingListPagination('0', '5')).toEqual({ page: 1, pageSize: 10, offset: 0 });
     expect(meetingListPagination('3', '500')).toEqual({ page: 3, pageSize: 100, offset: 200 });
@@ -24,6 +44,8 @@ describe('Flujo de aprobación de reuniones', () => {
     expect(meetingEditorRoleRank('PMC / Proyectos')).toBe(2);
     expect(meetingEditorRoleRank('Dirección de Operaciones')).toBe(3);
     expect(meetingEditorRoleRank('Director General')).toBe(4);
+    expect(meetingEditorRoleRank('Director')).toBe(4);
+    expect(meetingEditorRoleRank('Director de proyecto')).toBe(0);
     expect(meetingEditorRoleRank('Interiorista')).toBe(0);
   });
 
@@ -201,9 +223,33 @@ describe('Flujo de aprobación de reuniones', () => {
     expect(fallback).toMatchObject({ projectId: 'project-a', responsibleId: null, responsible: null });
     expect(roleScoped).toMatchObject({ projectId: 'project-a', responsibleId: null, responsible: null });
   });
+  it('conserva las obras explícitas sin directorio y no atribuye una tarea multiobra ambigua', () => {
+    const analysis = normalizeMeetingAiAnalysis({ summary: 'Comité multiobra', actions: [
+      { title: 'Pedir carpintería', project_name: 'Torre del Cura' },
+      { title: 'Enviar plano', project_name: 'Mirador 9' },
+      { title: 'Llamar a la comunidad', source_ref: 'No sé en cuál de las dos obras hace falta' },
+    ] });
+    const resolved = resolveMeetingActionTags(analysis.actions, [], { projectName: 'Torre del Cura y Mirador 9' });
+    expect(resolved.map((action) => action.projectName)).toEqual(['Torre del Cura', 'Mirador 9', null]);
+    expect(resolved.every((action) => action.projectId === null)).toBe(true);
+    expect(resolved[2].projectUnresolved).toBe(true);
+  });
+  it('no asigna obra a una tarea explícitamente ambigua aunque la IA proponga una', () => {
+    const analysis = normalizeMeetingAiAnalysis({ summary: 'Resumen', actions: [{ title: 'Llamar a la comunidad', project_name: 'Villa Norte', project_id: 'project-a', source_ref: 'No sé en cuál de las dos obras hace falta' }] });
+    const resolved = resolveMeetingActionTags(analysis.actions, [{ project_id: 'project-a', project_name: 'Villa Norte' }], { projectName: 'Villa Norte' });
+    expect(resolved[0]).toMatchObject({ projectName: null, projectId: null, projectUnresolved: true });
+  });
   it('rechaza fechas ISO inexistentes del análisis', () => {
     const analysis = normalizeMeetingAiAnalysis({ meeting_date: '2026-02-30', summary: 'Resumen válido', actions: [] });
     expect(analysis.meetingDate).toBeNull();
+  });
+  it('identifica el nombre corto de una obra con sufijo y rechaza abreviaturas ambiguas', () => {
+    const projects = [{ project_id: 'torre-jose', project_name: 'TORRE DEL CURA - JOSE MOYA  ' }];
+    expect(resolveMeetingDirectoryReferences({ projectName: 'Torre del Cura' }, projects).projectId).toBe('torre-jose');
+    const ambiguous = [...projects, { project_id: 'torre-ana', project_name: 'TORRE DEL CURA - ANA' }];
+    expect(resolveMeetingDirectoryReferences({ projectName: 'Torre del Cura' }, ambiguous).projectId).toBeNull();
+    expect(resolveMeetingDirectoryReferences({ projectName: 'TORRE DEL CURA - JOSE MOYA' }, ambiguous).projectId).toBe('torre-jose');
+    expect(resolveMeetingDirectoryReferences({ projectName: 'Torre' }, projects).projectId).toBeNull();
   });
   it('acepta JSON cercado de Gemini y exige un resumen para persistirlo', () => {
     const fence = String.fromCharCode(96).repeat(3);

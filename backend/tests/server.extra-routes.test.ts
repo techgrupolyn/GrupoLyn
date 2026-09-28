@@ -22,6 +22,8 @@ describe('Server - seguridad CEO', () => {
     expect(isCeoConsultationRoute('/ceo/metrics')).toBe(false);
     expect(isCeoAdministratorRole('consulta_publica')).toBe(false);
     expect(isCeoAdministratorRole('superadmin')).toBe(true);
+    expect(isCeoAdministratorRole('employee:director')).toBe(true);
+    expect(isCeoAdministratorRole('employee:director_de_proyecto')).toBe(false);
     expect(isCeoAdministratorRole('employee:director de operaciones')).toBe(true);
     expect(isCeoAdministratorRole('employee:planimetrista')).toBe(false);
     expect(isCeoMeetingAccessRole('employee:planimetrista')).toBe(true);

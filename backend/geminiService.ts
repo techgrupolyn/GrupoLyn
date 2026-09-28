@@ -1,3 +1,5 @@
+import { deleteGeminiFiles, uploadGeminiFile } from './gemini-files.ts';
+
 export type SpecialistRole = 'legal' | 'contabilidad' | 'ventas' | 'soporte' | 'general' | 'interiorista' | 'planimetrista' | 'director';
 
 export interface SpecialistConfig {
@@ -50,6 +52,7 @@ export type GeminiMediaItem = {
   type: 'image' | 'audio' | 'video' | 'document';
   base64: string;
   mimeType: string;
+  messageId?: string;
 };
 
 export type GeminiExecutionResult = {
@@ -134,7 +137,8 @@ async function requestGeminiInteraction(
     const text = extractInteractionText(data);
     console.log(`[gemini] Respuesta OK modelo=${modelId} chars=${text.length}`);
     const cleaned = cleanGeminiResponse(text);
-    return { text: cleaned || '[sin respuesta de IA]', provider: 'gemini', model: modelId, fallback: false };
+    if (!cleaned) throw new GeminiError(502, 'La IA devolvió una respuesta vacía. Reintenta sin dar los mensajes por analizados.');
+    return { text: cleaned, provider: 'gemini', model: modelId, fallback: false };
   } catch (error) {
     const requestWasAborted = controller.signal.aborted
       || (error as any)?.name === 'AbortError'
@@ -364,13 +368,27 @@ function localFallbackResponse(prompt: string, historial?: string, systemInstruc
 export async function callGeminiWithMediaResult(prompt: string, mediaItems: GeminiMediaItem[], modelo: 'flash' | 'pro' = 'flash', systemInstruction?: string, timeoutMs = 20_000, historial?: string): Promise<GeminiExecutionResult> {
   if (!getApiKey()) return localExecution(prompt, historial, systemInstruction);
 
-  const input = [
-    { type: 'text', text: prompt },
-    ...mediaItems.map((item) => ({ type: item.type, data: item.base64, mime_type: item.mimeType })),
-  ];
-  const modelId = getModelId(modelo);
-  console.log(`[gemini/media] Usando Interactions API modelo=${modelo} modelId=${modelId} media=${mediaItems.length}`);
-  return requestGeminiInteraction(prompt, input, modelId, systemInstruction, timeoutMs, historial);
+  const uploadedNames: string[] = [];
+  const deadline = Date.now() + timeoutMs;
+  const signal = AbortSignal.timeout(timeoutMs);
+  const useFiles = mediaItems.reduce((size, item) => size + item.base64.length, Buffer.byteLength(prompt)) > 16 * 1024 * 1024;
+  try {
+    const input: Record<string, unknown>[] = [{ type: 'text', text: prompt }];
+    for (const item of mediaItems) {
+      if (useFiles) {
+        const uri = await uploadGeminiFile(item.base64, item.mimeType, getApiKey(), signal, uploadedNames);
+        input.push({ type: item.type, uri, mime_type: item.mimeType, ...(item.messageId ? { name: item.messageId } : {}) });
+      } else {
+        input.push({ type: item.type, data: item.base64, mime_type: item.mimeType, ...(item.messageId ? { name: item.messageId } : {}) });
+      }
+    }
+    signal.throwIfAborted();
+    const modelId = getModelId(modelo);
+    console.log(`[gemini/media] Usando Interactions API modelo=${modelo} modelId=${modelId} media=${mediaItems.length} files=${uploadedNames.length}`);
+    return await requestGeminiInteraction(prompt, input, modelId, systemInstruction, Math.max(1, deadline - Date.now()), historial);
+  } finally {
+    await deleteGeminiFiles(uploadedNames, getApiKey());
+  }
 }
 export async function callGeminiWithMedia(prompt: string, mediaItems: GeminiMediaItem[], modelo: 'flash' | 'pro' = 'flash', systemInstruction?: string, timeoutMs = 20_000, historial?: string): Promise<string> {
   return (await callGeminiWithMediaResult(prompt, mediaItems, modelo, systemInstruction, timeoutMs, historial)).text;

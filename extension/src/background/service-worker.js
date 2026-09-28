@@ -4,7 +4,7 @@ const SYNC_MESSAGES_ALARM = 'lyn-sync-messages';
 const MAX_MESSAGES_PER_CHAT = 200;
 const EXTENSION_API_PATHS = [
   /^\/auth\/(status|qr|authorize)$/, /^\/chats$/, /^\/chats\/ensure$/, /^\/chats\/unread-reconcile$/, /^\/chats\/[^/]+\/mensajes(?:\/latest)?$/, /^\/chats\/[^/]+\/(read|name|resolve-name)$/,
-  /^\/mensajes\/changes$/, /^\/enviar$/, /^\/classify$/, /^\/specialists(?:\/[^/]+)?$/, /^\/chat\/summary$/, /^\/chat\/global-summary$/, /^\/chat\/global-summaries\/latest$/, /^\/chat\/reply$/, /^\/chat\/[^/]+\/(summaries|replies)$/, /^\/ai\/auto-reply$/, /^\/sincronizar$/, /^\/pendientes$/,
+  /^\/mensajes\/changes$/, /^\/enviar$/, /^\/classify$/, /^\/specialists(?:\/[^/]+)?$/, /^\/chat\/summary$/, /^\/chat\/global-summary$/, /^\/chat\/global-summary\/jobs\/[^/]+$/, /^\/chat\/global-summaries\/latest$/, /^\/chat\/reply$/, /^\/chat\/[^/]+\/(summaries|replies)$/, /^\/ai\/auto-reply$/, /^\/sincronizar$/, /^\/pendientes$/,
 ];
 
 function isAllowedExtensionApiPath(path) {
@@ -66,16 +66,18 @@ async function getConfiguredBackendStorage() {
 }
 async function backendRequest(path, options = {}, retries = 2) {
   if (!isAllowedExtensionApiPath(path)) throw new Error('Ruta no disponible para la extensión activada.');
+  const { timeoutMs, ...fetchOptions } = options;
+  const requestTimeoutMs = Number.isFinite(Number(timeoutMs)) ? Math.max(5_000, Number(timeoutMs)) : 30_000;
   const storage = await getConfiguredBackendStorage();
   const base = String(storage.backendUrl || 'http://127.0.0.1:3003').replace(/\/$/, '');
   const url = `${base}/api${path}`;
   for (let attempt = 0; attempt < retries; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
       const response = await fetch(url, {
         headers: { 'Content-Type': 'application/json', ...(storage.extensionActivationId ? { 'X-Extension-Activation': String(storage.extensionActivationId) } : {}), ...(options.headers || {}) },
-        ...options,
+        ...fetchOptions,
         signal: controller.signal,
       });
       if (!response.ok) {

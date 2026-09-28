@@ -48,6 +48,13 @@ beforeEach(() => {
 });
 
 describe('MeetingManagementView', () => {
+  it('no muestra un bloqueo por aviso de Meet aunque reciba el campo antiguo', async () => {
+    vi.mocked(api.meetings.list).mockResolvedValue({ ...emptyList, items: [{ ...meeting, analysis_status: 'pending', recording_notice_required: true }], total: 1, totalPages: 1 });
+    render(<MeetingManagementView />);
+    expect(await screen.findByText('Comité de obra · Prueba')).toBeInTheDocument();
+    expect(screen.queryByText('Pendiente de registrar aviso en Meet')).not.toBeInTheDocument();
+  });
+
   it('reasigna el responsable desde el directorio y conserva la categoría seleccionada', async () => {
     const actionMeeting = {
       ...meeting,

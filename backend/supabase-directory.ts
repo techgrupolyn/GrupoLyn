@@ -228,7 +228,7 @@ async function upsertDirectory(client: PoolClient, profiles: SourceProfile[], pr
     );
     orgAssignmentIds.add(assignment.id);
   }
-  await client.query('DELETE FROM organigrama_cargo_asignaciones WHERE NOT (id = ANY($1::varchar[]))', [[...orgAssignmentIds]]);
+  await client.query("DELETE FROM organigrama_cargo_asignaciones WHERE id NOT LIKE 'local:%' AND NOT (id = ANY($1::varchar[]))", [[...orgAssignmentIds]]);
 
   const uniqueAssignments = new Map<string, SourceProjectMember>();
   for (const assignment of assignments) {

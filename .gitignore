@@ -28,3 +28,7 @@ evolution-api/.npmrc
 evolution-api/settings.json
 
 .local-secrets/
+.local-backups/
+.local-logs/
+/output/
+/tmp/

@@ -41,7 +41,7 @@ El navegador nunca se conecta directamente a PostgreSQL, Evolution, Google Drive
 - Activación de la extensión mediante código emitido desde el dashboard.
 - Validación de origen contra `CHROME_EXTENSION_IDS`; la extensión publicada usa el ID `aegllelflhplgbcemoadjdlohfkbbkpj`.
 - Copilotos configurables desde el dashboard y respuestas sugeridas por IA.
-- Análisis individual de chats pendientes y un informe global de mensajes pendientes.
+- Análisis individual e informe global de WhatsApp exclusivamente con mensajes de texto. Se excluyen audios, imágenes, vídeos, stickers y documentos, aunque incluyan texto o estén descargados. No se borran ni se marcan como analizados los adjuntos omitidos; los contadores existentes pueden conservar esos pendientes. Esta regla no modifica la extracción de documentos del gestor de reuniones.
 - El análisis no marca mensajes como vistos en WhatsApp: solo registra internamente qué mensajes ya fueron procesados.
 - La activación y la URL configurada se conservan al actualizar la extensión, salvo que el usuario borre sus datos de Chrome o revoque la activación.
 
@@ -56,7 +56,7 @@ El navegador nunca se conecta directamente a PostgreSQL, Evolution, Google Drive
 ### Gestión de reuniones
 
 - Importación automática desde carpetas autorizadas de Google Drive.
-- Análisis una sola vez y persistencia de resumen, decisiones, acciones, bloqueos, tipo de reunión, PMC, proyecto, contacto y fecha de reunión.
+- Análisis automático sin exigir registro del aviso de Meet; persistencia de resumen, decisiones, acciones, bloqueos, tipo, PMC, proyecto, contacto y fecha. Los cambios manuales quedan protegidos de reprocesamientos automáticos.
 - Reprocesamiento controlado para reuniones que no pudieron identificarse correctamente.
 - Acciones con responsable principal, responsables adicionales, fechas opcionales, asignación manual y trazabilidad de cambios.
 - Jerarquía operativa: Delineante → PMC/Jefe de proyectos → Dirección de operaciones → Director general. Cuando la IA no identifica un responsable, se prioriza la asignación por proyecto y, como último recurso, el PMC.
@@ -86,7 +86,7 @@ Consulta además:
 
 ## 4. Requisitos locales
 
-- Node.js 20 o superior y npm.
+- Node.js 22.16+ de la rama 22, o Node.js 24 LTS, y npm. La validación local final usa Node 22.23.3.
 - PostgreSQL disponible localmente.
 - Una instancia local de Evolution API si se va a probar WhatsApp/QR.
 - Credenciales de prueba para Gemini, Google Drive y Supabase solo si se prueban esas integraciones.
@@ -208,6 +208,17 @@ npm run package
 
 La sincronización es centralizada: los usuarios autorizados ven sus reuniones vinculadas sin necesidad de conectar cada uno su propio Drive. Si una reunión no se identifica, el panel permite corregir PMC, proyecto, contacto, tipo o responsables de forma manual; la auditoría conserva esos cambios.
 
+### Constancia del aviso y protección de revisiones
+
+- El registro del aviso de Meet es opcional y no bloquea el análisis. Si un editor decide registrarlo, debe aportar la fecha/hora real, referencia y confirmación explícita. No es un envío de correo ni una verificación automática de Meet.
+- `POST /api/meetings/:artifactId/recording-notice` conserva texto configurado, evidencia, actor estable, rol y fechas en `meeting_recording_notices`. Un segundo registro se rechaza para no sobrescribir evidencia.
+- La ausencia de constancia no impide el análisis manual, automático ni el reencolado de PMC pendientes. No se rellenan avisos retroactivos automáticamente ni se elimina evidencia existente.
+- Una edición, aprobación o devolución activa `meeting_reviews.manual_revision`. IA, cola masiva y vinculación automática no sobrescriben esa revisión. No limpiar el indicador manualmente en producción para forzar una regeneración.
+- `meeting_review_versions` conserva snapshots nuevos y los campos `actor_id`, `actor_role`, `previous_stage` y `event_type`. Versiones antiguas sin copia se identifican como tales.
+- Un documento vacío se conserva como incidencia sin nuevo borrador ni análisis inventado. Administración recibe la incidencia en el dashboard y puede vincular al organizador real mediante `PUT /api/meetings/:artifactId/organizer`; el usuario vinculado también la verá. El vínculo se guarda en `meeting_artifact_organizers`, sin suponer que el propietario de Drive sea el organizador.
+- Desactivar una carpeta detiene siguientes páginas/importaciones y descarta análisis que terminen después. Una llamada ya enviada a un proveedor puede terminar externamente aunque el resultado no se guarde.
+- Las migraciones se aplican mediante `ensureDatabaseSchema`; el despliegue debe usar un respaldo y comprobar permisos del usuario PostgreSQL para DDL.
+
 ## 8. Sincronización corporativa desde Supabase
 
 Supabase se usa como fuente de directorio, no como destino:
@@ -246,6 +257,13 @@ Además comprueba manualmente, con cuentas autorizadas:
 - Activación de extensión, listado de chats, análisis individual e informe global.
 
 No se debe desplegar si fallan pruebas, el build, migraciones o el chequeo de seguridad de la extensión.
+
+### Regresiones de QA de reuniones
+
+- `backend/tests/meeting-qa.integration.test.ts` usa PostgreSQL real y HTTP. Requiere `QA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55439/lyn_qa_retest` con una instancia aislada existente; sin variable se omite. Nunca usar la base de producción.
+- `backend/tests/meeting-gemini.live.test.ts` se habilita con `QA_LIVE_GEMINI=true` y una clave válida; realiza una llamada externa de cuota con texto sintético. La suite normal lo omite.
+- Ejecutar también todos los tests de frontend, `npm run typecheck` del backend y `npm run build` del frontend.
+- La comparación y los límites de lo validado se documentan en `QA_REVALIDACION_20260927.md`. Tests locales aprobados no sustituyen OAuth/Drive real ni aceptación por rol.
 
 ## 10. Producción
 
@@ -296,6 +314,20 @@ Para el procedimiento completo, incluidos backups, Nginx, systemd y rollback, us
 | Pantalla antigua o módulo no carga | Comprueba el build desplegado, la versión Git y realiza recarga forzada del navegador. |
 
 ## 12. Principios de mantenimiento
+
+### Ampliación local de operaciones y CRM (27/09/2026)
+
+> Antes de desplegar, consultar `QA_CIERRE_TECNICO_20260927.md`. Sustituye el estado del informe transversal anterior: las dependencias y la cola de informes se corrigieron y verificaron localmente. El usuario ha elegido no realizar todavía la prueba con una cuenta WhatsApp real. No confundir esta validación con una certificación del entorno de producción.
+
+- Organigrama y escalado se accede desde Operaciones o Configuración. Muestra cargos y relaciones globales/por proyecto importados. Las nuevas asignaciones usan ID `local:` en la base del dashboard; la sincronización no las elimina y las asignaciones de origen no se editan aquí.
+- `GET /api/directory/organization`, `POST /api/directory/organization/assignments` y `DELETE /api/directory/organization/assignments/:id` consultan/gestionan esas asignaciones. Los cambios guardan actor y antes/después en `dashboard_change_events`.
+- `GET /api/operations/escalations` lista revisiones pendientes. `POST /api/operations/escalations/:artifactId` requiere motivo y avanza a la siguiente etapa ocupada sin aprobar. Guarda evento de transición y protege la revisión manual.
+- CRM incluye `/api/crm/leads` (GET), `/api/crm/leads/:id` (PUT), fichas de clientes del directorio en lectura y `/api/crm/identities` (GET). Identidades muestra acciones sin responsable vinculado; se resuelven mediante el endpoint auditado de asignación existente.
+- `crm_leads` guarda prospectos, estado, cliente, contacto y notas. `GET /api/operations/history/:entity/:id` obtiene su auditoría y la de las demás operaciones nuevas.
+- `GET /api/operations/incidents` lista bloqueos de reuniones y `PUT /api/operations/incidents/:id` permite resolver/reabrir con motivo. `meeting_incident_resolutions` guarda estado y actor; el detalle de reunión refleja la resolución. La operación también registra una versión de reunión y activa protección de revisión manual.
+- Los endpoints administrativos anteriores requieren superadmin o director. La base origen Supabase permanece de solo lectura.
+- La importación intenta vincular al organizador con Calendar de lectura, por archivo adjunto exacto o código Meet único y correo exacto de un empleado activo. No usa el propietario de Drive como prueba. `POST /api/meetings/:artifactId/organizer/detect` permite reintentar; la selección manual prevalece. Sin fecha, permiso o coincidencia fiable se explica la limitación y se ofrece vínculo manual.
+- Ver resultados y límites en `QA_AMPLIACION_20260927.md`. Las migraciones se ejecutan idempotentemente al iniciar el backend; esta ampliación se validó localmente y no implica despliegue productivo.
 
 - Mantén los cambios pequeños, con migración y prueba asociada cuando afectan datos.
 - Primero se valida en local; después se publica en Git y finalmente se despliega con checklist.

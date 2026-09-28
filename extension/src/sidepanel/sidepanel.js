@@ -74,7 +74,10 @@ function setStatus(status) {
 async function backendMessage(type, payload = {}, retries = 2) {
   const attempt = async (attemptNumber) => {
     return new Promise((resolve, reject) => {
-      const timeoutMs = ['SEND_TEXT', 'SYNC_NOW', 'CHAT_SUMMARY', 'SUGGESTED_REPLY', 'API_REQUEST'].includes(type) ? 75_000 : 15_000;
+      const requestedTimeoutMs = Number(payload?.options?.timeoutMs || 0);
+      const timeoutMs = ['SEND_TEXT', 'SYNC_NOW', 'CHAT_SUMMARY', 'SUGGESTED_REPLY', 'API_REQUEST'].includes(type)
+        ? Math.max(75_000, requestedTimeoutMs)
+        : 15_000;
       const timeout = setTimeout(() => reject(new Error('Sin respuesta del service worker')), timeoutMs);
       chrome.runtime.sendMessage({ type, ...payload }, (response) => {
         clearTimeout(timeout);
@@ -290,6 +293,10 @@ async function loadRoles() {
 }
 
 function resetRoleWorkspace() {
+  globalReportRequest++;
+  clearTimeout(globalReportPoll);
+  state.globalReport = null;
+  state.globalReportLoading = false;
   state.summaries = {};
   state.replies = {};
   state.reviewedChats = {};
@@ -768,19 +775,53 @@ function renderGlobalReport(data, prefix = '') {
   const text = String(data?.resumen || data?.summary || '').trim();
   if (meta) meta.textContent = globalReportDescription(data);
   if (!output) return;
+  if (data?.status === 'failed') {
+    output.innerHTML = `<div class="error">${escapeHtml(data.error || 'No se pudo generar el informe. Los mensajes continúan pendientes.')}</div>`;
+    return;
+  }
   output.innerHTML = text
     ? `${prefix ? `<div class="empty">${escapeHtml(prefix)}</div>` : ''}<div class="summary-box">${escapeHtml(text)}</div>`
     : '<div class="empty">No hay un informe global guardado para este rol.</div>';
 }
 
+let globalReportPoll = null;
+let globalReportRequest = 0;
+
+function acceptGlobalReport(data, requestId) {
+  if (requestId !== globalReportRequest) return;
+  clearTimeout(globalReportPoll);
+  state.globalReport = data || null;
+  renderGlobalReport(data, data?.en_progreso ? 'Informe en proceso; todavía no está terminado.' : '');
+  const button = $('btn-generate-global-report');
+  if (button) button.disabled = Boolean(data?.en_progreso || state.globalReportLoading);
+  if (!data?.en_progreso || !data?.jobId) return;
+  const poll = async () => {
+    if (requestId !== globalReportRequest) return;
+    try {
+      const updated = await directBackendRequest(`/chat/global-summary/jobs/${encodeURIComponent(data.jobId)}`);
+      if (requestId !== globalReportRequest) return;
+      acceptGlobalReport(updated, requestId);
+      if (!updated?.en_progreso) await loadChats();
+    } catch (error) {
+      if (requestId !== globalReportRequest) return;
+      const meta = $('global-report-meta');
+      if (meta) meta.textContent = 'Conexión interrumpida. Reintentando consultar el informe…';
+      globalReportPoll = setTimeout(poll, 10_000);
+    }
+  };
+  globalReportPoll = setTimeout(poll, 3_000);
+}
+
 async function loadLatestGlobalReport() {
   const specialistId = $('specialist-select')?.value || '';
   if (!specialistId || state.globalReportLoading) return;
+  const requestId = ++globalReportRequest;
+  clearTimeout(globalReportPoll);
   try {
     const data = await directBackendRequest(`/chat/global-summaries/latest?specialistId=${encodeURIComponent(specialistId)}`);
-    state.globalReport = data || null;
-    renderGlobalReport(state.globalReport);
+    acceptGlobalReport(data, requestId);
   } catch (error) {
+    if (requestId !== globalReportRequest) return;
     const output = $('global-report-output');
     if (output) output.innerHTML = `<div class="error">No se pudo recuperar el informe: ${escapeHtml(error?.message || 'Error')}</div>`;
   }
@@ -794,21 +835,24 @@ async function generateGlobalReport() {
     if (output) output.innerHTML = '<div class="error">Seleccioná un rol antes de generar el informe.</div>';
     return;
   }
-  if (state.globalReportLoading) return;
+  if (state.globalReportLoading || state.globalReport?.en_progreso) return;
+  const requestId = ++globalReportRequest;
   state.globalReportLoading = true;
   if (button) button.disabled = true;
   if (output) output.innerHTML = '<div class="empty">Sincronizando y analizando todos los grupos pendientes…</div>';
   try {
     await backendMessage('SYNC_NOW');
-    const data = await directBackendRequest('/chat/global-summary', { method: 'POST', body: JSON.stringify({ specialistId }) }, 1);
-    state.globalReport = data;
-    renderGlobalReport(data, `Informe generado. ${globalReportDescription(data)}`);
+    const data = await directBackendRequest('/chat/global-summary', { method: 'POST', body: JSON.stringify({ specialistId }), timeoutMs: 300_000 }, 1);
+    acceptGlobalReport(data, requestId);
     await loadChats();
   } catch (error) {
+    if (requestId !== globalReportRequest) return;
     if (output) output.innerHTML = `<div class="error">No se pudo generar el informe: ${escapeHtml(error?.message || 'Error')}</div>`;
   } finally {
-    state.globalReportLoading = false;
-    if (button) button.disabled = false;
+    if (requestId === globalReportRequest) {
+      state.globalReportLoading = false;
+      if (button) button.disabled = Boolean(state.globalReport?.en_progreso);
+    }
   }
 }
 async function getPendingChats({ throwOnError = false } = {}) {
@@ -898,168 +942,6 @@ async function generatePendingSummariesForRole(specialistId) {
   }
 }
 
-async function generateBatchReplies() {
-  const output = $('batch-output');
-  if (!output) return;
-  const pending = await getPendingChats();
-  if (!pending.length) {
-    output.innerHTML = '<div class="empty">No hay chats pendientes</div>';
-    finishBatchSend();
-    return;
-  }
-
-  output.innerHTML = '<div class="empty">Generando resúmenes...</div>';
-  const summaries = new Map();
-  for (const chat of pending) {
-    try {
-      const specialistId = getBatchRole(chat);
-      const data = await directBackendRequest('/chat/summary', {
-        method: 'POST',
-        body: JSON.stringify({ chatId: chat.chat_id, specialistId }),
-      });
-      summaries.set(chat.chat_id, data?.resumen || '');
-    } catch (error) {
-      summaries.set(chat.chat_id, '');
-    }
-  }
-
-  output.innerHTML = '<div class="empty">Generando respuestas...</div>';
-  const results = [];
-  for (const chat of pending) {
-    try {
-      const specialistId = getBatchRole(chat);
-      const summary = summaries.get(chat.chat_id) || '';
-      const data = await directBackendRequest('/ai/auto-reply', {
-        method: 'POST',
-        body: JSON.stringify({ chatId: chat.chat_id, specialistId, summary }),
-      });
-      results.push({ chatId: chat.chat_id, nombre: chat.nombre || chat.chat_id || 'Sin nombre', ok: true, respuesta: data?.respuesta || '', contexto: contextDescription(data) });
-    } catch (error) {
-      results.push({ chatId: chat.chat_id, nombre: chat.nombre || chat.chat_id || 'Sin nombre', ok: false, error: error?.message || 'Error' });
-    }
-  }
-  const success = results.filter((r) => r.ok).length;
-  output.innerHTML = buildBatchResultCards('Respuestas generadas', success, results.length, results, (item) => item.respuesta, 'respuesta');
-}
-
-function buildBatchResultCards(title, success, total, results, textGetter, emptyText) {
-  const fallidos = results.filter((r) => !r.ok);
-  const items = results.filter((r) => r.ok && String(textGetter(r) || '').trim());
-  const html = [];
-  html.push(`<div class="empty">${escapeHtml(title)}: ${success}/${total}</div>`);
-  if (items.length) {
-    html.push('<div style="margin-top:8px;display:flex;flex-direction:column;gap:8px;">');
-    for (const item of items) {
-      const text = String(textGetter(item) || '').trim();
-      html.push(`<div class="chat-card" style="padding:10px 12px;">`);
-      html.push(`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">`);
-      html.push(`<div style="min-width:0;flex:1;">`);
-      html.push(`<div class="chat-card-name">${escapeHtml(item.nombre)}</div>`);
-      html.push(`<div class="chat-card-meta">${escapeHtml(item.chatId || '')}</div>`);
-      html.push(`</div>`);
-      html.push(`<span class="badge-pill">${escapeHtml(emptyText || 'ok')}</span>`);
-      html.push(`</div>`);
-      html.push(`<div class="chat-card-summary" style="margin-top:8px;">${escapeHtml(text)}</div>`);
-      if (item.contexto) html.push(`<div class="chat-card-meta" style="margin-top:6px;">${escapeHtml(item.contexto)}</div>`);
-      html.push(`</div>`);
-    }
-    html.push('</div>');
-  }
-  if (fallidos.length) {
-    html.push('<div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">');
-    html.push('<div class="chat-card-section-title">Errores</div>');
-    for (const item of fallidos) {
-      html.push(`<div style="font-size:12px;color:#EF4444;">${escapeHtml(item.nombre)}: ${escapeHtml(item.error)}</div>`);
-    }
-    html.push('</div>');
-  }
-  return html.join('');
-}
-
-async function sendBatchReplies() {
-  const output = $('batch-output');
-  if (!output) return;
-  if (state.batchSendInFlight) return;
-  state.batchSendInFlight = true;
-  const sendButton = $('btn-batch-send');
-  if (sendButton) sendButton.disabled = true;
-  const finishBatchSend = () => {
-    state.batchSendInFlight = false;
-    if (sendButton) sendButton.disabled = false;
-  };
-  const pending = await getPendingChats();
-  if (!pending.length) {
-    output.innerHTML = '<div class="empty">No hay chats pendientes</div>';
-    finishBatchSend();
-    return;
-  }
-  const intervaloMs = Number(prompt('Delay entre mensajes (ms):', '2000') || '2000');
-  if (!Number.isFinite(intervaloMs) || intervaloMs < 500) {
-    finishBatchSend();
-    output.innerHTML = '<div class="error">Delay mínimo 500ms</div>';
-    return;
-  }
-
-  output.innerHTML = '<div class="empty">Generando resúmenes...</div>';
-  const summaries = new Map();
-  for (const chat of pending) {
-    try {
-      const specialistId = getBatchRole(chat);
-      const data = await directBackendRequest('/chat/summary', {
-        method: 'POST',
-        body: JSON.stringify({ chatId: chat.chat_id, specialistId }),
-      });
-      summaries.set(chat.chat_id, data?.resumen || '');
-    } catch (error) {
-      summaries.set(chat.chat_id, '');
-    }
-  }
-
-  output.innerHTML = '<div class="empty">Enviando respuestas...</div>';
-  const replies = [];
-  const results = [];
-  for (const chat of pending) {
-    try {
-      const specialistId = getBatchRole(chat);
-      const summary = summaries.get(chat.chat_id) || '';
-      const data = await directBackendRequest('/ai/auto-reply', {
-        method: 'POST',
-        body: JSON.stringify({ chatId: chat.chat_id, specialistId, summary }),
-      });
-      const respuesta = String(data?.respuesta || '').trim();
-      if (respuesta && Number.isInteger(Number(data?.respuestaId))) {
-        replies.push({ chatId: chat.chat_id, texto: respuesta, quedaRespondido: true, respuestaId: data?.respuestaId });
-      }
-      results.push({ chatId: chat.chat_id, nombre: chat.nombre || chat.chat_id || 'Sin nombre', ok: true, respuesta, contexto: contextDescription(data) });
-    } catch (error) {
-      results.push({ chatId: chat.chat_id, nombre: chat.nombre || chat.chat_id || 'Sin nombre', ok: false, error: error?.message || 'Error' });
-    }
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  if (!replies.length) {
-    output.innerHTML = buildBatchResultCards('Sin respuestas para enviar', 0, results.length, results, (item) => item.respuesta, 'respuesta');
-    finishBatchSend();
-    return;
-  }
-  try {
-    const sendRes = await directBackendRequest('/batch/reply', {
-      method: 'POST',
-      body: JSON.stringify({ replies, intervalo_ms: intervaloMs }),
-    });
-    const success = Number(sendRes?.success || 0);
-    const total = Number(sendRes?.total || replies.length);
-    const sendResults = Array.isArray(sendRes?.results) ? sendRes.results : [];
-    const merged = results.map((r) => {
-      const detail = sendResults.find((s) => s.chatId === r.chatId);
-      return { ...r, sendOk: detail?.ok, sendError: detail?.error };
-    });
-    await backendMessage('SYNC_NOW').catch((error) => console.warn('[sidepanel] sync after batch send error:', error));
-    output.innerHTML = buildBatchResultCards('Enviados', success, total, merged, (item) => item.respuesta, 'enviado');
-  } catch (error) {
-    output.innerHTML = `<div class="error">Error enviando: ${escapeHtml(error?.message || 'Error')}</div>`;
-  }
-  finishBatchSend();
-}
 
 function init() {
   $('btn-refresh-status-login')?.addEventListener('click', () => {

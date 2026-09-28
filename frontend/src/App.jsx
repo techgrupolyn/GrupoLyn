@@ -207,6 +207,12 @@ function AuthView({ qr, state, error, onRefresh }) {
   );
 }
 
+function callIcon(call) {
+  if (call.isMissed) return '📵';
+  if (String(call.type || '').toLowerCase() === 'outgoing') return '📤';
+  return '📥';
+}
+
 function ChatList({ chats, selectedId, onSelect, onNotificationRead, activeTab, onTabChange, onSelectStatus, onSelectCall }) {
   const [query, setQuery] = useState('');
   const [broadcasts, setBroadcasts] = useState([]);
@@ -257,7 +263,7 @@ function ChatList({ chats, selectedId, onSelect, onNotificationRead, activeTab, 
       setLoadingCalls(true);
       setSelectedCallId(null);
       Promise.all([
-        api.callHistory(selectedChatId || '').catch(() => []),
+        api.callHistory(selectedId || '').catch(() => []),
         api.chats().catch(() => []),
       ]).then(([history, chatList]) => {
         const chatMap = new Map((Array.isArray(chatList) ? chatList : []).map((c) => [c.id, c]));
@@ -268,13 +274,7 @@ function ChatList({ chats, selectedId, onSelect, onNotificationRead, activeTab, 
         setCalls(items.slice(0, 100));
       }).finally(() => setLoadingCalls(false));
     }
-  }, [activeTab]);
-
-  const callIcon = (call) => {
-    if (call.isMissed) return '📵';
-    if (String(call.type || '').toLowerCase() === 'outgoing') return '📤';
-    return '📥';
-  };
+  }, [activeTab, selectedId]);
 
   return (
     <aside className="flex h-full w-[35%] min-w-[320px] flex-col border-r border-[#2E2E2E] bg-[#111b21]">
@@ -2790,4 +2790,4 @@ const handleBatchRespondidoChange = useCallback((chatId, value) => {
   );
 }
 
-export { AuthView, ChatList, ChatHeader, MessageTimeline };
+export { AuthView, ChatList, ChatHeader, MessageTimeline, DashboardView };

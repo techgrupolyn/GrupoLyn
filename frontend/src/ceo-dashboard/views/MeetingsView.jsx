@@ -82,6 +82,7 @@ function MetricCard({ label, value, detail, tone = 'default' }) {
 }
 
 function ArtifactStatus({ artifact }) {
+  if (artifact.metadata?.import_error) return <span title={artifact.metadata.import_error} className="text-[11px] text-amber-200">No se pudo analizar: sin texto extraído</span>;
   if (isTextReady(artifact)) return <span className="inline-flex items-center gap-1.5 text-[11px] text-[#BFBFBF]"><span className="size-1.5 rounded-full bg-[#BFBFBF]" />Lista para revisar</span>;
   if (['recording', 'audio'].includes(artifact.artifact_type)) return <span className="inline-flex items-center gap-1.5 text-[11px] text-[#737373]"><span className="size-1.5 rounded-full border border-[#737373]" />Referencia en Drive</span>;
   return <span className="inline-flex items-center gap-1.5 text-[11px] text-[#737373]"><span className="size-1.5 rounded-full bg-[#2E2E2E]" />Sin texto extraído</span>;

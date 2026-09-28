@@ -7,6 +7,13 @@ CREATE TABLE IF NOT EXISTS whatsapp_accounts (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS summary_reviewed_messages (
+  account_id VARCHAR(120) NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+  message_id VARCHAR(255) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (account_id, message_id)
+);
+
 CREATE TABLE IF NOT EXISTS account_members (
   account_id VARCHAR(120) NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
   empleado_id VARCHAR(255) NOT NULL,

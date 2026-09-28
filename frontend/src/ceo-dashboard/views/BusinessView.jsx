@@ -6,27 +6,31 @@ export default function BusinessView() {
   const [catalog, setCatalog] = useState(null);
   const [collections, setCollections] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const loadCatalog = async () => {
     if (!number) return;
     setLoading(true);
+    setError('');
     try {
       const data = await api.business.catalog(number);
       setCatalog(data || null);
-    } catch { setCatalog(null); } finally { setLoading(false); }
+    } catch (failure) { setCatalog(null); setError(failure.body || failure.message || 'No se pudo consultar el catálogo.'); } finally { setLoading(false); }
   };
 
   const loadCollections = async () => {
     if (!number) return;
     setLoading(true);
+    setError('');
     try {
       const data = await api.business.collections(number);
       setCollections(data || null);
-    } catch { setCollections(null); } finally { setLoading(false); }
+    } catch (failure) { setCollections(null); setError(failure.body || failure.message || 'No se pudieron consultar las colecciones.'); } finally { setLoading(false); }
   };
 
   return (
     <div className="ceo-page p-4 sm:p-6 xl:p-8">
+      {error && <p role="alert" className="mb-4 text-sm text-red-400">{error}</p>}
       <h2 className="font-display text-2xl font-medium text-[#F2F2F2] tracking-wide">Catálogo Business</h2>
       <p className="mt-2 text-xs text-[#737373]">Consultá productos y colecciones de cuentas business verificadas.</p>
 

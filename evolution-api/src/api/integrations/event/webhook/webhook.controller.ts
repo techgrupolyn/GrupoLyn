@@ -4,6 +4,7 @@ import { WAMonitoringService } from '@api/services/monitor.service';
 import { wa } from '@api/types/wa.types';
 import { configService, Log, Webhook } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { splitWebhookBatches } from '@utils/webhook-batches';
 // import { BadRequestException } from '@exceptions';
 import axios, { AxiosInstance } from 'axios';
 import * as jwt from 'jsonwebtoken';
@@ -209,6 +210,13 @@ export class WebhookController extends EventController implements EventControlle
     maxRetries?: number,
     delaySeconds?: number,
   ): Promise<void> {
+    const batches = splitWebhookBatches(webhookData);
+    if (batches.length > 1) {
+      for (const batch of batches) {
+        await this.retryWebhookRequest(httpService, batch, origin, baseURL, serverUrl, maxRetries, delaySeconds);
+      }
+      return;
+    }
     const webhookConfig = configService.get<Webhook>('WEBHOOK');
     const maxRetryAttempts = maxRetries ?? webhookConfig.RETRY?.MAX_ATTEMPTS ?? 10;
     const initialDelay = delaySeconds ?? webhookConfig.RETRY?.INITIAL_DELAY_SECONDS ?? 5;
@@ -234,6 +242,18 @@ export class WebhookController extends EventController implements EventControlle
         attempts++;
 
         const isTimeout = error.code === 'ECONNABORTED';
+
+        if (error?.response?.status === 413) {
+          const smallerBatches = splitWebhookBatches(
+            webhookData,
+            Math.floor(Buffer.byteLength(JSON.stringify(webhookData), 'utf8') / 2),
+          );
+          if (smallerBatches.length < 2) throw error;
+          for (const batch of smallerBatches) {
+            await this.retryWebhookRequest(httpService, batch, origin, baseURL, serverUrl, maxRetries, delaySeconds);
+          }
+          return;
+        }
 
         if (error?.response?.status && nonRetryableStatusCodes.includes(error.response.status)) {
           this.logger.error({

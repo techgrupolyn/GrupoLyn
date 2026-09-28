@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../api';
 import MeetingsView from './MeetingsView';
+import OperationsView from './OperationsView';
 import { SETTINGS_TABS, normalizeSettingsTab } from '../routing';
 
 export function WhatsAppSettingsPanel() {
@@ -229,16 +230,16 @@ function PendingSettingsTab({ title, description }) {
   return (
     <div className="ceo-page p-4 sm:p-6 xl:p-8">
       <div className="ceo-card max-w-3xl rounded-md border border-[#2E2E2E] bg-[#141414] p-6 sm:p-8">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-sky-300">Configuración</p>
+        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-300">Configuración</p>
         <h2 className="mt-2 text-xl font-semibold text-[#F2F2F2]">{title}</h2>
         <p className="mt-3 max-w-2xl text-sm leading-6 text-[#BFBFBF]">{description}</p>
-        <p className="mt-5 rounded border border-sky-300/20 bg-sky-300/5 px-4 py-3 text-xs leading-5 text-[#BFBFBF]">Esta sección queda preparada dentro de la arquitectura del portal. Sus reglas y conexiones se añadirán en su entrega funcional, sin mezclar ajustes con la operación diaria.</p>
+        <p className="mt-5 rounded border border-amber-300/20 bg-amber-300/5 px-4 py-3 text-xs leading-5 text-[#BFBFBF]">Esta sección queda preparada dentro de la arquitectura del portal. Sus reglas y conexiones se añadirán en su entrega funcional, sin mezclar ajustes con la operación diaria.</p>
       </div>
     </div>
   );
 }
 
-export default function SettingsView({ activeTab = 'general', onTabChange = () => {} }) {
+export default function SettingsView({ activeTab = 'general', onTabChange = () => {}, onOpenMeeting }) {
   const tab = normalizeSettingsTab(activeTab);
   const current = SETTINGS_TABS.find((item) => item.key === tab) || SETTINGS_TABS[0];
 
@@ -260,6 +261,7 @@ export default function SettingsView({ activeTab = 'general', onTabChange = () =
       <div className="mt-1" role="tabpanel" aria-label={current.label}>
         {tab === 'whatsapp' && <WhatsAppSettingsPanel />}
         {tab === 'meetings' && <MeetingsSettingsPanel />}
+        {tab === 'organigrama' && <OperationsView mode="organigrama" onOpenMeeting={onOpenMeeting} />}
         {tab === 'general' && <PendingSettingsTab title="Configuración general" description="Usá las pestañas para configurar cada dominio del portal. Los ajustes transversales se incorporarán aquí cuando tengan una responsabilidad propia." />}
         {tab === 'router' && <PendingSettingsTab title="Router de agentes" description="Aquí vivirán las reglas fuente → agente → disparador → salida de las automatizaciones de la empresa." />}
         {tab === 'integrations' && <PendingSettingsTab title="Integraciones" description="Aquí se centralizarán el estado y las credenciales de los servicios externos autorizados." />}

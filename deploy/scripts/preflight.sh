@@ -52,4 +52,5 @@ else
 fi
 
 nginx -t
+node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (!((major === 22 && minor >= 16) || major === 24)) { console.error("Se requiere Node 22.16+ o Node 24 LTS."); process.exit(1); }'
 printf 'Preflight de producción aprobado.\n'

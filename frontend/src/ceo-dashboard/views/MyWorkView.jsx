@@ -15,8 +15,8 @@ export default function MyWorkView({ work, loading = false, onOpen, onMarkRead }
   const unread = Number(work?.unread || 0);
   return <section className="ceo-page p-4 sm:p-6 xl:p-8">
     <div className="mb-5 flex flex-col gap-3 border-b border-[#2E2E2E] pb-5 sm:flex-row sm:items-end sm:justify-between">
-      <div><p className="font-mono text-[10px] uppercase tracking-[.16em] text-sky-200">Centro personal</p><h2 className="mt-1 text-xl font-semibold tracking-tight text-[#F2F2F2]">Mis pendientes</h2><p className="mt-1 text-xs text-[#737373]">Revisiones y acciones que requieren tu atención.</p></div>
-      <div className="flex items-center gap-2 rounded border border-sky-300/30 bg-sky-300/[.06] px-3 py-2 text-xs text-sky-100"><BellRing size={14} />{unread ? `${unread} notificaciones nuevas` : 'Todo revisado'}</div>
+      <div><p className="font-mono text-[10px] uppercase tracking-[.16em] text-amber-200">Centro personal</p><h2 className="mt-1 text-xl font-semibold tracking-tight text-[#F2F2F2]">Mis pendientes</h2><p className="mt-1 text-xs text-[#737373]">Revisiones y acciones que requieren tu atención.</p></div>
+      <div className="flex items-center gap-2 rounded border border-amber-300/30 bg-amber-300/[.06] px-3 py-2 text-xs text-amber-100"><BellRing size={14} />{unread ? `${unread} notificaciones nuevas` : 'Todo revisado'}</div>
     </div>
     <div className="grid gap-3 sm:grid-cols-3"><Stat label="Pendientes" value={work?.total || 0} /><Stat label="Revisiones" value={work?.reviews || 0} /><Stat label="Acciones asignadas" value={work?.actions || 0} /></div>
     <div className="mt-5 overflow-hidden rounded-md border border-[#2E2E2E] bg-[#141414]">
@@ -25,8 +25,8 @@ export default function MyWorkView({ work, loading = false, onOpen, onMarkRead }
       {!loading && !items.length && <div className="px-4 py-12 text-center"><CheckCircle2 className="mx-auto text-emerald-300" size={26} /><p className="mt-3 text-sm font-medium text-[#F2F2F2]">No tienes pendientes</p><p className="mt-1 text-xs text-[#737373]">Cuando te asignen una acción o una revisión aparecerá aquí.</p></div>}
       <div className="divide-y divide-[#2E2E2E]">{items.map((item) => <button key={item.key} type="button" onClick={() => { void onMarkRead?.([item.key]); onOpen?.(item); }} className="group flex w-full items-start gap-3 px-4 py-4 text-left hover:bg-[#0D0D0D]">
         <span className={`mt-0.5 flex size-8 shrink-0 items-center justify-center rounded border ${item.kind === 'review' ? 'border-violet-300/35 bg-violet-300/[.08] text-violet-200' : 'border-amber-300/35 bg-amber-300/[.08] text-amber-100'}`}>{item.kind === 'review' ? <ClipboardCheck size={15} /> : <CalendarClock size={15} />}</span>
-        <span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="truncate text-sm font-medium text-[#F2F2F2]">{item.title}</span>{item.unread && <span className="size-1.5 shrink-0 rounded-full bg-sky-300" title="Nueva" />}</span><span className="mt-1 block text-xs text-[#BFBFBF]">{item.detail}</span><span className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[#737373]"><span className="text-sky-200">{item.meetingName}</span>{item.projectName && <span>{item.projectName}</span>}{item.kind === 'action' && <span className="text-amber-100">{displayDate(item.dueDate)}</span>}</span></span>
-        <ExternalLink size={14} className="mt-1 shrink-0 text-[#4A4A4A] group-hover:text-sky-200" />
+        <span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="truncate text-sm font-medium text-[#F2F2F2]">{item.title}</span>{item.unread && <span className="size-1.5 shrink-0 rounded-full bg-amber-300" title="Nueva" />}</span><span className="mt-1 block text-xs text-[#BFBFBF]">{item.detail}</span><span className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[#737373]"><span className="text-amber-200">{item.meetingName}</span>{item.projectName && <span>{item.projectName}</span>}{item.kind === 'action' && <span className="text-amber-100">{displayDate(item.dueDate)}</span>}</span></span>
+        <ExternalLink size={14} className="mt-1 shrink-0 text-[#4A4A4A] group-hover:text-amber-200" />
       </button>)}</div>
     </div>
   </section>;

@@ -1,8 +1,10 @@
 export const CEO_DASHBOARD_VIEWS = new Set([
   'dashboard', 'work', 'ai', 'groups', 'labels', 'templates', 'business', 'meetings', 'settings', 'specialists', 'backoffice',
+  'organigrama', 'leads', 'clients', 'identities', 'incidents',
 ]);
 
 export const SETTINGS_TABS = [
+  { key: 'organigrama', label: 'Organigrama y escalado', description: 'Jerarquía global, asignaciones por proyecto y escalado de revisión.' },
   { key: 'general', label: 'General', description: 'Preferencias generales del portal y acceso a los ajustes por agente.' },
   { key: 'whatsapp', label: 'WhatsApp', description: 'Instancia Evolution, cuentas, presencia, proxy y activaciones.' },
   { key: 'meetings', label: 'Agente de reuniones', description: 'Google Drive y carpetas fuente.' },

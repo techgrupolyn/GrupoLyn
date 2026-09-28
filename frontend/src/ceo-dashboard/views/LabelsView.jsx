@@ -4,14 +4,16 @@ import api from '../api';
 export default function LabelsView() {
   const [labels, setLabels] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const [form, setForm] = useState({ nombre: '', color: '#6366f1' });
   const [handleForm, setHandleForm] = useState({ chatId: '', label: '', action: 'add' });
 
   const loadLabels = async () => {
+    setError('');
     try {
       const data = await api.labels.list();
       setLabels(Array.isArray(data) ? data : []);
-    } catch { /* ignore */ }
+    } catch (failure) { setError(failure.body || failure.message || 'No se pudieron cargar las etiquetas.'); }
   };
 
   useEffect(() => { loadLabels(); }, []);
@@ -19,25 +21,28 @@ export default function LabelsView() {
   const createLabel = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setError('');
     try {
       await api.labels.handle({ name: form.nombre });
       setForm({ nombre: '', color: '#6366f1' });
       await loadLabels();
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch (failure) { setError(failure.body || failure.message || 'No se pudo crear la etiqueta.'); } finally { setLoading(false); }
   };
 
   const handleLabel = async (e) => {
     e.preventDefault();
     if (!handleForm.chatId || !handleForm.label) return;
     setLoading(true);
+    setError('');
     try {
       await api.labels.handle({ chatId: handleForm.chatId, name: handleForm.label, action: handleForm.action });
       setHandleForm({ chatId: '', label: '', action: 'add' });
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch (failure) { setError(failure.body || failure.message || 'No se pudo asignar la etiqueta.'); } finally { setLoading(false); }
   };
 
   return (
     <div className="ceo-page p-4 sm:p-6 xl:p-8">
+      {error && <p role="alert" className="mb-4 text-sm text-red-400">{error}</p>}
       <h2 className="font-display text-2xl font-medium text-[#F2F2F2] tracking-wide">Etiquetas</h2>
       <p className="mt-2 text-xs text-[#737373]">Creá etiquetas y asignalas a chats.</p>
 

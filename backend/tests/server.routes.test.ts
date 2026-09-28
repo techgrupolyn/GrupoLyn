@@ -1,10 +1,21 @@
 import request from 'supertest';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { app } from '../server.ts';
 
 const client = request(app);
 
 describe('Server - protección de APIs de extensión', () => {
+  it('rechaza el bypass local en producción incluso si está habilitado por error', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOW_UNAUTHENTICATED_LOCAL_EXTENSION', 'true');
+    try {
+      const res = await client.get('/api/chats').set('Host', '127.0.0.1:3003');
+      expect(res.status).toBe(401);
+      expect(res.body.error).toContain('activarse');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it('rechaza chats sin una activación válida', async () => {
     const res = await client.get('/api/chats');
     expect(res.status).toBe(401);

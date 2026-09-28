@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/ceo-dashboard/api', () => ({
   default: {
+    meetings: {
+      configuration: vi.fn().mockResolvedValue({ naming_convention: 'Comité de obra · PMC', committee_workflow: ['pmc'], client_workflow: ['director'], recording_notice: 'Aviso QA' }),
+    },
     googleDrive: {
       status: vi.fn(),
       artifacts: vi.fn(),

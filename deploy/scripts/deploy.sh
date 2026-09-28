@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT=/opt/lyn
+source "$ROOT/deploy/scripts/readiness.sh"
 
 ensure_env_access() {
   install -d -o root -g lyn -m 0750 /etc/lyn
@@ -45,10 +46,11 @@ run_as_lyn env NODE_OPTIONS=--max-old-space-size=1536 npm run build
 cd "$ROOT/frontend"
 run_as_lyn npm ci
 run_as_lyn npm run build
-install -d -o lyn -g lyn -m 0755 /var/www/lyn/dashboard/assets
-rsync -a --delete --exclude='assets/' --chown=lyn:lyn dist/ /var/www/lyn/dashboard/
-rsync -a --chown=lyn:lyn dist/assets/ /var/www/lyn/dashboard/assets/
-find /var/www/lyn/dashboard/assets -type f -mtime +30 -delete
+
+cd "$ROOT/backend"
+run_as_lyn npm prune --omit=dev
+cd "$ROOT/evolution-api"
+run_as_lyn npm prune --omit=dev
 
 systemctl daemon-reload
 
@@ -59,15 +61,32 @@ if [[ -d /etc/lyn/instances ]] && find /etc/lyn/instances -mindepth 1 -maxdepth 
     run_as_lyn_with_env "$instance_dir/evolution.env" npm --prefix "$ROOT/evolution-api" run db:deploy
     systemctl restart "lyn-evolution@$instance.service"
     systemctl restart "lyn-backend@$instance.service"
+    wait_for_backend "$instance_dir/backend.env"
+    systemctl is-active --quiet "lyn-evolution@$instance.service"
   done < <(find /etc/lyn/instances -mindepth 1 -maxdepth 1 -type d -print0)
 else
   run_as_lyn_with_env /etc/lyn/backend.env npm --prefix "$ROOT/backend" run migrate
   run_as_lyn_with_env /etc/lyn/evolution.env npm --prefix "$ROOT/evolution-api" run db:deploy
   systemctl restart lyn-evolution lyn-backend
+  wait_for_backend /etc/lyn/backend.env
+  systemctl is-active --quiet lyn-evolution
 fi
 
-cd "$ROOT/backend"
-run_as_lyn npm prune --omit=dev
-cd "$ROOT/evolution-api"
-run_as_lyn npm prune --omit=dev
-systemctl restart nginx
+nginx -t
+install -d -o lyn -g lyn -m 0755 /var/www/lyn/dashboard/assets
+rsync -a --chown=lyn:lyn "$ROOT/frontend/dist/assets/" /var/www/lyn/dashboard/assets/
+rsync -a --delete --exclude='assets/' --exclude='index.html' --exclude='.index.html.next' --chown=lyn:lyn "$ROOT/frontend/dist/" /var/www/lyn/dashboard/
+install -o lyn -g lyn -m 0644 "$ROOT/frontend/dist/index.html" /var/www/lyn/dashboard/.index.html.next
+if [[ -f /var/www/lyn/dashboard/index.html ]]; then
+  cp -p /var/www/lyn/dashboard/index.html /var/www/lyn/dashboard/.index.html.previous
+fi
+mv -f /var/www/lyn/dashboard/.index.html.next /var/www/lyn/dashboard/index.html
+if ! systemctl reload nginx; then
+  if [[ -f /var/www/lyn/dashboard/.index.html.previous ]]; then
+    cp -p /var/www/lyn/dashboard/.index.html.previous /var/www/lyn/dashboard/.index.html.next
+    mv -f /var/www/lyn/dashboard/.index.html.next /var/www/lyn/dashboard/index.html
+  fi
+  echo 'Falló la recarga de nginx; se restauró el HTML anterior cuando estaba disponible.' >&2
+  exit 1
+fi
+printf 'Servicios preparados y dashboard publicado. Validar los flujos reales antes de cerrar QA.\n'

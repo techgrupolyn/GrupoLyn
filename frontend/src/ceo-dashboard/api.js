@@ -13,12 +13,12 @@ async function request(path, options = {}) {
       localStorage.removeItem('ceo_token');
       window.location.assign('/?view=ceo');
     }
-    let message = text || res.statusText;
+    let message = 'No se pudo completar la operación. Vuelve a intentarlo.';
     try {
       const payload = JSON.parse(text);
       if (payload && typeof payload.error === 'string') message = payload.error;
-    } catch { /* A response that is not JSON keeps its safe status text. */ }
-    let err = new Error(`HTTP ${res.status}: ${message}`);
+    } catch {}
+    const err = new Error(`HTTP ${res.status}: ${message}`);
     err.status = res.status;
     err.body = message;
     throw err;
@@ -27,6 +27,19 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  operations: {
+    organization: () => request('/directory/organization'),
+    assign: (body) => request('/directory/organization/assignments', { method: 'POST', body: JSON.stringify(body) }),
+    removeAssignment: (id) => request(`/directory/organization/assignments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    escalations: () => request('/operations/escalations'),
+    escalate: (id, reason) => request(`/operations/escalations/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    incidents: () => request('/operations/incidents'),
+    resolveIncident: (id, resolved, note) => request(`/operations/incidents/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ resolved, note }) }),
+    leads: () => request('/crm/leads'),
+    saveLead: (id, body) => request(`/crm/leads/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
+    identities: () => request('/crm/identities'),
+    history: (entity, id) => request(`/operations/history/${encodeURIComponent(entity)}/${encodeURIComponent(id)}`),
+  },
   metrics: () => request('/ceo/metrics'),
   chats: () => request('/chats'),
   ceoChats: () => request('/ceo/chats'),
@@ -104,6 +117,8 @@ export const api = {
     update: (id, payload) => request(/whatsapp-accounts/, { method: 'PATCH', body: JSON.stringify(payload) }),
   },
   meetings: {
+    setOrganizer: (artifactId, employeeId) => request(`/meetings/${encodeURIComponent(artifactId)}/organizer`, { method: 'PUT', body: JSON.stringify({ employee_id: employeeId }) }),
+    detectOrganizer: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}/organizer/detect`, { method: 'POST' }),
     list: ({ page = 1, pageSize = 25, q = '', filter = 'all', dateFrom = '', dateTo = '', recentDays = '', sort = 'recent', projectId = '', pmc = '', contactId = '', role = '' } = {}) => {
       const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), filter, sort });
       if (q) params.set('q', q);
@@ -122,6 +137,7 @@ export const api = {
     get: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}`),
     update: (artifactId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
     analyze: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}/analyze`, { method: 'POST' }),
+    recordingNotice: (artifactId, body) => request(`/meetings/${encodeURIComponent(artifactId)}/recording-notice`, { method: 'POST', body: JSON.stringify(body) }),
     retag: () => request('/meetings/retag', { method: 'POST' }),
     reanalyzeMissingPmc: () => request('/meetings/reanalyze-missing-pmc', { method: 'POST' }),
     addAction: (artifactId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions`, { method: 'POST', body: JSON.stringify(payload) }),

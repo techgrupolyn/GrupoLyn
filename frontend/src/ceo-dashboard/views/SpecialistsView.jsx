@@ -13,7 +13,7 @@ export default function SpecialistsView() {
     api.specialists.list().then((data) => {
       if (!cancelled) setItems(Array.isArray(data) ? data : []);
       setLoading(false);
-    }).catch(() => setLoading(false));
+    }).catch((failure) => { if (!cancelled) { setError(failure.body || failure.message || 'No se pudieron cargar los especialistas.'); setLoading(false); } });
     return () => { cancelled = true; };
   }, []);
 

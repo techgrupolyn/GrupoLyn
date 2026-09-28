@@ -10,10 +10,11 @@ export default function TemplatesView() {
 
   const load = async () => {
     setLoading(true);
+    setError('');
     try {
       const data = await api.templates.list();
       setItems(Array.isArray(data) ? data : []);
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch (failure) { setError(failure.body || failure.message || 'No se pudieron cargar las plantillas.'); } finally { setLoading(false); }
   };
 
   useEffect(() => { load(); }, []);

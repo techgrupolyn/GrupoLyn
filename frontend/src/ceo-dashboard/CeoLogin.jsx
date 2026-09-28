@@ -39,12 +39,12 @@ export function isConsultationOnlyCeoUser(user) {
 
 export function isMeetingLimitedCeoUser(user) {
   const role = String(user?.rol || '').trim().toLowerCase();
-  return role.startsWith('employee:') && !['employee:direccion_de_operaciones', 'employee:director_general'].includes(role);
+  return role.startsWith('employee:') && !['employee:director', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(role);
 }
 
 export function isMeetingEditorCeoUser(user) {
   const role = String(user?.rol || '').trim().toLowerCase();
-  return ['superadmin', 'admin', 'ceo', 'employee:delineante', 'employee:pmc_proyectos', 'employee:jefe_de_proyectos', 'employee:direccion_de_operaciones', 'employee:director_general'].includes(role);
+  return ['superadmin', 'admin', 'ceo', 'employee:director', 'employee:delineante', 'employee:pmc_proyectos', 'employee:jefe_de_proyectos', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(role);
 }
 
 export function CeoLogin({ onSubmit, submitting = false, error = '' }) {

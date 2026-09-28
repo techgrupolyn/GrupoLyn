@@ -22,6 +22,19 @@ describe('callGeminiWithMediaResult', () => {
     process.env.GOOGLE_API_KEY = 'test-api-key';
   });
 
+  it('usa Files para un vídeo grande y limpia después de fallar el análisis', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { headers: { 'x-goog-upload-url': 'https://generativelanguage.googleapis.com/upload/qa' } }))
+      .mockResolvedValueOnce(Response.json({ file: { name: 'files/large', state: 'ACTIVE', uri: 'https://generativelanguage.googleapis.com/v1beta/files/large' } }))
+      .mockResolvedValueOnce(Response.json({ error: 'Fallo IA QA' }, { status: 500 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    global.fetch = fetcher;
+    await expect(callGeminiWithMediaResult('Analizar vídeo QA', [{ type: 'video', mimeType: 'video/mp4', base64: 'A'.repeat(17 * 1024 * 1024) }])).rejects.toThrow('Fallo IA QA');
+    const body = JSON.parse(fetcher.mock.calls[2][1].body);
+    expect(body.input[1]).toEqual({ type: 'video', mime_type: 'video/mp4', uri: 'https://generativelanguage.googleapis.com/v1beta/files/large' });
+    expect(fetcher.mock.calls[3][1].method).toBe('DELETE');
+  });
+
   it('conserva los tipos MIME de imágenes, audios, vídeos y documentos', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -185,14 +198,13 @@ describe('callGeminiWithPrompt', () => {
     await expect(callGeminiWithPrompt('Devuelve JSON')).resolves.toBe('{"summary":"Resumen válido"}');
   });
 
-  it('maneja respuesta sin texto', async () => {
+  it('rechaza una respuesta sin texto y no la presenta como análisis válido', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
       text: async () => JSON.stringify({ steps: [] }),
     });
 
-    const result = await callGeminiWithPrompt('Consulta', 'flash');
-    expect(result).toBe('[sin respuesta de IA]');
+    await expect(callGeminiWithPromptResult('Consulta', 'flash')).rejects.toMatchObject({status:502});
   });
 });
