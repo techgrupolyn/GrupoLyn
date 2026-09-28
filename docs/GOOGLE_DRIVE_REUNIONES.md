@@ -26,7 +26,7 @@ GOOGLE_DRIVE_CLIENT_ID=...
 GOOGLE_DRIVE_CLIENT_SECRET=...
 GOOGLE_DRIVE_OAUTH_REDIRECT_URI=https://ceo.grupolyn.com/api/integrations/google-drive/oauth/callback
 GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY=...
-GOOGLE_DRIVE_SYNC_MAX_FILES=1000
+GOOGLE_DRIVE_SYNC_PAGE_SIZE=1000
 GOOGLE_DRIVE_SYNC_INTERVAL_MS=60000
 GOOGLE_DRIVE_TEXT_MAX_CHARS=200000
 MEETING_AI_TEXT_MAX_CHARS=60000
@@ -48,6 +48,11 @@ Tras desplegar, entra con `superadmin`, abre **Reuniones**, pulsa **Conectar Goo
 - Comparte las carpetas con permiso **Lector**; nunca actives enlaces públicos.
 - Si una carpeta deja de ser necesaria, usa **Desactivar**: detiene sincronizaciones futuras sin borrar el historial ya importado.
 - La integración recorre subcarpetas, deduplica por ID de archivo de Google Drive y consulta cada carpeta activa cada 60 segundos por defecto. Solo guarda y extrae de nuevo archivos nuevos o modificados.
+- La lectura procesa todas las páginas, incluidas páginas vacías con continuación, y resuelve accesos directos a archivos y carpetas accesibles por la cuenta conectada. En unidades compartidas consulta la unidad concreta. Los destinos de accesos directos deben tener sus propios permisos de lectura.
+- `GOOGLE_DRIVE_SYNC_PAGE_SIZE` controla el tamaño de página (10–1000), no un límite total de archivos. Por compatibilidad se admite `GOOGLE_DRIVE_SYNC_MAX_FILES` como tamaño de página cuando la nueva variable no existe; ya no trunca el recorrido.
+- Los archivos se importan según se leen las páginas, priorizando modificaciones recientes dentro de cada carpeta. Un archivo inaccesible no bloquea los restantes. Los errores parciales y `incompleteSearch` se guardan en `last_sync_error`; `last_synced_at` solo avanza al completar un ciclo sin incidencias. El siguiente ciclo vuelve a intentar los archivos fallidos.
+- El ciclo y la cola de análisis se ejecutan en el servidor, independientemente de que haya usuarios conectados. El gestor consulta novedades cada 15 segundos y conserva los filtros y permisos de cada usuario. No hace falta pulsar «Sincronizar» para importar reuniones nuevas.
+- El registro `[google-drive] Resultado de sincronización` indica carpeta, archivos leídos, importados, actualizados, errores y si se completó el ciclo. No contiene tokens ni texto de documentos.
 
 ## Identificación y nomenclatura
 

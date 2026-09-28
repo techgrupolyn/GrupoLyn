@@ -571,6 +571,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
 
   it('A-02: desactivar mientras extrae texto evita guardar el archivo', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: folderId, mimeType: 'application/vnd.google-apps.folder' })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ files: [{ id: 'qa-extraction-stop', name: 'Notas QA', mimeType: 'text/plain' }] })))
       .mockImplementationOnce(async () => {
         await server.pool.query('UPDATE google_drive_folders SET enabled = FALSE WHERE id = $1', [folderId]);
@@ -580,7 +581,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       const response = await request(server.app).post(`/api/google-drive/folders/${folderId}/sync`).set('Authorization', authorization).send({});
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       expect(response.body.imported).toBe(0);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
       expect((await server.pool.query('SELECT id FROM google_drive_artifacts WHERE google_file_id = $1', ['qa-extraction-stop'])).rowCount).toBe(0);
     } finally {
       fetchMock.mockRestore();
@@ -591,6 +592,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
   it('M-03/P-04: importa documento vacío como incidencia y MP4 solo como referencia', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
       if (String(url).includes('alt=media')) return new Response('   ');
+      if (new URL(String(url)).pathname.endsWith(`/files/${folderId}`)) return new Response(JSON.stringify({ id: folderId, mimeType: 'application/vnd.google-apps.folder' }));
       return new Response(JSON.stringify({ files: [
         { id: 'qa-empty-import', name: 'Notas vacías QA', mimeType: 'text/plain' },
         { id: 'qa-video-import', name: 'Grabación QA.mp4', mimeType: 'video/mp4' },
@@ -600,7 +602,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       const response = await request(server.app).post(`/api/google-drive/folders/${folderId}/sync`).set('Authorization', authorization).send({});
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       expect(response.body.imported).toBe(2);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
       const imported = await server.pool.query('SELECT a.google_file_id, a.artifact_type, a.metadata, r.artifact_id AS review_id FROM google_drive_artifacts a LEFT JOIN meeting_reviews r ON r.artifact_id = a.id WHERE a.google_file_id = ANY($1::text[]) ORDER BY a.google_file_id', [['qa-empty-import', 'qa-video-import']]);
       expect(imported.rows[0].metadata.import_error).toBeTruthy();
       expect(imported.rows.every((row) => row.review_id === null)).toBe(true);
@@ -1035,6 +1037,61 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       await server.pool.query('DELETE FROM grupos WHERE account_id=$1', [accountId]);
       await server.pool.query('DELETE FROM chats WHERE account_id=$1', [accountId]);
       await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
+    }
+  });
+
+  it('Drive automático: importa pese a un archivo denegado, reintenta y analiza una vez por versión sin intervención', async () => {
+    const automaticConnection = randomUUID();
+    const automaticFolder = randomUUID();
+    const goodId = `qa-september-${randomUUID()}`;
+    const deniedId = `qa-denied-${randomUUID()}`;
+    let denied = true;
+    const previousGeneration = generation.getMockImplementation();
+    const file = (id: string) => ({ id, name: 'Reunión iniciada a las 2026/09/25 09:10 CEST - Notas de Gemini', mimeType: 'application/vnd.google-apps.document', modifiedTime: '2026-09-25T12:00:00Z' });
+    await server.pool.query(`INSERT INTO google_drive_connections (id, google_email, access_token_encrypted, refresh_token_encrypted, expires_at, created_by) SELECT $1, $2, access_token_encrypted, refresh_token_encrypted, expires_at, 'qa' FROM google_drive_connections WHERE id=$3`, [automaticConnection, `${automaticConnection}@example.test`, connectionId]);
+    await server.pool.query(`INSERT INTO google_drive_folders (id, connection_id, google_folder_id, label, created_by) VALUES ($1::uuid, $2, $1::text, 'QA automática septiembre', 'qa')`, [automaticFolder, automaticConnection]);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith(`/files/${automaticFolder}`)) return new Response(JSON.stringify({ id: automaticFolder, mimeType: 'application/vnd.google-apps.folder' }));
+      if (url.pathname.endsWith('/files')) return new Response(JSON.stringify({ files: [file(deniedId), { id: 'qa-shortcut', mimeType: 'application/vnd.google-apps.shortcut', shortcutDetails: { targetId: goodId } }, file(goodId)] }));
+      if (url.pathname.endsWith(`/files/${goodId}`)) return new Response(JSON.stringify(file(goodId)));
+      if (url.pathname.endsWith('/export')) {
+        if (denied && url.pathname.includes(deniedId)) return new Response('denied', { status: 403 });
+        return new Response('Reunión 25/09/2026. Se revisaron los planos de la obra. Hay que confirmar las medidas del baño con el PMC antes del viernes.');
+      }
+      throw new Error(`Solicitud inesperada de prueba: ${url.pathname}`);
+    });
+    generation.mockResolvedValue({ text: '{"summary":"Resumen automático QA","actions":[],"blockers":[]}', fallback: false, provider: 'qa', model: 'stub' });
+    try {
+      const first = await server.syncEnabledGoogleDriveFolders();
+      expect(first.imported).toBe(1);
+      expect(first.failed).toBe(1);
+      const partial = await server.pool.query('SELECT last_synced_at, last_sync_error FROM google_drive_folders WHERE id=$1', [automaticFolder]);
+      expect(partial.rows[0].last_synced_at).toBeNull();
+      expect(partial.rows[0].last_sync_error).toContain('403');
+      const imported = await server.pool.query('SELECT a.id, r.analysis_status FROM google_drive_artifacts a JOIN meeting_reviews r ON r.artifact_id=a.id WHERE a.google_file_id=$1', [goodId]);
+      expect(imported.rows).toHaveLength(1);
+      expect(imported.rows[0].analysis_status).toBe('pending');
+      denied = false;
+      expect((await server.syncEnabledGoogleDriveFolders()).imported).toBe(1);
+      for (let attempt = 0; attempt < 5; attempt += 1) await server.processPendingMeetingAnalyses();
+      const completed = await server.pool.query('SELECT r.analysis_status FROM meeting_reviews r JOIN google_drive_artifacts a ON a.id=r.artifact_id WHERE a.connection_id=$1', [automaticConnection]);
+      expect(completed.rows).toHaveLength(2);
+      expect(completed.rows.every((row) => row.analysis_status === 'completed')).toBe(true);
+      expect((await server.syncEnabledGoogleDriveFolders()).imported).toBe(0);
+      await server.processPendingMeetingAnalyses();
+      const runs = await server.pool.query('SELECT COUNT(*)::int AS total FROM meeting_review_ai_runs r JOIN google_drive_artifacts a ON a.id=r.artifact_id WHERE a.connection_id=$1', [automaticConnection]);
+      expect(runs.rows[0].total).toBe(2);
+      const recovered = await server.pool.query('SELECT last_synced_at, last_sync_error FROM google_drive_folders WHERE id=$1', [automaticFolder]);
+      expect(recovered.rows[0].last_synced_at).not.toBeNull();
+      expect(recovered.rows[0].last_sync_error).toBeNull();
+      const response = await request(server.app).get(`/api/meetings/${imported.rows[0].id}`).set('Authorization', authorization);
+      expect(response.status).toBe(200);
+      expect(response.body.summary).toBe('Resumen automático QA');
+    } finally {
+      fetchMock.mockRestore();
+      generation.mockImplementation(previousGeneration || (() => undefined));
+      await server.pool.query('DELETE FROM google_drive_connections WHERE id=$1', [automaticConnection]);
     }
   });
 

@@ -10,6 +10,7 @@ import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafe
 import type { EvolutionInstance, MessageItem, Chat, ConnectionStatus, Mensaje, ResumenRequest, ResumenResponse, RoleClassification, Specialist } from './types/index.ts';
 import { callGeminiWithPrompt, callGeminiWithPromptResult, resolveSpecialist, setSpecialists, specialists } from './geminiService.ts';
 import { canExtractGoogleDriveText, classifyGoogleDriveArtifact, decryptGoogleDriveSecret, encryptGoogleDriveSecret, parseGoogleDriveFolderId } from './google-drive.ts';
+import { iterateGoogleDriveFolderFiles, type GoogleDriveFile } from './google-drive-sync.ts';
 import { meetingDirectoryContext, syncSupabaseDirectory, supabaseDirectoryConfigFromEnv, type MeetingDirectoryCandidate } from './supabase-directory.ts';
 import { authenticateWithSupabasePassword, isSupabaseAuthConfigured, supabaseAuthConfigFromEnv, SupabaseAuthServiceError } from './supabase-auth.ts';
 import { Readable } from 'stream';
@@ -45,7 +46,7 @@ const GOOGLE_DRIVE_CLIENT_ID = process.env.GOOGLE_DRIVE_CLIENT_ID?.trim() || '';
 const GOOGLE_DRIVE_CLIENT_SECRET = process.env.GOOGLE_DRIVE_CLIENT_SECRET?.trim() || '';
 const GOOGLE_DRIVE_OAUTH_REDIRECT_URI = process.env.GOOGLE_DRIVE_OAUTH_REDIRECT_URI?.trim() || (PUBLIC_APP_URL ? `${PUBLIC_APP_URL}/api/integrations/google-drive/oauth/callback` : '');
 const GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY = process.env.GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY?.trim() || '';
-const GOOGLE_DRIVE_SYNC_MAX_FILES = boundedInterval(process.env.GOOGLE_DRIVE_SYNC_MAX_FILES, 1_000, 10, 5_000);
+const GOOGLE_DRIVE_SYNC_PAGE_SIZE = boundedInterval(process.env.GOOGLE_DRIVE_SYNC_PAGE_SIZE || process.env.GOOGLE_DRIVE_SYNC_MAX_FILES, 1_000, 10, 1_000);
 const GOOGLE_DRIVE_SYNC_INTERVAL_MS = boundedInterval(process.env.GOOGLE_DRIVE_SYNC_INTERVAL_MS, 60_000, 60_000, 60 * 60 * 1000);
 const GOOGLE_DRIVE_TEXT_MAX_CHARS = boundedInterval(process.env.GOOGLE_DRIVE_TEXT_MAX_CHARS, 200_000, 10_000, 500_000);
 const MEETING_AI_TEXT_MAX_CHARS = boundedInterval(process.env.MEETING_AI_TEXT_MAX_CHARS, 60_000, 10_000, 200_000);
@@ -1371,19 +1372,6 @@ type GoogleDriveConnectionRow = {
   scope: string | null;
 };
 
-type GoogleDriveFile = {
-  id: string;
-  name: string;
-  mimeType: string;
-  modifiedTime?: string;
-  createdTime?: string;
-  size?: string;
-  md5Checksum?: string;
-  webViewLink?: string;
-  parents?: string[];
-  description?: string;
-};
-
 type GoogleDriveOAuthState = { usuario: string; exp: number; nonce: string };
 
 function isGoogleDriveConfigured(): boolean {
@@ -1500,9 +1488,9 @@ async function googleDriveAccessToken(connectionId: string): Promise<string> {
   return String(payload.access_token);
 }
 
-async function googleDriveFetch(path: string, accessToken: string): Promise<globalThis.Response> {
+async function googleDriveFetch(path: string, accessToken: string, resourceKeys?: string): Promise<globalThis.Response> {
   const response = await fetch(`https://www.googleapis.com/drive/v3${path}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: { Authorization: `Bearer ${accessToken}`, ...(resourceKeys ? { 'X-Goog-Drive-Resource-Keys': resourceKeys } : {}) },
     signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok) {
@@ -1512,46 +1500,15 @@ async function googleDriveFetch(path: string, accessToken: string): Promise<glob
   return response;
 }
 
-async function readGoogleDriveText(file: GoogleDriveFile, accessToken: string): Promise<{ text: string | null; truncated: boolean }> {
+async function readGoogleDriveText(file: GoogleDriveFile, requestDrive: (path: string, resourceKeys?: string) => Promise<globalThis.Response>): Promise<{ text: string | null; truncated: boolean }> {
   if (!canExtractGoogleDriveText(file.mimeType, file.name)) return { text: null, truncated: false };
   const encodedId = encodeURIComponent(file.id);
   const path = file.mimeType === 'application/vnd.google-apps.document'
     ? `/files/${encodedId}/export?mimeType=text%2Fplain&supportsAllDrives=true`
     : `/files/${encodedId}?alt=media&supportsAllDrives=true`;
-  const response = await googleDriveFetch(path, accessToken);
+  const response = await requestDrive(path, file.resourceKey ? `${file.id}/${file.resourceKey}` : undefined);
   const text = await response.text();
   return { text: text.slice(0, GOOGLE_DRIVE_TEXT_MAX_CHARS), truncated: text.length > GOOGLE_DRIVE_TEXT_MAX_CHARS };
-}
-
-async function listGoogleDriveFolderFiles(folderId: string, accessToken: string, enabled: () => Promise<boolean> = async () => true): Promise<GoogleDriveFile[]> {
-  const pendingFolders = [folderId];
-  const visitedFolders = new Set<string>();
-  const files: GoogleDriveFile[] = [];
-  while (pendingFolders.length && files.length < GOOGLE_DRIVE_SYNC_MAX_FILES) {
-    const currentFolder = pendingFolders.shift() || '';
-    if (!currentFolder || visitedFolders.has(currentFolder)) continue;
-    visitedFolders.add(currentFolder);
-    let pageToken = '';
-    do {
-      if (!await enabled()) return files;
-      const params = new URLSearchParams({
-        q: `'${currentFolder}' in parents and trashed = false`,
-        pageSize: String(Math.min(1000, GOOGLE_DRIVE_SYNC_MAX_FILES - files.length)),
-        fields: 'nextPageToken,files(id,name,mimeType,modifiedTime,createdTime,size,md5Checksum,webViewLink,parents,description)',
-        supportsAllDrives: 'true',
-        includeItemsFromAllDrives: 'true',
-      });
-      if (pageToken) params.set('pageToken', pageToken);
-      const response = await googleDriveFetch(`/files?${params.toString()}`, accessToken);
-      const payload = await response.json() as { nextPageToken?: string; files?: GoogleDriveFile[] };
-      for (const file of payload.files || []) {
-        if (file.mimeType === 'application/vnd.google-apps.folder') pendingFolders.push(file.id);
-        else if (files.length < GOOGLE_DRIVE_SYNC_MAX_FILES) files.push(file);
-      }
-      pageToken = payload.nextPageToken || '';
-    } while (pageToken && files.length < GOOGLE_DRIVE_SYNC_MAX_FILES);
-  }
-  return files;
 }
 
 export async function linkMeetingOrganizer(artifactId: string, cachedEvents = new Map<string, Promise<CalendarMeeting[]>>()): Promise<{ linked: boolean; reason?: string }> {
@@ -1584,80 +1541,108 @@ export async function linkMeetingOrganizer(artifactId: string, cachedEvents = ne
   }
 }
 
-async function syncGoogleDriveFolderUnsafe(folderId: string): Promise<{ imported: number; updated: number; total: number }> {
+type GoogleDriveFolderSyncResult = { imported: number; updated: number; total: number; complete: boolean; errors: number };
+
+async function syncGoogleDriveFolderUnsafe(folderId: string): Promise<GoogleDriveFolderSyncResult> {
   const { rows } = await pool.query<{
     id: string; connection_id: string; google_folder_id: string; enabled: boolean;
   }>(`SELECT id, connection_id, google_folder_id, enabled FROM google_drive_folders WHERE id = $1`, [folderId]);
   const folder = rows[0];
   if (!folder || !folder.enabled) throw new Error('Carpeta de Google Drive no disponible');
   try {
-    const accessToken = await googleDriveAccessToken(folder.connection_id);
-    const files = await listGoogleDriveFolderFiles(folder.google_folder_id, accessToken, async () => {
+    const enabled = async () => {
       const active = await pool.query('SELECT f.id FROM google_drive_folders f INNER JOIN google_drive_connections c ON c.id = f.connection_id AND c.revoked_at IS NULL WHERE f.id = $1 AND f.enabled = TRUE', [folder.id]);
       return active.rows.length > 0;
-    });
-    const existingResult = await pool.query<{ google_file_id: string; source_modified_at: Date | null }>(
-      `SELECT google_file_id, source_modified_at FROM google_drive_artifacts WHERE connection_id = $1`,
+    };
+    const issues: string[] = [];
+    let errors = 0;
+    const onIssue = (message: string) => { errors += 1; if (issues.length < 5) issues.push(message.slice(0, 180)); };
+    let accessToken = await googleDriveAccessToken(folder.connection_id);
+    let tokenCheckedAt = Date.now();
+    const requestDrive = async (path: string, resourceKeys?: string) => {
+      if (Date.now() - tokenCheckedAt > 30_000) {
+        accessToken = await googleDriveAccessToken(folder.connection_id);
+        tokenCheckedAt = Date.now();
+      }
+      return googleDriveFetch(path, accessToken, resourceKeys);
+    };
+    const files = iterateGoogleDriveFolderFiles(folder.google_folder_id, requestDrive, { pageSize: GOOGLE_DRIVE_SYNC_PAGE_SIZE, enabled, onIssue });
+    const existingResult = await pool.query<{ id: string; google_file_id: string; source_modified_at: Date | null; review_id: string | null; has_text: boolean }>(
+      `SELECT a.id, a.google_file_id, a.source_modified_at, r.artifact_id AS review_id, COALESCE(length(trim(a.content_text)), 0) > 0 AS has_text FROM google_drive_artifacts a LEFT JOIN meeting_reviews r ON r.artifact_id = a.id WHERE a.connection_id = $1`,
       [folder.connection_id],
     );
-    const existing = new Map(existingResult.rows.map((row) => [row.google_file_id, row.source_modified_at?.toISOString() || '']));
+    const existing = new Map(existingResult.rows.map((row) => [row.google_file_id, row]));
     let imported = 0;
     let updated = 0;
+    let total = 0;
     const calendarCache = new Map<string, Promise<CalendarMeeting[]>>();
-    for (const file of files) {
-      const enabled = await pool.query<{ enabled: boolean }>('SELECT enabled FROM google_drive_folders WHERE id = $1', [folder.id]);
-      if (!enabled.rows[0]?.enabled) break;
-      const modifiedAt = file.modifiedTime ? new Date(file.modifiedTime) : null;
-      const previousModifiedAt = existing.get(file.id);
-      const sourceModifiedAt = modifiedAt?.toISOString() || '';
-      const isNew = !existing.has(file.id);
-      const sourceChanged = isNew || previousModifiedAt !== sourceModifiedAt;
-      if (!sourceChanged) {
-        const stored = await pool.query('SELECT id FROM google_drive_artifacts WHERE connection_id=$1 AND google_file_id=$2', [folder.connection_id, file.id]);
-        if (stored.rows[0]) await linkMeetingOrganizer(stored.rows[0].id, calendarCache);
-        continue;
+    for await (const file of files) {
+      if (!await enabled()) break;
+      total += 1;
+      try {
+        const modifiedAt = file.modifiedTime ? new Date(file.modifiedTime) : null;
+        const previous = existing.get(file.id);
+        const previousModifiedAt = previous?.source_modified_at?.toISOString() || '';
+        const sourceModifiedAt = modifiedAt?.toISOString() || '';
+        const isNew = !existing.has(file.id);
+        const sourceChanged = isNew || previousModifiedAt !== sourceModifiedAt;
+        if (!sourceChanged) {
+          if (previous) {
+            if (!previous.review_id && previous.has_text && canExtractGoogleDriveText(file.mimeType, file.name)) await queueMeetingAiAnalysis(previous.id);
+            await linkMeetingOrganizer(previous.id, calendarCache);
+          }
+          continue;
+        }
+        const mustExtractText = canExtractGoogleDriveText(file.mimeType, file.name);
+        const text = mustExtractText ? await readGoogleDriveText(file, requestDrive) : { text: null, truncated: false };
+        const artifactType = classifyGoogleDriveArtifact(file.mimeType, file.name);
+        const artifactResult = await pool.query<{ id: string }>(
+          `INSERT INTO google_drive_artifacts (
+             id, connection_id, folder_id, google_file_id, name, mime_type, artifact_type, web_view_link,
+             source_modified_at, size_bytes, checksum, content_text, content_truncated, metadata
+            ) SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb
+            WHERE EXISTS (SELECT 1 FROM google_drive_folders f JOIN google_drive_connections c ON c.id = f.connection_id WHERE f.id = $15 AND f.enabled = TRUE AND c.revoked_at IS NULL)
+           ON CONFLICT (connection_id, google_file_id) DO UPDATE
+             SET folder_id = EXCLUDED.folder_id,
+                 name = EXCLUDED.name,
+                 mime_type = EXCLUDED.mime_type,
+                 artifact_type = EXCLUDED.artifact_type,
+                 web_view_link = EXCLUDED.web_view_link,
+                 source_modified_at = EXCLUDED.source_modified_at,
+                 size_bytes = EXCLUDED.size_bytes,
+                 checksum = EXCLUDED.checksum,
+                 content_text = COALESCE(EXCLUDED.content_text, google_drive_artifacts.content_text),
+                 content_truncated = CASE WHEN EXCLUDED.content_text IS NULL THEN google_drive_artifacts.content_truncated ELSE EXCLUDED.content_truncated END,
+                 metadata = EXCLUDED.metadata,
+                 last_seen_at = NOW(),
+                 updated_at = NOW()
+           RETURNING id`,
+          [
+            randomUUID(), folder.connection_id, folder.id, file.id, file.name || 'Sin nombre', file.mimeType || 'application/octet-stream', artifactType,
+            file.webViewLink || null, modifiedAt, Number.isFinite(Number(file.size)) ? Number(file.size) : null, file.md5Checksum || null,
+            text.text, text.truncated, JSON.stringify({ parents: file.parents || [], created_time: file.createdTime || null, description: file.description || null }), folder.id,
+          ],
+        );
+        const artifactId = artifactResult.rows[0]?.id;
+        if (!artifactId) break;
+        await linkMeetingOrganizer(artifactId, calendarCache);
+        if (artifactId && mustExtractText && ['transcript', 'notes', 'document'].includes(artifactType)) {
+          await queueMeetingAiAnalysis(artifactId);
+        }
+        if (isNew) imported += 1;
+        else updated += 1;
+      } catch (error) {
+        onIssue(`Archivo ${file.id}: ${(error as Error).message}`);
       }
-      const mustExtractText = canExtractGoogleDriveText(file.mimeType, file.name);
-      const text = mustExtractText ? await readGoogleDriveText(file, accessToken) : { text: null, truncated: false };
-      const artifactType = classifyGoogleDriveArtifact(file.mimeType, file.name);
-      const artifactResult = await pool.query<{ id: string }>(
-        `INSERT INTO google_drive_artifacts (
-           id, connection_id, folder_id, google_file_id, name, mime_type, artifact_type, web_view_link,
-           source_modified_at, size_bytes, checksum, content_text, content_truncated, metadata
-          ) SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb
-          WHERE EXISTS (SELECT 1 FROM google_drive_folders WHERE id = $15 AND enabled = TRUE)
-         ON CONFLICT (connection_id, google_file_id) DO UPDATE
-           SET folder_id = EXCLUDED.folder_id,
-               name = EXCLUDED.name,
-               mime_type = EXCLUDED.mime_type,
-               artifact_type = EXCLUDED.artifact_type,
-               web_view_link = EXCLUDED.web_view_link,
-               source_modified_at = EXCLUDED.source_modified_at,
-               size_bytes = EXCLUDED.size_bytes,
-               checksum = EXCLUDED.checksum,
-               content_text = COALESCE(EXCLUDED.content_text, google_drive_artifacts.content_text),
-               content_truncated = CASE WHEN EXCLUDED.content_text IS NULL THEN google_drive_artifacts.content_truncated ELSE EXCLUDED.content_truncated END,
-               metadata = EXCLUDED.metadata,
-               last_seen_at = NOW(),
-               updated_at = NOW()
-         RETURNING id`,
-        [
-          randomUUID(), folder.connection_id, folder.id, file.id, file.name || 'Sin nombre', file.mimeType || 'application/octet-stream', artifactType,
-          file.webViewLink || null, modifiedAt, Number.isFinite(Number(file.size)) ? Number(file.size) : null, file.md5Checksum || null,
-          text.text, text.truncated, JSON.stringify({ parents: file.parents || [], created_time: file.createdTime || null, description: file.description || null }), folder.id,
-        ],
-      );
-      const artifactId = artifactResult.rows[0]?.id;
-      if (!artifactId) break;
-      await linkMeetingOrganizer(artifactId, calendarCache);
-      if (artifactId && mustExtractText && ['transcript', 'notes', 'document'].includes(artifactType)) {
-        await queueMeetingAiAnalysis(artifactId);
-      }
-      if (isNew) imported += 1;
-      else updated += 1;
     }
-    await pool.query(`UPDATE google_drive_folders SET last_synced_at = NOW(), last_sync_error = NULL, updated_at = NOW() WHERE id = $1`, [folder.id]);
-    return { imported, updated, total: files.length };
+    const active = await enabled();
+    const complete = active && errors === 0;
+    const errorMessage = errors ? `Sincronización incompleta (${errors} incidencias): ${issues.join(' | ')}`.slice(0, 1000) : null;
+    if (active) await pool.query(`UPDATE google_drive_folders SET last_synced_at = CASE WHEN $2 THEN NOW() ELSE last_synced_at END, last_sync_error = $3, updated_at = NOW() WHERE id = $1 AND enabled = TRUE`, [folder.id, complete, errorMessage]);
+    if (errorMessage) console.error(`[google-drive] Carpeta ${folder.id}: ${errorMessage}`);
+    console.info('[google-drive] Resultado de sincronización:', { folderId: folder.id, imported, updated, total, complete, errors });
+    if (imported || updated) publish('meetings-updated', { source: 'google-drive', imported, updated });
+    return { imported, updated, total, complete, errors };
   } catch (error) {
     const message = (error as Error).message.slice(0, 1000);
     await pool.query(`UPDATE google_drive_folders SET last_sync_error = $2, updated_at = NOW() WHERE id = $1`, [folder.id, message]);
@@ -1665,9 +1650,9 @@ async function syncGoogleDriveFolderUnsafe(folderId: string): Promise<{ imported
   }
 }
 
-const googleDriveFolderSyncPromises = new Map<string, Promise<{ imported: number; updated: number; total: number }>>();
+const googleDriveFolderSyncPromises = new Map<string, Promise<GoogleDriveFolderSyncResult>>();
 
-async function syncGoogleDriveFolder(folderId: string): Promise<{ imported: number; updated: number; total: number }> {
+async function syncGoogleDriveFolder(folderId: string): Promise<GoogleDriveFolderSyncResult> {
   const activeSync = googleDriveFolderSyncPromises.get(folderId);
   if (activeSync) return activeSync;
   const sync = syncGoogleDriveFolderUnsafe(folderId).finally(() => { googleDriveFolderSyncPromises.delete(folderId); });
@@ -1678,7 +1663,7 @@ async function syncGoogleDriveFolder(folderId: string): Promise<{ imported: numb
 type GoogleDriveAutoSyncResult = { folders: number; imported: number; updated: number; total: number; failed: number };
 let googleDriveFolderSyncPromise: Promise<GoogleDriveAutoSyncResult> | null = null;
 
-async function syncEnabledGoogleDriveFolders(): Promise<GoogleDriveAutoSyncResult> {
+export async function syncEnabledGoogleDriveFolders(): Promise<GoogleDriveAutoSyncResult> {
   if (googleDriveFolderSyncPromise) return googleDriveFolderSyncPromise;
   googleDriveFolderSyncPromise = (async () => {
     const result: GoogleDriveAutoSyncResult = { folders: 0, imported: 0, updated: 0, total: 0, failed: 0 };
@@ -1692,6 +1677,7 @@ async function syncEnabledGoogleDriveFolders(): Promise<GoogleDriveAutoSyncResul
         result.imported += synced.imported;
         result.updated += synced.updated;
         result.total += synced.total;
+        if (!synced.complete) result.failed += 1;
       } catch (error) {
         result.failed += 1;
         console.error(`[google-drive] Error sincronizando carpeta ${folder.id}:`, (error as Error).message);
@@ -4246,7 +4232,7 @@ app.delete('/api/google-drive/folders/:id', requireCeoAuth, async (req: Request,
 app.post('/api/google-drive/folders/:id/sync', requireCeoAuth, async (req: Request, res: Response) => {
   try {
     const result = await syncGoogleDriveFolder(String(req.params.id || ''));
-    res.json({ ok: true, ...result });
+    res.json({ ok: result.complete, ...result });
   } catch (error) {
     console.error('[google-drive] Error sincronizando:', (error as Error).message);
     res.status(502).json({ error: (error as Error).message });
@@ -5677,7 +5663,7 @@ async function queueMeetingAiAnalysis(artifactId: string): Promise<void> {
   );
 }
 
-async function processPendingMeetingAnalyses(): Promise<void> {
+export async function processPendingMeetingAnalyses(): Promise<void> {
   if (meetingAnalysisWorkerRunning) return;
   meetingAnalysisWorkerRunning = true;
   try {

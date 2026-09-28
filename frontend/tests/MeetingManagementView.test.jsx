@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/ceo-dashboard/api', () => ({
@@ -48,6 +48,25 @@ beforeEach(() => {
 });
 
 describe('MeetingManagementView', () => {
+  it.each([false, true])('muestra reuniones nuevas automáticamente sin pulsar sincronizar (acceso limitado: %s)', async (limitedAccess) => {
+    let refresh;
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {
+      if (delay === 15_000) refresh = callback;
+      return 12345;
+    });
+    const view = render(<MeetingManagementView limitedAccess={limitedAccess} canEdit={!limitedAccess} />);
+    try {
+      await waitFor(() => expect(api.meetings.list).toHaveBeenCalled());
+      expect(screen.queryByText(meeting.name)).not.toBeInTheDocument();
+      vi.mocked(api.meetings.list).mockResolvedValue({ ...emptyList, items: [meeting], total: 1, totalPages: 1 });
+      await act(async () => { refresh(); });
+      expect(await screen.findByText(meeting.name)).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      interval.mockRestore();
+    }
+  });
+
   it('no muestra un bloqueo por aviso de Meet aunque reciba el campo antiguo', async () => {
     vi.mocked(api.meetings.list).mockResolvedValue({ ...emptyList, items: [{ ...meeting, analysis_status: 'pending', recording_notice_required: true }], total: 1, totalPages: 1 });
     render(<MeetingManagementView />);
