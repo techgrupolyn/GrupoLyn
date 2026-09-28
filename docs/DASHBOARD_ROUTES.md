@@ -25,9 +25,13 @@ La configuración se abre en `/?view=settings`. Si no se indica `tab`, se muestr
 
 `/?view=meetings` muestra un aviso descartable que indica la nueva ubicación de la configuración de Google Drive. El aviso se guarda solamente en el navegador del usuario.
 
+## Desvincular WhatsApp
+
+En **Configuración > WhatsApp > Cuentas WhatsApp**, el botón **Desvincular** de cada cuenta solicita confirmación con su nombre e instancia. Cierra únicamente esa sesión de WhatsApp mediante `POST /api/whatsapp-accounts/:id/disconnect`, restringido a los administradores del dashboard. No elimina la instancia, la cuenta, los chats, los mensajes ni los informes almacenados; tampoco revoca la activación de la extensión. Para reconectar se debe escanear un nuevo QR desde la extensión asociada. La etiqueta «Cuenta habilitada» describe su habilitación en el dashboard, no su conexión a WhatsApp. Si Evolution falla, la interfaz muestra el error y permite reintentar sin anunciar una desvinculación exitosa.
+
 ## Compatibilidad
 
-- Las llamadas API de WhatsApp, Evolution y Google Drive no cambian.
+- Las rutas existentes de WhatsApp, Evolution y Google Drive se mantienen.
 - Las cuentas, chats y archivos importados conservan su estado.
 - Las pestañas `router` e `integrations` reservan el espacio para sus entregas funcionales futuras.
 

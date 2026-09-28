@@ -28,6 +28,25 @@ export function WhatsAppSettingsPanel() {
   const [accounts, setAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [accountForm, setAccountForm] = useState({ id: '', nombre: '', evolution_instance_name: '' });
+  const [disconnectingAccountId, setDisconnectingAccountId] = useState('');
+  const [accountNotice, setAccountNotice] = useState('');
+  const [accountError, setAccountError] = useState('');
+
+  const disconnectAccount = async (account) => {
+    if (disconnectingAccountId) return;
+    if (!window.confirm(`¿Desvincular la cuenta «${account.nombre}» (instancia: ${account.evolution_instance_name})? Se cerrará su sesión de WhatsApp. Los chats, mensajes e informes guardados se conservarán. Para volver a conectarla será necesario escanear un nuevo QR. La activación de la extensión se conserva.`)) return;
+    setDisconnectingAccountId(account.id);
+    setAccountNotice('');
+    setAccountError('');
+    try {
+      await api.whatsappAccounts.disconnect(account.id);
+      setAccountNotice(`Cuenta «${account.nombre}» desvinculada. Historial conservado. Para volver a conectarla, escanea un nuevo QR desde la extensión de esa cuenta.`);
+    } catch (error) {
+      setAccountError(error?.body || error?.message || 'No se pudo desvincular la cuenta.');
+    } finally {
+      setDisconnectingAccountId('');
+    }
+  };
 
   const loadSettings = async () => {
     try {
@@ -178,7 +197,22 @@ export function WhatsAppSettingsPanel() {
           <input required value={accountForm.nombre} onChange={(e) => setAccountForm((current) => ({ ...current, nombre: e.target.value }))} placeholder="Nombre visible" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
           <input required value={accountForm.evolution_instance_name} onChange={(e) => setAccountForm((current) => ({ ...current, evolution_instance_name: e.target.value }))} placeholder="Instancia Evolution" className="mt-3 h-10 w-full ceo-surface rounded-md border border-[#2E2E2E] bg-[#0D0D0D] px-3 text-xs text-[#F2F2F2] outline-none" />
           <button type="submit" className="mt-3 ceo-button-primary rounded-md bg-[#BFBFBF] px-4 py-2 text-xs font-semibold uppercase tracking-widest text-black">Crear cuenta</button>
-          <div className="mt-4 space-y-1 text-xs text-[#737373]">{accounts.map((account) => <p key={account.id}>{account.nombre} · {account.evolution_instance_name} · {account.activo ? 'Activo' : 'Inactiva'} · {account.chats_count || 0} chats</p>)}</div>
+          {accountNotice && <p role="status" className="mt-4 rounded-md border border-emerald-900 bg-emerald-950/30 p-3 text-xs text-emerald-200">{accountNotice}</p>}
+          {accountError && <p role="alert" className="mt-4 rounded-md border border-red-900 bg-red-950/30 p-3 text-xs text-red-200">{accountError}</p>}
+          <div className="mt-4 space-y-3 text-xs">
+            {accounts.map((account) => (
+              <div key={account.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[#2E2E2E] p-3">
+                <div className="min-w-0">
+                  <p className="break-words font-medium text-[#F2F2F2]">{account.nombre}</p>
+                  <p className="mt-1 break-words text-[#737373]">{account.evolution_instance_name} · {account.activo ? 'Cuenta habilitada' : 'Cuenta inactiva'} · {account.chats_count || 0} chats</p>
+                </div>
+                <button type="button" aria-label={`Desvincular ${account.nombre}`} disabled={Boolean(disconnectingAccountId)} onClick={() => disconnectAccount(account)} className="rounded-md border border-red-900 px-3 py-2 text-xs text-red-200 hover:bg-red-950/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:cursor-not-allowed disabled:opacity-40">
+                  {disconnectingAccountId === account.id ? 'Desvinculando…' : 'Desvincular'}
+                </button>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs leading-5 text-[#737373]">Desvincular cierra la sesión de WhatsApp de esa cuenta, sin borrar su historial ni eliminar la cuenta del dashboard.</p>
         </form>
 
         <form onSubmit={createInvitation} className="ceo-card rounded-md border border-[#2E2E2E] bg-[#141414] p-6">

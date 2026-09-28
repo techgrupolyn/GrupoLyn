@@ -114,6 +114,7 @@ export const api = {
   whatsappAccounts: {
     list: () => request('/whatsapp-accounts'),
     create: (payload) => request('/whatsapp-accounts', { method: 'POST', body: JSON.stringify(payload) }),
+    disconnect: (id) => request(`/whatsapp-accounts/${encodeURIComponent(id)}/disconnect`, { method: 'POST' }),
     update: (id, payload) => request(/whatsapp-accounts/, { method: 'PATCH', body: JSON.stringify(payload) }),
   },
   meetings: {

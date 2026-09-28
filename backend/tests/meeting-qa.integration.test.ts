@@ -69,6 +69,68 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
+  it.each([true, false])('desvincula solo la instancia elegida y conserva sus datos (activo=%s)', async (active) => {
+    const accountId = `qa-disconnect-${randomUUID()}`;
+    const instance = `instance-${randomUUID()}`;
+    const chatId = `${accountId}::123@s.whatsapp.net`;
+    const invitationId = randomUUID();
+    const activationId = randomUUID();
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'SUCCESS', error: false }), { status: 200 }));
+    vi.stubGlobal('fetch', fetcher);
+    try {
+      await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name,activo) VALUES($1,$1,$2,$3)', [accountId, instance, active]);
+      await server.pool.query("INSERT INTO chats(id,account_id,nombre) VALUES($1,$2,'QA')", [chatId, accountId]);
+      await server.pool.query("INSERT INTO mensajes(id,chat_id,account_id,remitente,texto) VALUES($1,$2,$3,'QA','Historial conservado')", [randomUUID(), chatId, accountId]);
+      await server.pool.query("INSERT INTO extension_invitations(id,code_hash,expires_at,created_by,account_id) VALUES($1::uuid,$1::text,NOW()+INTERVAL '1 hour','qa',$2)", [invitationId, accountId]);
+      await server.pool.query('INSERT INTO extension_activations(id,invitation_id,account_id) VALUES($1,$2,$3)', [activationId, invitationId, accountId]);
+      const response = await request(server.app).post(`/api/whatsapp-accounts/${accountId}/disconnect`).set('Authorization', authorization).send({});
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body).toEqual({ ok: true, account_id: accountId, connected: false });
+      expect(fetcher).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(`/instance/logout/${instance}`), expect.objectContaining({ method: 'DELETE' }));
+      expect((await server.pool.query('SELECT activo FROM whatsapp_accounts WHERE id=$1', [accountId])).rows[0].activo).toBe(active);
+      expect((await server.pool.query('SELECT texto FROM mensajes WHERE account_id=$1', [accountId])).rows[0].texto).toBe('Historial conservado');
+      expect((await server.pool.query('SELECT revoked_at FROM extension_activations WHERE id=$1', [activationId])).rows[0].revoked_at).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+      await server.pool.query('DELETE FROM chats WHERE id=$1', [chatId]);
+      await server.pool.query('DELETE FROM extension_activations WHERE id=$1', [activationId]);
+      await server.pool.query('DELETE FROM extension_invitations WHERE id=$1', [invitationId]);
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
+    }
+  });
+
+  it('desvinculación exige administrador y cuenta existente', async () => {
+    const fetcher = vi.fn().mockRejectedValue(new Error('No debe contactar Evolution'));
+    vi.stubGlobal('fetch', fetcher);
+    try {
+      const url = '/api/whatsapp-accounts/qa-inexistente/disconnect';
+      expect((await request(server.app).post(url)).status).toBe(401);
+      expect((await request(server.app).post(url).set('x-extension-activation', randomUUID())).status).toBe(401);
+      const limitedPayload = Buffer.from(JSON.stringify({ rol: 'employee:delineante', exp: Date.now() + 60000 })).toString('base64url');
+      const limitedToken = `${limitedPayload}.${createHmac('sha256', secret).update(limitedPayload).digest('base64url')}`;
+      expect((await request(server.app).post(url).set('Authorization', `Bearer ${limitedToken}`)).status).toBe(403);
+      expect((await request(server.app).post(url).set('Authorization', authorization)).status).toBe(404);
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it.each(['close', 'open', 'unknown', 'network'])('desvinculación no oculta errores y permite repetir una sesión cerrada: %s', async (state) => {
+    const accountId = `qa-disconnect-${randomUUID()}`;
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response('{}', { status: 400 })).mockResolvedValueOnce(new Response(JSON.stringify(state === 'unknown' ? {} : { instance: { state } }), { status: 200 }));
+    if (state === 'network') fetcher.mockReset().mockRejectedValue(new Error('Conexión caída'));
+    vi.stubGlobal('fetch', fetcher);
+    try {
+      await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$1)', [accountId]);
+      const response = await request(server.app).post(`/api/whatsapp-accounts/${accountId}/disconnect`).set('Authorization', authorization);
+      expect(response.status).toBe(state === 'close' ? 200 : 502);
+      expect((await server.pool.query('SELECT activo FROM whatsapp_accounts WHERE id=$1', [accountId])).rows[0].activo).toBe(true);
+      expect(fetcher).toHaveBeenCalledTimes(state === 'network' ? 1 : 2);
+    } finally {
+      vi.unstubAllGlobals();
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
+    }
+  });
+
   it('A-01: guardar, devolver con motivo y aprobar no generan error SQL', async () => {
     for (const command of ['save', 'return', 'approve']) {
       await server.pool.query("UPDATE meeting_reviews SET workflow_stage = 'pmc', status = 'pending' WHERE artifact_id = $1", [artifactId]);

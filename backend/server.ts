@@ -7332,6 +7332,26 @@ app.post('/api/whatsapp-accounts', requireCeoAuth, async (req: Request, res: Res
   }
 });
 
+app.post('/api/whatsapp-accounts/:id/disconnect', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const account = await getWhatsappAccount(String(req.params.id || '').trim(), false);
+    if (!account) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    const instance = encodeURIComponent(account.evolutionInstanceName);
+    try {
+      await evolutionFetch(`/instance/logout/${instance}`, { method: 'DELETE', signal: AbortSignal.timeout(20_000) });
+    } catch (error) {
+      if (!(error instanceof EvolutionApiError) || error.status !== 400) throw error;
+      const status = await evolutionFetch<{ instance?: { state?: string }; state?: string }>(`/instance/connectionState/${instance}`, { signal: AbortSignal.timeout(10_000) });
+      if ((status?.instance?.state ?? status?.state) !== 'close') throw error;
+    }
+    instanceOwners.delete(account.id);
+    res.json({ ok: true, account_id: account.id, connected: false });
+  } catch (error) {
+    console.error('[whatsapp/disconnect] Error:', (error as Error).message);
+    res.status(502).json({ error: 'No se pudo confirmar la desvinculación en Evolution. Comprueba la conexión y vuelve a intentarlo.' });
+  }
+});
+
 app.patch('/api/whatsapp-accounts/:id', requireCeoAuth, async (req: Request, res: Response) => {
   try {
     const id = String(req.params.id || '').trim();
