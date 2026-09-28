@@ -6,6 +6,15 @@
   <title>LYN Superagente</title>
   <style>
     :root { color-scheme: dark; }
+    #global-report-progress:empty { display: none; }
+    .report-progress { margin-top: 12px; padding: 12px; border: 1px solid #2a3942; border-radius: 10px; background: #111b21; }
+    .report-progress-heading { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+    .report-progress-heading strong { color: #54d9bc; }
+    .report-progress progress { display: block; width: 100%; height: 10px; margin: 10px 0; border: 0; border-radius: 6px; overflow: hidden; accent-color: #00a884; }
+    .report-progress progress::-webkit-progress-bar { background: #2a3942; border-radius: 6px; }
+    .report-progress progress::-webkit-progress-value { background: #00a884; border-radius: 6px; }
+    .report-progress progress::-moz-progress-bar { background: #00a884; border-radius: 6px; }
+    .report-progress p { margin: 4px 0 0; color: #a6b7c1; font-size: 11px; line-height: 1.5; }
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -550,6 +559,7 @@
         <div class="section-title">Informe único de grupos</div>
         <p class="empty" style="line-height:1.5;margin:0;">Analiza en un solo reporte los mensajes de texto pendientes de los grupos de esta cuenta. No incluye audios, imágenes, vídeos ni documentos. Solo los textos incluidos se marcarán como analizados cuando el informe se guarde; los adjuntos no se borran ni se marcan como leídos.</p>
         <div id="global-report-meta" class="empty" style="margin-top:10px;"></div>
+        <div id="global-report-progress" aria-live="polite" aria-atomic="true"></div>
         <button id="btn-generate-global-report" class="primary" style="width:100%;margin-top:12px;">Generar informe global</button>
         <div id="global-report-output" class="empty" style="margin-top:12px;">Seleccioná un rol y generá el informe.</div>
       </div>

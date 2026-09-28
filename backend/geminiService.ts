@@ -60,10 +60,11 @@ export type GeminiExecutionResult = {
   provider: 'gemini' | 'local-fallback';
   model: string;
   fallback: boolean;
+  retryable?: boolean;
 };
 
-function localExecution(prompt: string, historial: string | undefined, systemInstruction: string | undefined): GeminiExecutionResult {
-  return { text: localFallbackResponse(prompt, historial, systemInstruction), provider: 'local-fallback', model: 'local-rule-based', fallback: true };
+function localExecution(prompt: string, historial: string | undefined, systemInstruction: string | undefined, retryable = false): GeminiExecutionResult {
+  return { text: localFallbackResponse(prompt, historial, systemInstruction), provider: 'local-fallback', model: 'local-rule-based', fallback: true, retryable };
 }
 
 function getModelId(modelo: 'flash' | 'pro'): string {
@@ -129,7 +130,7 @@ async function requestGeminiInteraction(
       const lowerMessage = String(message).toLowerCase();
       console.error(`[gemini] Error HTTP ${response.status}: ${message}`);
       if (response.status === 400 || response.status === 403 || response.status === 404 || response.status === 429 || lowerMessage.includes('api key') || lowerMessage.includes('quota') || lowerMessage.includes('rate limit') || lowerMessage.includes('free tier')) {
-        return localExecution(prompt, historial, systemInstruction);
+        return localExecution(prompt, historial, systemInstruction, response.status === 429);
       }
       throw new GeminiError(response.status, message);
     }
@@ -145,13 +146,13 @@ async function requestGeminiInteraction(
       || /signal is aborted|request aborted|aborted without reason/i.test(String((error as Error)?.message || ''));
     if (requestWasAborted) {
       console.error('[gemini] Timeout o aborto de la petición; usando fallback local');
-      return localExecution(prompt, historial, systemInstruction);
+      return localExecution(prompt, historial, systemInstruction, true);
     }
     const errStatus = (error as any)?.status;
     const errMessage = String((error as Error).message || '').toLowerCase();
     console.error(`[gemini] Excepción status=${errStatus} message=${(error as Error).message}`);
     if (errStatus === 400 || errStatus === 403 || errStatus === 404 || errStatus === 429 || errMessage.includes('quota') || errMessage.includes('rate limit') || errMessage.includes('free tier') || errMessage.includes('fetch failed') || errMessage.includes('network')) {
-      return localExecution(prompt, historial, systemInstruction);
+      return localExecution(prompt, historial, systemInstruction, errStatus === 429 || errMessage.includes('fetch failed') || errMessage.includes('network'));
     }
     throw error;
   } finally {
@@ -177,6 +178,10 @@ function cleanGeminiResponse(raw: string): string {
   if (!text) return '';
   const fenced = text.match(/^```(?:json)?\s*\r?\n?([\s\S]*?)\s*```$/i);
   const normalized = fenced ? fenced[1].trim() : text;
+  try {
+    JSON.parse(normalized);
+    return normalized;
+  } catch {}
   return normalized
     .replace(/`[^`]*`/g, '')
     .replace(/\*\*/g, '')

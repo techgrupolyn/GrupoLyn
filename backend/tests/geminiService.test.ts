@@ -156,6 +156,16 @@ describe('callGeminiWithPrompt', () => {
     await expect(callGeminiWithPrompt('Consulta', 'pro')).rejects.toThrow('boom');
   });
 
+  it.each([[429, true], [403, false]])('clasifica HTTP %s para reintentos de lotes', async (status, retryable) => {
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'Error sintético' }), { status: Number(status) }));
+    await expect(callGeminiWithPromptResult('Consulta')).resolves.toMatchObject({ fallback: true, retryable });
+  });
+
+  it('clasifica los fallos de red como recuperables sin presentarlos como análisis válidos', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    await expect(callGeminiWithPromptResult('Consulta')).resolves.toMatchObject({ provider: 'local-fallback', fallback: true, retryable: true });
+  });
+
   it('maneja timeout', async () => {
     global.fetch = vi.fn().mockImplementation((_url, options?: any) => {
       const { signal } = options || {};
@@ -188,6 +198,12 @@ describe('callGeminiWithPrompt', () => {
     await expect(callGeminiWithPrompt('Consulta', 'flash', undefined, 100))
       .resolves.toContain('datos locales');
   });
+  it('conserva citas literales con Markdown dentro de JSON', async () => {
+    const text = JSON.stringify({ quote: 'El importe **no** es `9000`: son 1200.' });
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, text: async () => JSON.stringify({ output_text: text }) });
+    await expect(callGeminiWithPrompt('Devuelve citas')).resolves.toBe(text);
+  });
+
   it('conserva JSON válido cuando Gemini lo devuelve en un bloque de código', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,

@@ -757,8 +757,35 @@ function setMainTab(tab) {
   if (isGlobal) void loadLatestGlobalReport();
 }
 
+function globalReportProgressMarkup(data) {
+  if (!data) return '';
+  const progress = data.progress || {};
+  const valid = (completed, total) => Number.isSafeInteger(total) && total > 0 && Number.isSafeInteger(completed) && completed >= 0 && completed <= total;
+  const savedCount = data.mensajes_analizados ?? data.mensajes_contexto;
+  const saved = data.status === 'completed' || (!data.status && !data.en_progreso && valid(savedCount, savedCount));
+  if (!data.en_progreso && data.status !== 'failed' && !saved) return '';
+  let total = progress.totalMessages;
+  let completed = progress.completedMessages;
+  let unit = 'mensajes';
+  if (saved) { total = savedCount; completed = savedCount; }
+  else if (!valid(completed, total)) { total = progress.totalBatches; completed = progress.completedBatches; unit = 'lotes'; }
+  const known = valid(completed, total);
+  const tenths = known ? Math.floor(completed / total * 1000) : null;
+  const percent = tenths === null ? null : tenths / 10;
+  const format = (value) => value.toLocaleString('es-ES', { maximumFractionDigits: 1 });
+  const failed = data.status === 'failed';
+  const stage = failed ? 'Análisis detenido' : saved ? 'Informe guardado' : progress.stage === 'consolidating' ? 'Preparando y guardando informe…' : progress.stage === 'verifying' ? 'Verificando evidencias…' : known ? 'Analizando mensajes…' : 'Preparando el análisis…';
+  const detail = known ? `${format(completed)} de ${format(total)} ${unit} verificados. ${format((1000 - tenths) / 10)} % restante del análisis.` : 'Calculando el total. El porcentaje aparecerá cuando el servidor tenga la selección preparada.';
+  const note = failed ? 'El informe no se guardó; tus mensajes siguen pendientes.' : saved ? 'El informe está disponible y los contadores están actualizados.' : 'El porcentaje mide contenido verificado, no tiempo restante. Puedes cerrar el panel; el trabajo continúa en el servidor.';
+  return `<div class="report-progress"><div class="report-progress-heading"><span>${stage}</span><strong>${known ? `${format(percent)} % analizado` : 'En proceso'}</strong></div><progress max="100"${known ? ` value="${percent}" aria-valuetext="${format(percent)} % analizado"` : ''} aria-label="Progreso del análisis global"></progress><p>${detail}</p><p>${note}</p></div>`;
+}
+
 function globalReportDescription(data) {
   if (!data) return '';
+  if (data.en_progreso && data.progress) {
+    const { stage, completedBatches, totalBatches } = data.progress;
+    return `${stage === 'consolidating' ? 'Consolidando' : stage === 'verifying' ? 'Verificando evidencias' : 'Analizando'} · ${completedBatches}/${totalBatches} lotes de texto · Puedes cerrar el panel; el trabajo continúa en el servidor.`;
+  }
   const groups = Number(data.grupos_analizados ?? data.chats_contexto);
   const messages = Number(data.mensajes_analizados ?? data.mensajes_contexto);
   const pending = Number(data.mensajes_pendientes);
@@ -774,6 +801,8 @@ function renderGlobalReport(data, prefix = '') {
   const meta = $('global-report-meta');
   const text = String(data?.resumen || data?.summary || '').trim();
   if (meta) meta.textContent = globalReportDescription(data);
+  const progress = $('global-report-progress');
+  if (progress) progress.innerHTML = globalReportProgressMarkup(data);
   if (!output) return;
   if (data?.status === 'failed') {
     output.innerHTML = `<div class="error">${escapeHtml(data.error || 'No se pudo generar el informe. Los mensajes continúan pendientes.')}</div>`;
@@ -817,6 +846,8 @@ async function loadLatestGlobalReport() {
   if (!specialistId || state.globalReportLoading) return;
   const requestId = ++globalReportRequest;
   clearTimeout(globalReportPoll);
+  const progress = $('global-report-progress');
+  if (progress) progress.innerHTML = '';
   try {
     const data = await directBackendRequest(`/chat/global-summaries/latest?specialistId=${encodeURIComponent(specialistId)}`);
     acceptGlobalReport(data, requestId);
@@ -839,15 +870,17 @@ async function generateGlobalReport() {
   const requestId = ++globalReportRequest;
   state.globalReportLoading = true;
   if (button) button.disabled = true;
-  if (output) output.innerHTML = '<div class="empty">Sincronizando y analizando todos los grupos pendientes…</div>';
+  if (output) output.innerHTML = '<div class="empty">Iniciando el informe de los mensajes de texto pendientes sincronizados…</div>';
+  const progress = $('global-report-progress');
+  if (progress) progress.innerHTML = globalReportProgressMarkup({ en_progreso: true, status: 'queued' });
   try {
-    await backendMessage('SYNC_NOW');
     const data = await directBackendRequest('/chat/global-summary', { method: 'POST', body: JSON.stringify({ specialistId }), timeoutMs: 300_000 }, 1);
     acceptGlobalReport(data, requestId);
-    await loadChats();
+    await loadChats().catch(() => undefined);
   } catch (error) {
     if (requestId !== globalReportRequest) return;
     if (output) output.innerHTML = `<div class="error">No se pudo generar el informe: ${escapeHtml(error?.message || 'Error')}</div>`;
+    if (progress) progress.innerHTML = '';
   } finally {
     if (requestId === globalReportRequest) {
       state.globalReportLoading = false;

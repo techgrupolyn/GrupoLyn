@@ -30,14 +30,15 @@ test('el panel prioriza el informe global y muestra el contador de mensajes pend
   assert.match(html, /btn-generate-global-report/);
   assert.ok(html.indexOf('id="tab-global-report"') < html.indexOf('id="tab-pending-chats"'));
   assert.match(html, /tab-pending-count/);
+  assert.match(html, /id="global-report-progress" aria-live="polite"/);
   assert.match(sidepanel, /function renderPendingUnreadCounter/);
   assert.match(sidepanel, /if \(success\) await loadChats\(\);/);
-  assert.equal(manifest.version, '1.1.4');
+  assert.equal(manifest.version, '1.1.5');
 });
 
 function reportHarness() {
   const button={disabled:false};
-  const elements={'btn-generate-global-report':button,'specialist-select':{value:'general'},'global-report-meta':{textContent:''}};
+  const elements={'btn-generate-global-report':button,'specialist-select':{value:'general'},'global-report-meta':{textContent:''},'global-report-progress':{innerHTML:''}};
   const timers=[];
   const renders=[];
   const responses=[];
@@ -85,4 +86,116 @@ test('la pérdida temporal de conexión reintenta sin lanzar otro análisis', as
   assert.equal(harness.button.disabled,true);
   assert.equal(harness.timers.length,1);
   assert.equal(harness.refreshes(),0);
+});
+
+test('reabrir recupera el avance confirmado del servidor y retoma la consulta', async () => {
+  const harness = reportHarness();
+  const progress = { stage: 'verifying', completedMessages: 7500, totalMessages: 20000 };
+  harness.responses.push({ jobId: 'qa', status: 'running', en_progreso: true, progress });
+  await harness.context.load();
+  assert.equal(harness.renders.at(-1).progress, progress);
+  assert.equal(harness.button.disabled, true);
+  harness.responses.push(new Error('Sin conexión'));
+  await harness.timers.shift()();
+  assert.equal(harness.renders.at(-1).progress, progress);
+  assert.equal(harness.timers.length, 1);
+});
+
+test('inicia el trabajo sin esperar una sincronización masiva del service worker', async () => {
+  const code = sidepanel.slice(sidepanel.indexOf('async function generateGlobalReport()'), sidepanel.indexOf('async function getPendingChats('));
+  const elements = { 'specialist-select': { value: 'general' }, 'global-report-output': {}, 'btn-generate-global-report': {} };
+  const calls = [];
+  const context = vm.createContext({
+    state: { globalReport: null, globalReportLoading: false }, globalReportRequest: 0,
+    $: (id) => elements[id],
+    backendMessage: () => { throw new Error('No debe esperar SYNC_NOW'); },
+    directBackendRequest: async (path) => { calls.push(path); return { jobId: 'qa', en_progreso: true }; },
+    acceptGlobalReport: (data) => { context.state.globalReport = data; },
+    loadChats: async () => { throw new Error('Refresco interrumpido'); },
+    escapeHtml: (text) => text,
+  });
+  vm.runInContext(code + '\nglobalThis.start = generateGlobalReport;', context);
+  await context.start();
+  assert.deepEqual(calls, ['/chat/global-summary']);
+  assert.equal(context.state.globalReport.jobId, 'qa');
+  assert.equal(elements['btn-generate-global-report'].disabled, true);
+  assert.doesNotMatch(elements['global-report-output'].innerHTML, /No se pudo generar/);
+});
+
+test('muestra progreso por lotes sin decir que el informe parcial está terminado', () => {
+  const code = sidepanel.slice(sidepanel.indexOf('function globalReportDescription('), sidepanel.indexOf('function renderGlobalReport('));
+  const context = vm.createContext({});
+  vm.runInContext(code + '\nglobalThis.describe = globalReportDescription;', context);
+  const text = context.describe({ en_progreso: true, progress: { stage: 'consolidating', completedBatches: 40, totalBatches: 40 } });
+  assert.match(text, /Consolidando.*40\/40 lotes de texto/);
+  assert.match(text, /trabajo continúa en el servidor/);
+  const verification = context.describe({ en_progreso: true, progress: { stage: 'verifying', completedBatches: 3, totalBatches: 40 } });
+  assert.match(verification, /Verificando evidencias.*3\/40/);
+});
+
+function progressMarkup(data) {
+  const code = sidepanel.slice(sidepanel.indexOf('function globalReportProgressMarkup('), sidepanel.indexOf('function globalReportDescription('));
+  const context = vm.createContext({});
+  vm.runInContext(code + '\nglobalThis.markup = globalReportProgressMarkup;', context);
+  return context.markup(data);
+}
+
+test('la barra usa mensajes verificados y muestra el porcentaje restante real', () => {
+  const data = { en_progreso: true, status: 'running', progress: { stage: 'verifying', completedMessages: 7500, totalMessages: 20000, completedBatches: 2, totalBatches: 40 } };
+  const markup = progressMarkup(data);
+  assert.match(markup, /value="37.5"/);
+  assert.match(markup, /37,5 % analizado/);
+  assert.match(markup, /62,5 % restante/);
+  assert.match(markup, /Verificando evidencias/);
+  assert.match(markup, /no tiempo restante/);
+  assert.equal(progressMarkup(data), markup);
+  data.progress.totalBatches = 50;
+  assert.equal(progressMarkup(data), markup);
+});
+
+test('preparación y progreso desconocido no inventan un porcentaje', () => {
+  for (const progress of [undefined, { completedMessages: 0, totalMessages: 0 }, { completedMessages: NaN, totalMessages: 20 }, { completedMessages: 21, totalMessages: 20 }]) {
+    const markup = progressMarkup({ en_progreso: true, status: 'queued', progress });
+    assert.match(markup, /<progress max="100" aria-label=/);
+    assert.doesNotMatch(markup, /value="|% analizado/);
+    assert.match(markup, /Calculando el total/);
+  }
+  assert.equal(progressMarkup(null), '');
+});
+
+test('no redondea al 100 prematuramente ni confunde analizar con guardar', () => {
+  const data = { en_progreso: true, progress: { stage: 'analyzing', completedMessages: 19999, totalMessages: 20000 } };
+  assert.match(progressMarkup(data), /value="99.9"/);
+  data.progress.completedMessages = 20000;
+  data.progress.stage = 'consolidating';
+  const saving = progressMarkup(data);
+  assert.match(saving, /value="100"/);
+  assert.match(saving, /0 % restante del análisis/);
+  assert.match(saving, /Preparando y guardando/);
+  assert.doesNotMatch(saving, /Informe guardado/);
+  assert.match(progressMarkup({ status: 'completed', mensajes_analizados: 20000 }), /Informe guardado/);
+  assert.match(progressMarkup({ mensajes_contexto: 20000 }), /value="100"/);
+});
+
+test('fallar conserva el último avance y soporta servidores anteriores por lotes', () => {
+  const data = { status: 'failed', progress: { completedBatches: 3, totalBatches: 10 } };
+  const markup = progressMarkup(data);
+  assert.match(markup, /value="30"/);
+  assert.match(markup, /3 de 10 lotes verificados/);
+  assert.match(markup, /Análisis detenido/);
+  assert.match(markup, /mensajes siguen pendientes/);
+});
+
+test('el render actualiza la barra con los datos recibidos y la limpia al no haber informe', () => {
+  const elements = { 'global-report-progress': {}, 'global-report-output': {}, 'global-report-meta': {} };
+  const code = sidepanel.slice(sidepanel.indexOf('function globalReportProgressMarkup('), sidepanel.indexOf('let globalReportPoll ='));
+  const context = vm.createContext({ $: (id) => elements[id], escapeHtml: (value) => value });
+  vm.runInContext(code + '\nglobalThis.render = renderGlobalReport;', context);
+  context.render({ en_progreso: true, progress: { completedMessages: 50, totalMessages: 100 } });
+  assert.match(elements['global-report-progress'].innerHTML, /value="50"/);
+  context.render({ status: 'completed', mensajes_analizados: 100, resumen: 'Informe final' });
+  assert.match(elements['global-report-progress'].innerHTML, /value="100"/);
+  assert.match(elements['global-report-output'].innerHTML, /Informe final/);
+  context.render(null);
+  assert.equal(elements['global-report-progress'].innerHTML, '');
 });

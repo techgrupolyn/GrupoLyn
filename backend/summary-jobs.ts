@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
+import type { GeminiExecutionResult } from './geminiService.ts';
+import type { SummaryProgress } from './global-summary-batches.ts';
 
 export type SummaryJob = { id: string; account_id: string; specialist_id: string; status: string; attempts: number; error: string | null; result: Record<string, unknown> | null };
 type SaveSummary = (client: PoolClient) => Promise<Record<string, unknown>>;
@@ -16,6 +18,14 @@ export async function ensureSummaryJobs(pool: Pool) {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS summary_jobs_active_account ON summary_jobs(account_id) WHERE status IN ('queued','running');
     CREATE INDEX IF NOT EXISTS summary_jobs_account_updated ON summary_jobs(account_id, updated_at DESC);
+    ALTER TABLE resumenes_globales_chat ADD COLUMN IF NOT EXISTS evidence JSONB;
+    CREATE TABLE IF NOT EXISTS summary_job_contexts (
+      job_id UUID PRIMARY KEY REFERENCES summary_jobs(id) ON DELETE CASCADE, snapshot JSONB NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS summary_job_batches (
+      job_id UUID NOT NULL REFERENCES summary_jobs(id) ON DELETE CASCADE, cache_key TEXT NOT NULL,
+      result JSONB NOT NULL, PRIMARY KEY(job_id,cache_key)
+    );
     CREATE TABLE IF NOT EXISTS summary_reviewed_messages (
       account_id VARCHAR(120) NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE, message_id VARCHAR(255) NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(account_id,message_id)
@@ -76,15 +86,51 @@ export async function markSummaryMessagesReviewed(client: PoolClient, accountId:
 }
 
 export function publicSummaryJob(job: SummaryJob) {
+  const progress = job.result?.progress as SummaryProgress | undefined;
+  const description = progress
+    ? `${progress.stage === 'consolidating' ? 'Preparando el informe' : progress.stage === 'verifying' ? 'Verificando evidencias' : 'Analizando por lotes'}: ${progress.completedBatches}/${progress.totalBatches} lotes de texto verificados. Los contadores se actualizan al guardar el informe completo.`
+    : 'El informe global se está generando. El resultado aparecerá automáticamente cuando termine.';
   return { jobId: job.id, status: job.status, specialistId: job.specialist_id, en_progreso: ['queued','running'].includes(job.status),
     error: job.error, ...(job.result || {}),
-    ...(job.status === 'queued' || job.status === 'running' ? { resumen: 'El informe global se está generando. El resultado aparecerá automáticamente cuando termine.' } : {}),
+    ...(job.status === 'queued' || job.status === 'running' ? { resumen: description } : {}),
+  };
+}
+
+export function summaryJobStorage(pool: Pool, job: SummaryJob) {
+  return {
+    snapshot: async <Snapshot>(create: () => Promise<Snapshot>): Promise<Snapshot> => {
+      const existing = await pool.query('SELECT snapshot FROM summary_job_contexts WHERE job_id=$1', [job.id]);
+      if (existing.rows[0]) return existing.rows[0].snapshot;
+      const snapshot = await create();
+      await pool.query('INSERT INTO summary_job_contexts(job_id,snapshot) VALUES($1,$2::jsonb)', [job.id, JSON.stringify(snapshot)]);
+      return snapshot;
+    },
+    read: async (key: string): Promise<GeminiExecutionResult | null> => {
+      const result = await pool.query('SELECT result FROM summary_job_batches WHERE job_id=$1 AND cache_key=$2', [job.id, key]);
+      return result.rows[0]?.result || null;
+    },
+    write: async (key: string, result: GeminiExecutionResult) => {
+      await pool.query('INSERT INTO summary_job_batches(job_id,cache_key,result) VALUES($1,$2,$3::jsonb) ON CONFLICT DO NOTHING', [job.id, key, JSON.stringify(result)]);
+    },
+    progress: async (progress: SummaryProgress) => {
+      await pool.query("UPDATE summary_jobs SET result=jsonb_build_object('progress',$2::jsonb),updated_at=NOW() WHERE id=$1", [job.id, JSON.stringify(progress)]);
+    },
   };
 }
 
 export function createSummaryQueue(pool: Pool, prepare: (job: SummaryJob) => Promise<SaveSummary>, notify: (job: SummaryJob) => void = () => {}) {
   let running: Promise<void> | null = null;
   const enqueue = async (accountId: string, specialistId: string): Promise<SummaryJob> => {
+    try {
+      const resumed = await pool.query<SummaryJob>(`UPDATE summary_jobs SET status='queued',attempts=0,error=NULL,updated_at=NOW()
+        WHERE id=(SELECT id FROM summary_jobs WHERE account_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1)
+        AND specialist_id=$2 AND status='failed'
+        AND EXISTS (SELECT 1 FROM summary_job_contexts WHERE job_id=summary_jobs.id)
+        AND NOT EXISTS (SELECT 1 FROM summary_jobs active WHERE active.account_id=$1 AND active.status IN ('queued','running')) RETURNING *`, [accountId, specialistId]);
+      if (resumed.rows[0]) return resumed.rows[0];
+    } catch (error) {
+      if ((error as { code?: string }).code !== '23505') throw error;
+    }
     const result = await pool.query(`INSERT INTO summary_jobs(id,account_id,specialist_id,status) VALUES($1,$2,$3,'queued')
       ON CONFLICT(account_id) WHERE status IN ('queued','running') DO UPDATE SET account_id=EXCLUDED.account_id RETURNING *`, [randomUUID(),accountId,specialistId]);
     return result.rows[0];
@@ -108,6 +154,8 @@ export function createSummaryQueue(pool: Pool, prepare: (job: SummaryJob) => Pro
           await client.query('BEGIN');
           const result = await save(client);
           const completed = await client.query<SummaryJob>("UPDATE summary_jobs SET status='completed',result=$2,error=NULL,updated_at=NOW() WHERE id=$1 RETURNING *", [job.id,JSON.stringify(result)]);
+          await client.query('DELETE FROM summary_job_batches WHERE job_id=$1', [job.id]);
+          await client.query('DELETE FROM summary_job_contexts WHERE job_id=$1', [job.id]);
           await client.query('COMMIT');
           try { notify(completed.rows[0]); } catch (error) { console.error('[summary-queue] Notification failed:', error); }
         } catch (error) {
