@@ -58,8 +58,8 @@ source "$ROOT/deploy/scripts/readiness.sh"
 systemctl restart lyn-backend
 wait_for_backend /etc/lyn/backend.env
 systemctl is-active lyn-backend lyn-evolution nginx
-test "$(runuser -u postgres -- psql -X -d superagente -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='resumenes_globales_chat' AND column_name='evidence'")" = 1
+test "$(runuser -u postgres -- psql -X -d superagente -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='resumenes_globales_chat' AND column_name IN ('evidence','coverage')")" = 2
 curl --fail --silent --show-error --max-time 20 https://ceo.grupolyn.com/health
 echo
 echo "BACKEND ACTUALIZADO: $expected"
-echo 'Publica también el ZIP de extensión 1.1.5 para mostrar la nueva barra.'
+echo 'Publica también el ZIP de extensión 1.1.6 para mostrar la cobertura de todos los textos.'

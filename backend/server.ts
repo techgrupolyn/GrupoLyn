@@ -19,6 +19,7 @@ import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from '
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
 import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryMessagesReviewed, createSummaryQueue, publicSummaryJob, summaryJobStorage, SummaryJobError, type SummaryJob } from './summary-jobs.ts';
 import { generateBatchedGlobalSummary } from './global-summary-batches.ts';
+import { evolutionHistoryPages } from './evolution-history.ts';
 
 const PORT = Number(process.env.PORT || 3003);
 const BIND_HOST = process.env.BIND_HOST?.trim() || '127.0.0.1';
@@ -2854,15 +2855,9 @@ async function syncEvolutionData(
       const evolutionChats = Array.isArray(chatsPayload) ? chatsPayload : [];
       for (const chat of evolutionChats) await persistChat(chat as MessageItem & { lastMessage?: MessageItem; updatedAt?: number | string }, account);
       if (includeHistory) {
-        let page = 1;
-        let pages = 1;
-        do {
-          const payload = await evolutionFetch<{ messages?: { records?: MessageItem[]; pages?: number }; records?: MessageItem[]; pages?: number }>(`/chat/findMessages/${account.evolutionInstanceName}`, { method: 'POST', body: JSON.stringify({ page, limit: 100 }) });
-          const messages = payload?.messages?.records || payload?.records || [];
+        for await (const messages of evolutionHistoryPages((body) => evolutionFetch(`/chat/findMessages/${account.evolutionInstanceName}`, { method: 'POST', body: JSON.stringify(body) }))) {
           for (const message of messages) await persistMessage(message, account, { historical: true });
-          pages = Number(payload?.messages?.pages || payload?.pages || 1);
-          page += 1;
-        } while (page <= pages);
+        }
       }
       publish('chats-updated', { source: includeHistory ? 'evolution-full-sync' : 'evolution-reconcile', accountId: account.id, chats: evolutionChats.length });
     } catch (error) {
@@ -3617,9 +3612,29 @@ async function prepareGlobalSummary(job: SummaryJob) {
     if (!groups.length) throw new SummaryJobError('No hay mensajes no leídos pendientes en grupos.');
 
     const selected: Array<{ chatId: string; variants: string[]; name: string; pendingCount: number; items: Array<{ id: string; timestamp: Date; line: string }> }> = [];
-    const totalPending = groups.reduce((total, group) => total + Math.max(0, Number(group.unread_count || 0)), 0);
+    const coverage = { pending: 0, texts: 0, excludedMedia: 0, empty: 0, unavailable: 0, groupsWithUnavailable: 0 };
     for (const group of groups) {
-      const context = await getUnreadMessageContext(unscopedAccountValue(group.id), account, { unlimited: true, textOnly: true });
+      const remoteJid = unscopedAccountValue(group.id);
+      let context = await getUnreadMessageContext(remoteJid, account, { unlimited: true });
+      if (context.rows.length < context.pendingCount) {
+        await storage.progress({ stage: 'syncing', completedBatches: 0, totalBatches: 0, completedMessages: 0, totalMessages: 0 });
+        try {
+          for await (const messages of evolutionHistoryPages((body) => evolutionFetch(`/chat/findMessages/${account.evolutionInstanceName}`, { method: 'POST', body: JSON.stringify(body) }), remoteJid)) {
+            for (const message of messages) await persistMessage(message, account, { historical: true });
+            context = await getUnreadMessageContext(remoteJid, account, { unlimited: true });
+            if (context.rows.length >= context.pendingCount) break;
+          }
+        } catch (error) {
+          console.error('[global-summary/history]', account.id, (error as Error).message);
+          throw new SummaryJobError('No se pudo recuperar el historial pendiente de Evolution. Reintenta; no se han descontado mensajes.');
+        }
+      }
+      coverage.pending += context.pendingCount;
+      const unavailable = Math.max(0, context.pendingCount - context.rows.length);
+      coverage.unavailable += unavailable;
+      if (unavailable) coverage.groupsWithUnavailable += 1;
+      coverage.excludedMedia += context.rows.filter((message) => String(message.tipo || 'text').toLowerCase() !== 'text').length;
+      coverage.empty += context.rows.filter((message) => String(message.tipo || 'text').toLowerCase() === 'text' && !String(message.texto || '').trim()).length;
       const candidates = context.rows
         .filter(isWhatsAppTextMessage)
         .map((message) => {
@@ -3631,11 +3646,16 @@ async function prepareGlobalSummary(job: SummaryJob) {
         })
         .reverse();
       const items = candidates;
+      coverage.texts += items.length;
       if (items.length) selected.push({ chatId: unscopedAccountValue(group.id), variants: context.variants, name: group.nombre || 'Grupo sin nombre', pendingCount: context.pendingCount, items });
     }
+    if (coverage.unavailable || coverage.empty) {
+      await pool.query("UPDATE summary_jobs SET result=COALESCE(result,'{}'::jsonb) || jsonb_build_object('coverage',$2::jsonb),updated_at=NOW() WHERE id=$1", [job.id, JSON.stringify(coverage)]);
+      throw new SummaryJobError(`No se generó un informe parcial: hay ${coverage.unavailable} pendientes sin contenido disponible tras consultar Evolution y ${coverage.empty} registros de texto vacíos. Se necesitan todos los textos pendientes. Ningún mensaje se ha marcado como analizado; comprueba la sincronización del historial y reintenta.`);
+    }
     if (!selected.length) throw new SummaryJobError('No hay mensajes de texto pendientes disponibles. Los audios y otros adjuntos están excluidos del análisis.');
-    return { selected, totalPending, groupCount: groups.length, model: spec.modelo || 'flash', systemPrompt: spec.system_prompt };
-  });
+    return { selectionVersion: 2, selected, coverage, totalPending: coverage.pending, groupCount: groups.length, model: spec.modelo || 'flash', systemPrompt: spec.system_prompt };
+  }, (stored) => stored.selectionVersion === 2 && stored.coverage?.unavailable === 0 && stored.coverage?.empty === 0);
   const { selected, totalPending } = snapshot;
   const generation = await generateBatchedGlobalSummary(selected, {
     ...storage,
@@ -3651,10 +3671,10 @@ async function prepareGlobalSummary(job: SummaryJob) {
 
   return async (client: PoolClient) => {
       const persisted = await client.query<{ id: number }>(
-        `INSERT INTO resumenes_globales_chat (account_id, especialista_id, resumen, mensaje_ids, chats_contexto, mensajes_contexto, mensajes_pendientes, periodo_inicio, periodo_fin, ai_provider, ai_model, ai_fallback, evidence)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, FALSE, $12::jsonb)
+        `INSERT INTO resumenes_globales_chat (account_id, especialista_id, resumen, mensaje_ids, chats_contexto, mensajes_contexto, mensajes_pendientes, periodo_inicio, periodo_fin, ai_provider, ai_model, ai_fallback, evidence, coverage)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, FALSE, $12::jsonb, $13::jsonb)
          RETURNING id`,
-        [account.id, spec.id, summary, messageIds, selected.length, messageIds.length, totalPending, periodStart, periodEnd, generation.provider, generation.model, JSON.stringify(generation.evidence)],
+        [account.id, spec.id, summary, messageIds, selected.length, messageIds.length, totalPending, periodStart, periodEnd, generation.provider, generation.model, JSON.stringify(generation.evidence), JSON.stringify(snapshot.coverage || null)],
       );
 
     for (const group of selected) {
@@ -3666,7 +3686,7 @@ async function prepareGlobalSummary(job: SummaryJob) {
     );
     return { summaryId: persisted.rows[0].id, resumen: summary, specialistId: spec.id, grupos_pendientes: snapshot.groupCount,
       grupos_analizados: selected.length, grupos_restantes: remaining.rows[0].groups, mensajes_pendientes_restantes: remaining.rows[0].messages,
-      mensajes_pendientes: totalPending, mensajes_analizados: messageIds.length, created_at: new Date().toISOString() };
+      coverage: snapshot.coverage || null, mensajes_pendientes: totalPending, mensajes_analizados: messageIds.length, created_at: new Date().toISOString() };
   };
 }
 
@@ -3686,7 +3706,7 @@ app.get('/api/chat/global-summaries/latest', async (req: Request, res: Response)
     const jobs = await pool.query<SummaryJob>(`SELECT * FROM summary_jobs WHERE account_id=$1${specialistId ? ' AND specialist_id=$2' : ''} ORDER BY created_at DESC,id DESC LIMIT 1`, values);
     if (jobs.rows[0]) return res.json(publicSummaryJob(jobs.rows[0]));
     const { rows } = await pool.query(
-      `SELECT id,resumen,especialista_id,chats_contexto,mensajes_contexto,mensajes_pendientes,created_at
+      `SELECT id,resumen,especialista_id,chats_contexto,mensajes_contexto,mensajes_pendientes,coverage,created_at
        FROM resumenes_globales_chat WHERE account_id=$1 AND ai_fallback=FALSE${specialistId ? ' AND especialista_id=$2' : ''}
        ORDER BY created_at DESC LIMIT 1`, values,
     );

@@ -19,6 +19,7 @@ export async function ensureSummaryJobs(pool: Pool) {
     CREATE UNIQUE INDEX IF NOT EXISTS summary_jobs_active_account ON summary_jobs(account_id) WHERE status IN ('queued','running');
     CREATE INDEX IF NOT EXISTS summary_jobs_account_updated ON summary_jobs(account_id, updated_at DESC);
     ALTER TABLE resumenes_globales_chat ADD COLUMN IF NOT EXISTS evidence JSONB;
+    ALTER TABLE resumenes_globales_chat ADD COLUMN IF NOT EXISTS coverage JSONB;
     CREATE TABLE IF NOT EXISTS summary_job_contexts (
       job_id UUID PRIMARY KEY REFERENCES summary_jobs(id) ON DELETE CASCADE, snapshot JSONB NOT NULL
     );
@@ -87,7 +88,7 @@ export async function markSummaryMessagesReviewed(client: PoolClient, accountId:
 
 export function publicSummaryJob(job: SummaryJob) {
   const progress = job.result?.progress as SummaryProgress | undefined;
-  const description = progress
+  const description = progress?.stage === 'syncing' ? 'Recuperando de Evolution el historial pendiente antes de analizar. No se han descontado mensajes.' : progress
     ? `${progress.stage === 'consolidating' ? 'Preparando el informe' : progress.stage === 'verifying' ? 'Verificando evidencias' : 'Analizando por lotes'}: ${progress.completedBatches}/${progress.totalBatches} lotes de texto verificados. Los contadores se actualizan al guardar el informe completo.`
     : 'El informe global se está generando. El resultado aparecerá automáticamente cuando termine.';
   return { jobId: job.id, status: job.status, specialistId: job.specialist_id, en_progreso: ['queued','running'].includes(job.status),
@@ -98,11 +99,12 @@ export function publicSummaryJob(job: SummaryJob) {
 
 export function summaryJobStorage(pool: Pool, job: SummaryJob) {
   return {
-    snapshot: async <Snapshot>(create: () => Promise<Snapshot>): Promise<Snapshot> => {
+    snapshot: async <Snapshot>(create: () => Promise<Snapshot>, reusable: (snapshot: Snapshot) => boolean = () => true): Promise<Snapshot> => {
       const existing = await pool.query('SELECT snapshot FROM summary_job_contexts WHERE job_id=$1', [job.id]);
-      if (existing.rows[0]) return existing.rows[0].snapshot;
+      if (existing.rows[0] && reusable(existing.rows[0].snapshot)) return existing.rows[0].snapshot;
+      if (existing.rows[0]) await pool.query('DELETE FROM summary_job_batches WHERE job_id=$1', [job.id]);
       const snapshot = await create();
-      await pool.query('INSERT INTO summary_job_contexts(job_id,snapshot) VALUES($1,$2::jsonb)', [job.id, JSON.stringify(snapshot)]);
+      await pool.query('INSERT INTO summary_job_contexts(job_id,snapshot) VALUES($1,$2::jsonb) ON CONFLICT(job_id) DO UPDATE SET snapshot=EXCLUDED.snapshot', [job.id, JSON.stringify(snapshot)]);
       return snapshot;
     },
     read: async (key: string): Promise<GeminiExecutionResult | null> => {

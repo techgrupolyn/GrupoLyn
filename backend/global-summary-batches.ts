@@ -5,7 +5,7 @@ import { EvidenceValidationError, parseEvidenceAnalysis, renderGroundedSummary, 
 
 export const SUMMARY_BATCH_CHARS = 48_000;
 const SOURCE_BATCH_CHARS = 24_000;
-export type SummaryProgress = { stage: 'analyzing' | 'verifying' | 'consolidating'; completedBatches: number; totalBatches: number; completedMessages: number; totalMessages: number };
+export type SummaryProgress = { stage: 'syncing' | 'analyzing' | 'verifying' | 'consolidating'; completedBatches: number; totalBatches: number; completedMessages: number; totalMessages: number };
 export type SummaryGroup = { name: string; items: Array<{ id?: string; line: string }> };
 type BatchOptions = {
   generate: (prompt: string, phase: 'extract' | 'verify') => Promise<GeminiExecutionResult>;

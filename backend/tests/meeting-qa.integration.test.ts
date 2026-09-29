@@ -1053,6 +1053,135 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   }, 60000);
 
+  it.each(['available', 'missing', 'failure'])('recupera historial antes del global sin fingir cobertura: %s', async (scenario) => {
+    const accountId = `qa-history-${randomUUID()}`;
+    const remoteJid = '120363999900003@g.us';
+    const chatId = `${accountId}::${remoteJid}`;
+    const pending = scenario === 'available' ? 207 : 5;
+    const records = Array.from({ length: 208 }, (_, index) => ({
+      key: { id: `history-${index}`, remoteJid, fromMe: index === 0, participant: '123456789@s.whatsapp.net' },
+      messageTimestamp: Math.floor(Date.now() / 1000) - index,
+      pushName: 'Persona sintética',
+      message: index < 206 ? { conversation: `Texto QA ${index}` } : { audioMessage: { mimetype: 'audio/ogg' } },
+    }));
+    const fetcher = vi.fn(async (url: string, options: RequestInit) => {
+      expect(url).toContain(`/chat/findMessages/${accountId}`);
+      expect(options.method).toBe('POST');
+      const body = JSON.parse(String(options.body));
+      expect(body.offset).toBe(100);
+      expect(body.where.key).toEqual({ remoteJid, remoteJidAlt: remoteJid });
+      expect((await server.pool.query('SELECT result FROM summary_jobs WHERE account_id=$1 ORDER BY created_at DESC LIMIT 1', [accountId])).rows[0].result.progress.stage).toBe('syncing');
+      if (scenario === 'failure') throw new Error('Evolution no disponible');
+      return new Response(JSON.stringify({ messages: {
+        pages: scenario === 'missing' ? 0 : 3, currentPage: body.page,
+        records: scenario === 'missing' ? [] : records.slice((body.page - 1) * 100, body.page * 100),
+      } }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    generation.mockReset().mockImplementation(async (prompt: string) => evidenceResponse(prompt));
+    try {
+      await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$1)', [accountId]);
+      await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count) VALUES($1,$2,'QA', $3,$3)", [chatId, accountId, pending]);
+      if (scenario !== 'available') await server.pool.query("INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,enviado_por_mi) VALUES($1,$2,$1,'QA','Único texto disponible',FALSE)", [accountId, chatId]);
+      const queue = createSummaryQueue(server.pool, server.prepareGlobalSummary);
+      const job = await queue.enqueue(accountId, 'general');
+      await queue.run();
+      const saved = (await server.pool.query('SELECT status,result,error FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
+      const counters = (await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0];
+      if (scenario !== 'available') {
+        expect(saved.status).toBe('failed');
+        expect(saved.error).toContain(scenario === 'failure' ? 'recuperar el historial' : '4 pendientes sin contenido disponible');
+        expect(generation).not.toHaveBeenCalled();
+        expect(counters).toEqual({ unread_count: pending, whatsapp_unread_count: pending });
+        expect((await server.pool.query('SELECT * FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rowCount).toBe(0);
+        expect((await server.pool.query('SELECT * FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rowCount).toBe(0);
+        if (scenario === 'missing') {
+          expect(saved.result.coverage).toMatchObject({ texts: 1, unavailable: 4 });
+          const next = await queue.enqueue(accountId, 'general');
+          await queue.run();
+          expect((await server.pool.query('SELECT status FROM summary_jobs WHERE id=$1', [next.id])).rows[0].status).toBe('failed');
+          expect(generation).not.toHaveBeenCalled();
+        }
+      } else {
+        expect(saved.status).toBe('completed');
+        expect(saved.result.coverage).toEqual({ pending, texts: 205,
+          excludedMedia: 2, empty: 0, unavailable: 0, groupsWithUnavailable: 0 });
+        expect(saved.result.mensajes_analizados).toBe(205);
+        expect(counters).toEqual({ unread_count: 2, whatsapp_unread_count: pending });
+        expect(fetcher).toHaveBeenCalledTimes(3);
+        expect((await server.pool.query('SELECT coverage FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rows[0].coverage).toEqual(saved.result.coverage);
+        await queue.enqueue(accountId, 'general');
+        await queue.run();
+        expect((await server.pool.query('SELECT unread_count FROM chats WHERE id=$1', [chatId])).rows[0].unread_count).toBe(counters.unread_count);
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      generation.mockReset();
+      await server.pool.query('DELETE FROM resumenes_globales_chat WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM summary_reviewed_messages WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM grupos WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM chats WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
+    }
+  }, 60000);
+
+  it('incluye los 3000 textos de todos los grupos, no reutiliza una selección antigua parcial y deja adjuntos y nuevas llegadas pendientes', async () => {
+    const accountId = `qa-all-text-${randomUUID()}`;
+    const chatIds = [1, 2, 3].map((group) => `${accountId}::120363999900004${group}@g.us`);
+    const fetcher = vi.fn().mockRejectedValue(new Error('No debe solicitar red con todo el historial disponible'));
+    const selectedIds: string[] = [];
+    let arrived = false;
+    vi.stubGlobal('fetch', fetcher);
+    generation.mockReset().mockImplementation(async (prompt: string) => {
+      if (prompt.startsWith('ETAPA: EXTRACCION')) selectedIds.push(...evidencePayload(prompt).primary.flatMap((source: { line: string }) => source.line.match(/TEXT-\d+-\d+/g) || []));
+      if (!arrived) {
+        arrived = true;
+        await server.pool.query("INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,enviado_por_mi) VALUES($1,$2,$3,'QA','Llegada posterior',FALSE)", [`${accountId}:new`, chatIds[0], accountId]);
+        await server.pool.query('UPDATE chats SET whatsapp_unread_count=whatsapp_unread_count+1,unread_count=unread_count+1 WHERE id=$1', [chatIds[0]]);
+      }
+      return evidenceResponse(prompt);
+    });
+    try {
+      await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$1)', [accountId]);
+      for (const [index, chatId] of chatIds.entries()) {
+        const media = index === 2 ? 11 : 12;
+        await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count,reviewed_unread_baseline) VALUES($1,$2,$3,$4,$4+48,48)", [chatId, accountId, `Grupo QA ${index}`, 1000 + media]);
+        await server.pool.query(`INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,timestamp,enviado_por_mi)
+          SELECT $1 || ':text-' || sequence,$1,$2,'QA','TEXT-' || $3::text || '-' || sequence,
+          NOW()-INTERVAL '2 hours'+sequence*INTERVAL '1 second',FALSE FROM generate_series(1,1048) sequence`, [chatId, accountId, index]);
+        await server.pool.query(`INSERT INTO summary_reviewed_messages(account_id,message_id)
+          SELECT $1,$2 || ':text-' || sequence FROM generate_series(1,48) sequence`, [accountId, chatId]);
+        await server.pool.query(`INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,tipo,enviado_por_mi)
+          SELECT $1 || ':media-' || sequence,$1,$2,'QA','','audio',FALSE FROM generate_series(1,$3::int) sequence`, [chatId, accountId, media]);
+      }
+      const queue = createSummaryQueue(server.pool, server.prepareGlobalSummary);
+      const job = await queue.enqueue(accountId, 'general');
+      await server.pool.query('INSERT INTO summary_job_contexts(job_id,snapshot) VALUES($1,$2::jsonb)', [job.id, JSON.stringify({ selected: [], totalPending: 3035, groupCount: 3 })]);
+      await server.pool.query("INSERT INTO summary_job_batches(job_id,cache_key,result) VALUES($1,'legacy',$2::jsonb)", [job.id, JSON.stringify({ text: 'Parcial antiguo' })]);
+      await queue.run();
+      const saved = (await server.pool.query('SELECT status,result,error FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
+      expect(saved.status, saved.error).toBe('completed');
+      expect(saved.result).toMatchObject({ grupos_analizados: 3, mensajes_analizados: 3000, mensajes_pendientes: 3035,
+        mensajes_pendientes_restantes: 36, coverage: { pending: 3035, texts: 3000, excludedMedia: 35, empty: 0, unavailable: 0 } });
+      expect(selectedIds).toHaveLength(3000);
+      expect(new Set(selectedIds).size).toBe(3000);
+      for (const group of [0, 1, 2]) for (let sequence = 49; sequence <= 1048; sequence++) expect(selectedIds).toContain(`TEXT-${group}-${sequence}`);
+      const reports = await server.pool.query('SELECT mensaje_ids FROM resumenes_globales_chat WHERE account_id=$1', [accountId]);
+      expect(reports.rows).toHaveLength(1);
+      expect(reports.rows[0].mensaje_ids).toHaveLength(3000);
+      expect(reports.rows[0].mensaje_ids).not.toContain(`${accountId}:new`);
+      expect((await server.pool.query('SELECT COUNT(*)::int AS total FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rows[0].total).toBe(3144);
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      generation.mockReset();
+      await server.pool.query('DELETE FROM resumenes_globales_chat WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM summary_reviewed_messages WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM chats WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
+    }
+  }, 60000);
+
   it('Q-02: fallo transaccional no consume mensajes ni guarda un informe incompleto', async () => {
     const accountId=`qa-rollback-${randomUUID()}`;
     const chatId=`${accountId}::120363999900002@g.us`;

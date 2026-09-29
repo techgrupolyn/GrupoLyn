@@ -33,7 +33,7 @@ test('el panel prioriza el informe global y muestra el contador de mensajes pend
   assert.match(html, /id="global-report-progress" aria-live="polite"/);
   assert.match(sidepanel, /function renderPendingUnreadCounter/);
   assert.match(sidepanel, /if \(success\) await loadChats\(\);/);
-  assert.equal(manifest.version, '1.1.5');
+  assert.equal(manifest.version, '1.1.6');
 });
 
 function reportHarness() {
@@ -198,4 +198,27 @@ test('el render actualiza la barra con los datos recibidos y la limpia al no hab
   assert.match(elements['global-report-output'].innerHTML, /Informe final/);
   context.render(null);
   assert.equal(elements['global-report-progress'].innerHTML, '');
+});
+
+test('144 de 3035 no se presenta como cobertura de todos los pendientes', () => {
+  const markup = progressMarkup({ status: 'completed', mensajes_analizados: 144, mensajes_pendientes: 3035 });
+  assert.match(markup, /cobertura no verificada/);
+  assert.match(markup, /144 de 144 textos seleccionados/);
+  assert.match(markup, /no a todos los pendientes/);
+  assert.match(markup, /100 % analizado de la selección/);
+});
+
+test('un informe parcial diferencia historial faltante, adjuntos y textos vacíos', () => {
+  const markup = progressMarkup({ status: 'completed', mensajes_analizados: 144,
+    coverage: { pending: 3035, texts: 144, excludedMedia: 570, unavailable: 2320, empty: 1 } });
+  assert.match(markup, /Informe parcial guardado/);
+  assert.match(markup, /570 adjuntos excluidos/);
+  assert.match(markup, /2320 pendientes sin contenido disponible/);
+  assert.match(markup, /1 textos vacíos/);
+});
+
+test('recuperar historial no inventa progreso de IA', () => {
+  const markup = progressMarkup({ en_progreso: true, progress: { stage: 'syncing', completedMessages: 0, totalMessages: 0 } });
+  assert.match(markup, /Recuperando historial pendiente/);
+  assert.doesNotMatch(markup, /value="|% analizado/);
 });

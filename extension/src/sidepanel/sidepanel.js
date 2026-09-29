@@ -766,7 +766,7 @@ function globalReportProgressMarkup(data) {
   if (!data.en_progreso && data.status !== 'failed' && !saved) return '';
   let total = progress.totalMessages;
   let completed = progress.completedMessages;
-  let unit = 'mensajes';
+  let unit = 'textos seleccionados';
   if (saved) { total = savedCount; completed = savedCount; }
   else if (!valid(completed, total)) { total = progress.totalBatches; completed = progress.completedBatches; unit = 'lotes'; }
   const known = valid(completed, total);
@@ -774,16 +774,22 @@ function globalReportProgressMarkup(data) {
   const percent = tenths === null ? null : tenths / 10;
   const format = (value) => value.toLocaleString('es-ES', { maximumFractionDigits: 1 });
   const failed = data.status === 'failed';
-  const stage = failed ? 'Análisis detenido' : saved ? 'Informe guardado' : progress.stage === 'consolidating' ? 'Preparando y guardando informe…' : progress.stage === 'verifying' ? 'Verificando evidencias…' : known ? 'Analizando mensajes…' : 'Preparando el análisis…';
+  const coverage = data.coverage;
+  const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  const missing = count(coverage?.unavailable) + count(coverage?.empty);
+  const unknownCoverage = saved && !coverage && Number(data.mensajes_pendientes) > Number(savedCount);
+  const stage = failed ? 'Análisis detenido' : saved ? missing ? 'Informe parcial guardado' : unknownCoverage ? 'Informe guardado · cobertura no verificada' : 'Informe guardado' : progress.stage === 'syncing' ? 'Recuperando historial pendiente…' : progress.stage === 'consolidating' ? 'Preparando y guardando informe…' : progress.stage === 'verifying' ? 'Verificando evidencias…' : known ? 'Analizando mensajes…' : 'Preparando el análisis…';
   const detail = known ? `${format(completed)} de ${format(total)} ${unit} verificados. ${format((1000 - tenths) / 10)} % restante del análisis.` : 'Calculando el total. El porcentaje aparecerá cuando el servidor tenga la selección preparada.';
-  const note = failed ? 'El informe no se guardó; tus mensajes siguen pendientes.' : saved ? 'El informe está disponible y los contadores están actualizados.' : 'El porcentaje mide contenido verificado, no tiempo restante. Puedes cerrar el panel; el trabajo continúa en el servidor.';
-  return `<div class="report-progress"><div class="report-progress-heading"><span>${stage}</span><strong>${known ? `${format(percent)} % analizado` : 'En proceso'}</strong></div><progress max="100"${known ? ` value="${percent}" aria-valuetext="${format(percent)} % analizado"` : ''} aria-label="Progreso del análisis global"></progress><p>${detail}</p><p>${note}</p></div>`;
+  const note = failed ? 'El informe no se guardó; tus mensajes siguen pendientes.' : saved ? 'El porcentaje corresponde solo a los textos seleccionados, no a todos los pendientes de WhatsApp.' : 'El porcentaje mide contenido verificado, no tiempo restante. Puedes cerrar el panel; el trabajo continúa en el servidor.';
+  const coverageDetail = saved && coverage ? `<p>${format(count(coverage.excludedMedia))} adjuntos excluidos · ${format(count(coverage.unavailable))} pendientes sin contenido disponible · ${format(count(coverage.empty))} textos vacíos. No se han descontado esos mensajes.</p>` : unknownCoverage ? '<p>No se comprobó la cobertura de todos los pendientes en este informe anterior. Genera uno nuevo para comprobar el historial disponible.</p>' : '';
+  return `<div class="report-progress"><div class="report-progress-heading"><span>${stage}</span><strong>${known ? `${format(percent)} % analizado de la selección` : 'En proceso'}</strong></div><progress max="100"${known ? ` value="${percent}" aria-valuetext="${format(percent)} % analizado de la selección"` : ''} aria-label="Progreso del análisis global"></progress><p>${detail}</p><p>${note}</p>${coverageDetail}</div>`;
 }
 
 function globalReportDescription(data) {
   if (!data) return '';
   if (data.en_progreso && data.progress) {
     const { stage, completedBatches, totalBatches } = data.progress;
+    if (stage === 'syncing') return 'Recuperando historial pendiente de Evolution · Todavía no se ha iniciado el análisis.';
     return `${stage === 'consolidating' ? 'Consolidando' : stage === 'verifying' ? 'Verificando evidencias' : 'Analizando'} · ${completedBatches}/${totalBatches} lotes de texto · Puedes cerrar el panel; el trabajo continúa en el servidor.`;
   }
   const groups = Number(data.grupos_analizados ?? data.chats_contexto);
