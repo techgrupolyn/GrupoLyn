@@ -22,6 +22,16 @@ SELECT c.account_id AS cuenta,
 FROM chats c
 WHERE c.unread_count > 0 AND c.id LIKE '%@g.us'
 GROUP BY c.account_id ORDER BY c.account_id;
+
+SELECT account_id AS cuenta,state AS estado,checked_at AS comprobado,
+       jsonb_array_length(COALESCE(details->'gaps','[]'::jsonb)) AS grupos_con_incidencia,
+       details->'recovery' AS recuperacion
+FROM whatsapp_sync_health ORDER BY account_id;
+
+SELECT account_id AS cuenta,COUNT(*) AS recepciones_pendientes,
+       COUNT(*) FILTER(WHERE attempts>0) AS con_reintentos,
+       MAX(attempts) AS maximo_intentos,MIN(created_at) AS pendiente_desde
+FROM whatsapp_message_inbox GROUP BY account_id ORDER BY account_id;
 COMMIT;
 SQL
 echo 'Estado e historial almacenado por instancia Evolution (no equivale a textos pendientes):'

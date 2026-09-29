@@ -20,6 +20,7 @@ import { ensureDashboardOperations, registerDashboardOperations } from './dashbo
 import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryMessagesReviewed, createSummaryQueue, publicSummaryJob, summaryJobStorage, SummaryJobError, SummaryHistoryPending, type SummaryJob } from './summary-jobs.ts';
 import { generateBatchedGlobalSummary } from './global-summary-batches.ts';
 import { evolutionHistoryPages } from './evolution-history.ts';
+import { ensureWhatsAppReliability, createWhatsAppInbox, pendingWhatsAppCoverage, recordWhatsAppHealth } from './whatsapp-reliability.ts';
 
 const PORT = Number(process.env.PORT || 3003);
 const BIND_HOST = process.env.BIND_HOST?.trim() || '127.0.0.1';
@@ -98,6 +99,7 @@ const CEO_AGENT_SYSTEM_PROMPT = `Eres el agente ejecutivo del CEO. Responde en e
 
 const instanceOwners = new Map<string, { jid: string; number: string }>();
 const syncEvolutionDataPromises = new Map<string, { promise: Promise<void>; includesHistory: boolean }>();
+const syncEvolutionCycles = new Map<boolean, Promise<void>>();
 
 function accountOwnerNumber(accountId: string): string {
   return instanceOwners.get(accountId)?.number || '';
@@ -964,6 +966,7 @@ async function ensureDatabaseSchema(): Promise<void> {
   const defaultPasswordHash = hashPassword(process.env.CEO_INITIAL_PASSWORD || 'superadmin');
   await ensureDashboardOperations(pool);
   await ensureSummaryJobs(pool);
+  await ensureWhatsAppReliability(pool);
   await pool.query(
     `INSERT INTO usuarios (usuario, contraseña, password_hash, nombre, rol)
      VALUES ('superadmin', '', $1, 'Super Administrador', 'superadmin')
@@ -2420,15 +2423,20 @@ async function persistMessage(messageItem: MessageItem, account: WhatsAppAccount
       await ensureChatMeta(canonicalChatId, finalName, account);
     }
 
-    const insertMessage = async (): Promise<boolean> => {
-      const insertResult = await pool.query<{ inserted: boolean }>(
-        `INSERT INTO mensajes (id, chat_id, account_id, remitente, remitente_jid, texto, timestamp, enviado_por_mi, tipo, media, raw, source, estado, reacciones, etiquetas)
+    const rawUnreadCount = (messageItem as { unreadCount?: unknown; unread_count?: unknown }).unreadCount
+      ?? (messageItem as { unreadCount?: unknown; unread_count?: unknown }).unread_count;
+    const parsedUnreadCount = Number(rawUnreadCount);
+    const hasExactUnreadCount = rawUnreadCount !== undefined && rawUnreadCount !== null && Number.isFinite(parsedUnreadCount) && parsedUnreadCount >= 0;
+    const insertMessage = async (): Promise<number> => {
+      const preserveStoredContent = "EXCLUDED.tipo = 'text' AND BTRIM(COALESCE(EXCLUDED.texto, '')) = '' AND (BTRIM(COALESCE(mensajes.texto, '')) <> '' OR COALESCE(mensajes.tipo, 'text') <> 'text')";
+      const insertResult = await pool.query<{ unread_count: number }>(
+        `WITH stored AS (INSERT INTO mensajes (id, chat_id, account_id, remitente, remitente_jid, texto, timestamp, enviado_por_mi, tipo, media, raw, source, estado, reacciones, etiquetas)
          VALUES ($1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::varchar, $6::text, $7::timestamptz, $8::boolean, $9::varchar, $10::jsonb, $11::jsonb, $12::varchar, $13::varchar, $14::jsonb, $15::jsonb)
          ON CONFLICT (id) DO UPDATE
-           SET texto = COALESCE(EXCLUDED.texto, mensajes.texto),
-               tipo = EXCLUDED.tipo,
-               media = EXCLUDED.media,
-               raw = EXCLUDED.raw,
+           SET texto = CASE WHEN ${preserveStoredContent} THEN mensajes.texto ELSE COALESCE(EXCLUDED.texto, mensajes.texto) END,
+               tipo = CASE WHEN ${preserveStoredContent} THEN mensajes.tipo ELSE EXCLUDED.tipo END,
+               media = CASE WHEN ${preserveStoredContent} THEN mensajes.media ELSE EXCLUDED.media END,
+               raw = CASE WHEN ${preserveStoredContent} THEN mensajes.raw ELSE EXCLUDED.raw END,
                reacciones = COALESCE(EXCLUDED.reacciones, mensajes.reacciones, '[]'::jsonb),
                etiquetas = COALESCE(EXCLUDED.etiquetas, mensajes.etiquetas, '[]'::jsonb),
                estado = CASE
@@ -2449,47 +2457,34 @@ async function persistMessage(messageItem: MessageItem, account: WhatsAppAccount
                  END) THEN EXCLUDED.estado
                  ELSE mensajes.estado
                END
-         RETURNING (xmax = 0) AS inserted`,
-         [String(messageId), String(chatId), account.id, String(remitente), String(senderJid), String(texto), new Date(timestamp), Boolean(fromMe), String(tipo), mediaJson, rawJson, 'evolution', String(estado), reaccionesJsonStr, etiquetasJsonStr],
+         RETURNING (xmax = 0) AS inserted)
+         UPDATE chats SET unread_count=CASE
+           WHEN $16::boolean THEN $17::integer
+           WHEN $18::boolean AND (SELECT inserted FROM stored) THEN unread_count+1
+           ELSE unread_count END,
+           updated_at=GREATEST(updated_at,$7::timestamptz)
+         WHERE id=$2::varchar AND account_id=$3::varchar RETURNING unread_count`,
+         [String(messageId), String(chatId), account.id, String(remitente), String(senderJid), String(texto), new Date(timestamp), Boolean(fromMe), String(tipo), mediaJson, rawJson, 'evolution', String(estado), reaccionesJsonStr, etiquetasJsonStr,
+           !options.historical && !fromMe && hasExactUnreadCount, Math.max(0, Math.floor(parsedUnreadCount || 0)), !options.historical && !fromMe],
       );
-      return Boolean(insertResult.rows[0]?.inserted);
+      if (!insertResult.rows.length) throw new Error('Chat no disponible tras guardar el mensaje');
+      return Math.max(0, Number(insertResult.rows[0].unread_count));
     };
 
-    let inserted = false;
+    let unreadCount = 0;
     try {
-      inserted = await insertMessage();
+      unreadCount = await insertMessage();
     } catch (error) {
       const msg = (error as Error).message || '';
       if (msg.includes('mensajes_chat_id_fkey')) {
         console.warn('[persist] FK violation, reintentando tras ensureChatMeta:', chatId);
         await ensureChatMeta(canonicalChatId, finalName, account);
-        inserted = await insertMessage();
+        unreadCount = await insertMessage();
       } else {
         throw error;
       }
     }
 
-    await pool.query(
-      `INSERT INTO chats (id, account_id, nombre, updated_at) VALUES ($1::varchar, $2::varchar, $3::varchar, $4::timestamptz)
-       ON CONFLICT (id) DO UPDATE SET updated_at = GREATEST(chats.updated_at, EXCLUDED.updated_at)`,
-      [String(chatId), account.id, String(finalName), new Date(timestamp)],
-    );
-    const rawUnreadCount = (messageItem as { unreadCount?: unknown; unread_count?: unknown }).unreadCount
-      ?? (messageItem as { unreadCount?: unknown; unread_count?: unknown }).unread_count;
-    const parsedUnreadCount = Number(rawUnreadCount);
-    const hasExactUnreadCount = rawUnreadCount !== undefined && rawUnreadCount !== null && Number.isFinite(parsedUnreadCount) && parsedUnreadCount >= 0;
-    const { rows: unreadRows } = await pool.query<{ unread_count: number }>(
-      `UPDATE chats
-       SET unread_count = CASE
-         WHEN $3::boolean THEN $4::integer
-         WHEN $5::boolean THEN unread_count + 1
-         ELSE unread_count
-       END
-       WHERE id = $1::varchar AND account_id = $2::varchar
-       RETURNING unread_count`,
-      [String(chatId), account.id, !options.historical && !fromMe && hasExactUnreadCount, Math.max(0, Math.floor(parsedUnreadCount || 0)), !options.historical && !fromMe && inserted],
-    );
-    const unreadCount = Math.max(0, Number(unreadRows[0]?.unread_count || 0));
     if (isGroup) {
       await pool.query(
         `INSERT INTO grupos (id, account_id, nombre, updated_at) VALUES ($1::varchar, $2::varchar, $3::varchar, $4::timestamptz)
@@ -2556,7 +2551,7 @@ async function persistMessage(messageItem: MessageItem, account: WhatsAppAccount
     console.error('[persist] mensajeId:', messageId || '<no definido>');
     console.error('[persist] chatId:', chatId || '<no definido>');
     console.error('[persist] payload sizes:', { media: (mediaJson || '').length, raw: (rawJson || '').length, reacciones: reaccionesJson.length, etiquetas: etiquetasJson.length });
-    return { messageId: messageId || '', chatId: chatId || '', fromMe, estado, source: 'evolution', classification, unreadCount: 0 };
+    throw error;
   }
 }
 
@@ -2590,6 +2585,25 @@ function resolveChatIdVariants(chatId: string): string[] {
     normalized.endsWith('@g.us') ? '' : `${numeric}@c.us`,
   ].filter(Boolean)));
   return variants;
+}
+
+const whatsappInbox = createWhatsAppInbox(pool, async (accountId, message, historical) => {
+  const account = await getWhatsappAccount(accountId);
+  if (!account) throw new Error('Cuenta no disponible');
+  const result = await persistMessage(message, account, { historical });
+  if (!result.messageId) throw new Error('Mensaje no persistido');
+  publish('chats-updated', { source: 'evolution-durable-receipt', accountId });
+  return result;
+});
+
+function groupWebhookMessages(body: unknown): MessageItem[] {
+  return normalizeWebhookMessages(body).filter((message) => {
+    const key = message?.key || message?.message?.key || {};
+    const remoteJid = String(key.remoteJid || message?.remoteJid || '');
+    if (!remoteJid.endsWith('@g.us')) return false;
+    if (!String(key.id || message?.id || '').trim()) throw new Error('Mensaje de grupo sin identificador');
+    return true;
+  });
 }
 
 async function getUnreadMessageContext(chatId: string, account: WhatsAppAccount = defaultRuntimeAccount(), options: { unlimited?: boolean; textOnly?: boolean } = {}): Promise<{ variants: string[]; pendingCount: number; rows: Mensaje[] }> {
@@ -2859,10 +2873,23 @@ async function syncEvolutionData(
         for await (const messages of evolutionHistoryPages((body) => evolutionFetch(`/chat/findMessages/${account.evolutionInstanceName}`, { method: 'POST', body: JSON.stringify(body) }))) {
           for (const message of messages) await persistMessage(message, account, { historical: true });
         }
+        const gaps = await pendingWhatsAppCoverage(pool, account.id);
+        const recovery: Array<{ group: string; status: string }> = [];
+        for (const gap of gaps.filter((group) => group.unavailable > 0)) {
+          const remoteJid = unscopedAccountValue(gap.group);
+          try {
+            const response = await evolutionFetch<{ status: string }>(`/chat/requestHistory/${account.evolutionInstanceName}`, { method: 'POST', body: JSON.stringify({ remoteJid }) });
+            const allowed = ['requested', 'waiting', 'no_progress', 'no_anchor', 'disconnected', 'disabled', 'unsupported', 'busy'];
+            recovery.push({ group: remoteJid, status: allowed.includes(response?.status) ? response.status : 'unavailable' });
+          } catch { recovery.push({ group: remoteJid, status: 'unavailable' }); }
+        }
+        await recordWhatsAppHealth(pool, account.id, gaps.length ? 'gaps_detected' : 'no_known_gaps', { gaps, recovery });
       }
       publish('chats-updated', { source: includeHistory ? 'evolution-full-sync' : 'evolution-reconcile', accountId: account.id, chats: evolutionChats.length });
     } catch (error) {
+      await recordWhatsAppHealth(pool, account.id, 'error', { error: 'No se pudo completar la sincronización con Evolution' });
       console.error('[sync] Cuenta', account.id, 'no pudo sincronizar:', (error as Error).message);
+      throw error;
     }
   })();
   syncEvolutionDataPromises.set(account.id, { promise, includesHistory: includeHistory });
@@ -2874,8 +2901,18 @@ async function syncEvolutionData(
 }
 
 async function syncAllEvolutionData(includeHistory: boolean): Promise<void> {
-  const accounts = await listWhatsappAccounts(true);
-  await Promise.all(accounts.map((account) => syncEvolutionData(account, { includeHistory })));
+  const running = syncEvolutionCycles.get(includeHistory);
+  if (running) return running;
+  const cycle = (async () => {
+    const accounts = await listWhatsappAccounts(true);
+    for (const account of accounts) {
+      try { await syncEvolutionData(account, { includeHistory }); }
+      catch { console.warn('[sync] Se conserva la incidencia y se continúa con las demás cuentas', account.id); }
+    }
+  })();
+  syncEvolutionCycles.set(includeHistory, cycle);
+  try { await cycle; }
+  finally { syncEvolutionCycles.delete(includeHistory); }
 }
 app.get('/api/auth/status', async (_req: Request, res: Response) => {
   try {
@@ -3178,10 +3215,11 @@ app.post('/webhook/evolution', requireWebhookAuth, async (req: Request, res: Res
       if (!account) return res.status(404).json({ ok: false, error: 'Instancia de WhatsApp no registrada' });
 
     if (event.includes('MESSAGES_UPSERT')) {
-      const messages = normalizeWebhookMessages(req.body);
+      const messages = groupWebhookMessages(req.body);
+      const receipts = await whatsappInbox.accept(account.id, messages, false);
       console.log('[webhook] Mensajes a procesar:', messages.length);
 
-      for (const messageItem of messages) {
+      for (const [messageIndex, messageItem] of messages.entries()) {
         const key = messageItem?.key || messageItem?.message?.key || {};
         const remoteJid = String(key.remoteJid || messageItem?.remoteJid || '').trim();
         const isGroup = remoteJid.includes('@g.us');
@@ -3204,23 +3242,7 @@ app.post('/webhook/evolution', requireWebhookAuth, async (req: Request, res: Res
 
         console.log('[webhook] Mensaje entrante:', { messageId: messageId.substring(0, 12), chatId, remoteJid, fromMe, timestamp: timestamp.toISOString() });
 
-        let result;
-        try {
-          result = await persistMessage(messageItem, account);
-        } catch (persistError) {
-          console.error('[webhook] Error persistiendo mensaje; se reintentará tras resincronizar:', persistError);
-          result = { messageId: '', chatId, fromMe, estado: 'pendiente', classification: null, unreadCount: 0 };
-          setImmediate(() => {
-            void (async () => {
-              try {
-                await syncEvolutionData(account);
-                await persistMessage(messageItem, account);
-              } catch (recoveryError) {
-                console.error('[webhook] Error recuperando mensaje luego de resincronizar:', recoveryError);
-              }
-            })();
-          });
-        }
+        const result = await whatsappInbox.deliver(receipts[messageIndex]);
 
         const saved = Boolean(result?.messageId);
         const persistedChatId = result?.chatId || chatId;
@@ -3276,8 +3298,9 @@ app.post('/webhook/evolution', requireWebhookAuth, async (req: Request, res: Res
         }
       }
     } else if (event === 'MESSAGES_SET') {
-      const messages = normalizeWebhookMessages(req.body);
-      for (const message of messages) await persistMessage(message, account, { historical: true });
+      const messages = groupWebhookMessages(req.body);
+      const receipts = await whatsappInbox.accept(account.id, messages, true);
+      for (const receipt of receipts) await whatsappInbox.deliver(receipt);
       publish('chats-updated', { source: 'evolution-history', accountId: account.id });
     } else if (['CHATS_SET', 'CHATS_UPSERT', 'CHATS_UPDATE'].includes(event)) {
       console.log('[webhook] Evento de sync:', event);
@@ -3286,6 +3309,9 @@ app.post('/webhook/evolution', requireWebhookAuth, async (req: Request, res: Res
       publish('chats-updated', { source: 'evolution-chat-event', accountId: account.id });
     } else if (event.includes('CONNECTION_UPDATE')) {
       console.log('[webhook] Actualización de conexión:', req.body?.data);
+      if (req.body?.data?.state === 'open') setImmediate(() => {
+        void syncEvolutionData(account).catch(() => console.warn('[sync] Recuperación tras reconexión pendiente', account.id));
+      });
     } else if (event.includes('MESSAGES_UPDATE')) {
       console.log('[webhook] Actualización de mensaje:', req.body?.data);
       const updateData = req.body?.data;
@@ -3358,8 +3384,10 @@ app.post('/api/sincronizar', async (req: Request, res: Response) => {
   const full = Boolean(req.body?.full);
   const account = await getRequestWhatsappAccount(res);
   if (!account) return res.status(404).json({ error: 'Cuenta de WhatsApp no disponible' });
-  await syncEvolutionData(account, { includeHistory: full });
-  res.json({ ok: true, full, account_id: account.id });
+  try {
+    await syncEvolutionData(account, { includeHistory: full });
+    res.json({ ok: true, full, account_id: account.id });
+  } catch { res.status(502).json({ ok: false, error: 'Sincronización incompleta; se reintentará en segundo plano' }); }
 });
 app.get('/api/chats', async (_req: Request, res: Response) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -3595,6 +3623,10 @@ export function isWhatsAppTextMessage(message: Mensaje): boolean {
   return String(message.tipo || 'text').toLowerCase() === 'text' && Boolean(String(message.texto || '').trim());
 }
 
+function isEmptyWhatsAppTextMessage(message: Mensaje): boolean {
+  return String(message.tipo || 'text').toLowerCase() === 'text' && !String(message.texto || '').trim();
+}
+
 async function prepareGlobalSummary(job: SummaryJob) {
   const account = await getWhatsappAccount(job.account_id);
   if (!account) throw new SummaryJobError('Cuenta de WhatsApp no disponible.');
@@ -3618,13 +3650,13 @@ async function prepareGlobalSummary(job: SummaryJob) {
     for (const group of groups) {
       const remoteJid = unscopedAccountValue(group.id);
       let context = await getUnreadMessageContext(remoteJid, account, { unlimited: true });
-      if (context.rows.length < context.pendingCount) {
+      if (context.rows.length < context.pendingCount || context.rows.some(isEmptyWhatsAppTextMessage)) {
         await storage.progress({ stage: 'syncing', completedBatches: 0, totalBatches: 0, completedMessages: 0, totalMessages: 0 });
         try {
           for await (const messages of evolutionHistoryPages((body) => evolutionFetch(`/chat/findMessages/${account.evolutionInstanceName}`, { method: 'POST', body: JSON.stringify(body) }), remoteJid)) {
             for (const message of messages) await persistMessage(message, account, { historical: true });
             context = await getUnreadMessageContext(remoteJid, account, { unlimited: true });
-            if (context.rows.length >= context.pendingCount) break;
+            if (context.rows.length >= context.pendingCount && !context.rows.some(isEmptyWhatsAppTextMessage)) break;
           }
         } catch (error) {
           console.error('[global-summary/history]', account.id, (error as Error).message);
@@ -3647,7 +3679,7 @@ async function prepareGlobalSummary(job: SummaryJob) {
         }
       }
       coverage.excludedMedia += context.rows.filter((message) => String(message.tipo || 'text').toLowerCase() !== 'text').length;
-      coverage.empty += context.rows.filter((message) => String(message.tipo || 'text').toLowerCase() === 'text' && !String(message.texto || '').trim()).length;
+      coverage.empty += context.rows.filter(isEmptyWhatsAppTextMessage).length;
       const candidates = context.rows
         .filter(isWhatsAppTextMessage)
         .map((message) => {
@@ -7367,6 +7399,17 @@ app.post('/api/whatsapp-accounts', requireCeoAuth, async (req: Request, res: Res
   }
 });
 
+app.get('/api/whatsapp-accounts/:id/sync-health', requireCeoAuth, async (req: Request, res: Response) => {
+  try {
+    const account = await getWhatsappAccount(String(req.params.id));
+    if (!account) return res.status(404).json({ error: 'Cuenta no disponible' });
+    const health = await pool.query('SELECT state,checked_at,details FROM whatsapp_sync_health WHERE account_id=$1', [account.id]);
+    const inbox = await pool.query(`SELECT COUNT(*)::integer AS pending,COUNT(*) FILTER(WHERE attempts>0)::integer AS retrying,
+      MIN(created_at) AS oldest_pending_at FROM whatsapp_message_inbox WHERE account_id=$1`, [account.id]);
+    res.json({ account_id: account.id, health: health.rows[0] || null, inbox: inbox.rows[0] });
+  } catch { res.status(503).json({ error: 'No se pudo consultar el estado de sincronización' }); }
+});
+
 app.get('/api/whatsapp-accounts/:id/status', requireCeoAuth, async (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
@@ -8442,11 +8485,11 @@ app.post('/api/settings/set', async (req: Request, res: Response) => {
 
 if (EVOLUTION_BACKGROUND_SYNC_ENABLED) {
   setInterval(() => {
-    void syncAllEvolutionData(false);
+    if (databaseReady) void syncAllEvolutionData(false).catch(() => console.warn('[sync] Reconciliación pendiente'));
   }, SYNC_INTERVAL_MS).unref();
 
   setInterval(() => {
-    void syncAllEvolutionData(true);
+    if (databaseReady) void syncAllEvolutionData(true).catch(() => console.warn('[sync] Recuperación periódica pendiente'));
   }, FULL_SYNC_INTERVAL_MS).unref();
 }
 
@@ -8605,6 +8648,9 @@ async function bootstrap() {
   if (MEETING_AI_BACKGROUND_ANALYSIS_ENABLED) void processPendingMeetingAnalyses();
   await loadSpecialistsFromDb();
   databaseReady = true;
+  const retryReceipts = () => whatsappInbox.run().catch(() => console.warn('[whatsapp-inbox] No se pudo ejecutar el reintento; se conserva la cola'));
+  void retryReceipts();
+  setInterval(() => void retryReceipts(), 5_000).unref();
   void runSummaryQueue();
   setInterval(() => void runSummaryQueue(), 5_000).unref();
   if (EVOLUTION_BACKGROUND_SYNC_ENABLED) await bootEvolution();
@@ -8636,4 +8682,4 @@ if (!isTestEnv) {
   });
 }
 
-export { app, pool, ensureRemoteJid, resolveChatIdVariants, normalizeRemoteJid, toDate, ensureDatabaseSchema, evolutionFetch, getConnectionStatus, getUnreadMessageContext, prepareGlobalSummary, summaryQueue, persistChat };
+export { app, pool, ensureRemoteJid, resolveChatIdVariants, normalizeRemoteJid, toDate, ensureDatabaseSchema, evolutionFetch, getConnectionStatus, getUnreadMessageContext, prepareGlobalSummary, summaryQueue, persistChat, persistMessage, whatsappInbox, syncEvolutionData };

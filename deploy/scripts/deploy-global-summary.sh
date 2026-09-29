@@ -88,6 +88,7 @@ systemctl restart lyn-backend
 wait_for_backend /etc/lyn/backend.env
 systemctl is-active lyn-backend lyn-evolution nginx
 test "$(runuser -u postgres -- psql -X -d superagente -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='resumenes_globales_chat' AND column_name IN ('evidence','coverage')")" = 2
+test "$(runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d superagente -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('whatsapp_message_inbox','whatsapp_sync_health')")" = 2
 if [[ "$mode" == phone-history ]]; then
   test "$(runuser -u postgres -- psql -X -d superagente -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='summary_jobs' AND column_name='next_attempt_at'")" = 1
 fi

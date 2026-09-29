@@ -16,7 +16,7 @@ export function nonTextWhatsAppKind(value: unknown, messageType = ''): string | 
   if (typeof content.conversation === 'string' || content.extendedTextMessage) return null;
   const kinds: Record<string, string> = {
     imageMessage: 'image', videoMessage: 'video', audioMessage: 'audio', ptvMessage: 'video',
-    documentMessage: 'document', stickerMessage: 'sticker', albumMessage: 'album',
+    documentMessage: 'document', stickerMessage: 'sticker', lottieStickerMessage: 'sticker', albumMessage: 'album',
     contactMessage: 'contact', contactsArrayMessage: 'contact',
     reactionMessage: 'reaction', groupStatusMentionMessage: 'status_mention',
   };

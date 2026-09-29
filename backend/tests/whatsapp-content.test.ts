@@ -22,6 +22,7 @@ describe('contenido WhatsApp anidado', () => {
   it.each([
     ['reactionMessage', 'reaction'], ['albumMessage', 'album'], ['contactMessage', 'contact'],
     ['contactsArrayMessage', 'contact'], ['groupStatusMentionMessage', 'status_mention'], ['ptvMessage', 'video'],
+    ['lottieStickerMessage', 'sticker'],
   ])('identifica %s sin convertirlo en un texto vacío', (field, kind) => {
     expect(nonTextWhatsAppKind({ [field]: {}, messageContextInfo: {}, senderKeyDistributionMessage: {} })).toBe(kind);
     expect(nonTextWhatsAppKind({}, field)).toBe(kind);
