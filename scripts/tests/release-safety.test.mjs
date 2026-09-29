@@ -6,6 +6,18 @@ import { spawnSync } from 'node:child_process';
 const source = await readFile(new URL('../../deploy/scripts/deploy.sh', import.meta.url), 'utf8');
 const workflow = await readFile(new URL('../../.github/workflows/quality.yml', import.meta.url), 'utf8');
 const historyDeploy = await readFile(new URL('../../deploy/scripts/deploy-global-summary.sh', import.meta.url), 'utf8');
+const historyResume = await readFile(new URL('../../deploy/scripts/resume-phone-history-2490cca.sh', import.meta.url), 'utf8');
+
+test('reanudación OOM fija versión y respaldo, empaqueta antes de detener y no restaura datos', () => {
+  assert.match(historyResume, /expected=2490ccac84936e1d86e99f639e90edb596a11079/);
+  assert.match(historyResume, /gitlyn diff --quiet HEAD -- backend evolution-api deploy/);
+  assert.match(historyResume, /sha256sum -c SHA256SUMS/);
+  assert.match(historyResume, /test ! -e "\$backup\/evolution-dist-before"/);
+  assert.match(historyResume, /node --max-old-space-size=256 node_modules\/tsup\/dist\/cli-default.js/);
+  assert.doesNotMatch(historyResume, /typescript\/bin\/tsc|npm ci|npm install|pg_restore|reset --hard|rm -rf/);
+  assert.ok(historyResume.indexOf('node --check "$stage/main.js"') < historyResume.indexOf('systemctl stop lyn-evolution'));
+  assert.ok(historyResume.indexOf('[[ "$ready" == true ]]') < historyResume.indexOf('systemctl restart lyn-backend'));
+});
 
 test('recuperación telefónica compila en staging y respalda Evolution antes de detener servicios', () => {
   assert.match(historyDeploy, /mode=\$\{2:-backend\}/);
