@@ -30,6 +30,10 @@ export class NumberDto {
   number: string;
 }
 
+export class RequestHistoryDto {
+  remoteJid: string;
+}
+
 export class NumberBusiness {
   wid?: string;
   jid?: string;

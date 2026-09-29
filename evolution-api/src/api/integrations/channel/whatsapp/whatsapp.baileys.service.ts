@@ -11,6 +11,7 @@ import {
   OnWhatsAppDto,
   PrivacySettingDto,
   ReadMessageDto,
+  RequestHistoryDto,
   SendPresenceDto,
   UpdateMessageDto,
   WhatsAppNumberDto,
@@ -83,6 +84,7 @@ import { Instance, Message } from '@prisma/client';
 import { createJid } from '@utils/createJid';
 import { fetchLatestWaWebVersion } from '@utils/fetchLatestWaWebVersion';
 import { historyChat } from '@utils/history-chat';
+import { createHistoryRecovery } from '@utils/history-recovery';
 import { makeProxyAgent, makeProxyAgentUndici } from '@utils/makeProxyAgent';
 import { getOnWhatsappCache, saveOnWhatsappCache } from '@utils/onWhatsappCache';
 import { status } from '@utils/renderStatus';
@@ -942,7 +944,7 @@ export class BaileysStartupService extends ChannelStartupService {
     }) => {
       try {
         if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
-          console.log('received on-demand history sync, messages=', messages);
+          this.logger.log(`Received on-demand history: ${messages.length} messages`);
         }
         console.log(
           `recv ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (is latest: ${isLatest}, progress: ${progress}%), type: ${syncType}`,
@@ -952,7 +954,7 @@ export class BaileysStartupService extends ChannelStartupService {
 
         let timestampLimitToImport = null;
 
-        if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED) {
+        if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && syncType !== proto.HistorySync.HistorySyncType.ON_DEMAND) {
           const daysLimitToImport = this.localChatwoot?.enabled ? this.localChatwoot.daysLimitImportMessages : 1000;
 
           const date = new Date();
@@ -1017,7 +1019,7 @@ export class BaileysStartupService extends ChannelStartupService {
             m.messageTimestamp = m.messageTimestamp?.toNumber();
           }
 
-          if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED) {
+          if (timestampLimitToImport !== null) {
             if (m.messageTimestamp <= timestampLimitToImport) {
               continue;
             }
@@ -5004,6 +5006,31 @@ export class BaileysStartupService extends ChannelStartupService {
     } catch (error) {
       throw new InternalServerErrorException('Error getCatalog', error.toString());
     }
+  }
+
+  private readonly recoverHistory = createHistoryRecovery({
+    connected: () => this.connectionStatus.state === 'open',
+    enabled: () => this.configService.get<Database>('DATABASE').SAVE_DATA.HISTORIC,
+    oldest: async (remoteJid) => {
+      const oldest = await this.prismaRepository.message.findFirst({
+        where: {
+          instanceId: this.instanceId,
+          messageTimestamp: { gt: 0 },
+          OR: [
+            { key: { path: ['remoteJid'], equals: remoteJid } },
+            { key: { path: ['remoteJidAlt'], equals: remoteJid } },
+          ],
+        },
+        orderBy: [{ messageTimestamp: 'asc' }, { id: 'asc' }],
+        select: { key: true, messageTimestamp: true },
+      });
+      return oldest ? { key: oldest.key as ExtendedIMessageKey, messageTimestamp: oldest.messageTimestamp } : null;
+    },
+    request: (count, key, timestampMs) => this.client.fetchMessageHistory(count, key, timestampMs),
+  });
+
+  public async requestHistory(data: RequestHistoryDto) {
+    return this.recoverHistory(data.remoteJid);
   }
 
   public async fetchMessages(query: Query<Message>) {

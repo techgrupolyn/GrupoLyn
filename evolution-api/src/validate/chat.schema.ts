@@ -25,6 +25,14 @@ const numberDefinition: JSONSchema7Definition = {
   description: 'Invalid format',
 };
 
+export const requestHistorySchema: JSONSchema7 = {
+  $id: v4(),
+  type: 'object',
+  required: ['remoteJid'],
+  additionalProperties: false,
+  properties: { remoteJid: { type: 'string', pattern: '^[0-9-]+@g\\.us$', maxLength: 100 } },
+};
+
 export const whatsappNumberSchema: JSONSchema7 = {
   $id: v4(),
   type: 'object',

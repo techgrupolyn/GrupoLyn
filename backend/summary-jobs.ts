@@ -18,6 +18,7 @@ export async function ensureSummaryJobs(pool: Pool) {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS summary_jobs_active_account ON summary_jobs(account_id) WHERE status IN ('queued','running');
     CREATE INDEX IF NOT EXISTS summary_jobs_account_updated ON summary_jobs(account_id, updated_at DESC);
+    ALTER TABLE summary_jobs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     ALTER TABLE resumenes_globales_chat ADD COLUMN IF NOT EXISTS evidence JSONB;
     ALTER TABLE resumenes_globales_chat ADD COLUMN IF NOT EXISTS coverage JSONB;
     CREATE TABLE IF NOT EXISTS summary_job_contexts (
@@ -88,7 +89,11 @@ export async function markSummaryMessagesReviewed(client: PoolClient, accountId:
 
 export function publicSummaryJob(job: SummaryJob) {
   const progress = job.result?.progress as SummaryProgress | undefined;
-  const description = progress?.stage === 'syncing' ? 'Recuperando de Evolution el historial pendiente antes de analizar. No se han descontado mensajes.' : progress
+  const recovery = job.result?.historyRecovery as Array<{ status: string }> | undefined;
+  const withoutAnchor = recovery?.filter((item) => item.status === 'no_anchor').length || 0;
+  const description = progress?.stage === 'syncing' ? withoutAnchor
+    ? `Esperando un mensaje de referencia en ${withoutAnchor} grupos sin historial. Se reintentará automáticamente cuando llegue contenido. No se han descontado mensajes.`
+    : 'Recuperando historial de WhatsApp mediante Evolution. Esperando contenido antes de analizar; no se han descontado mensajes.' : progress
     ? `${progress.stage === 'consolidating' ? 'Preparando el informe' : progress.stage === 'verifying' ? 'Verificando evidencias' : 'Analizando por lotes'}: ${progress.completedBatches}/${progress.totalBatches} lotes de texto verificados. Los contadores se actualizan al guardar el informe completo.`
     : 'El informe global se está generando. El resultado aparecerá automáticamente cuando termine.';
   return { jobId: job.id, status: job.status, specialistId: job.specialist_id, en_progreso: ['queued','running'].includes(job.status),
@@ -115,7 +120,7 @@ export function summaryJobStorage(pool: Pool, job: SummaryJob) {
       await pool.query('INSERT INTO summary_job_batches(job_id,cache_key,result) VALUES($1,$2,$3::jsonb) ON CONFLICT DO NOTHING', [job.id, key, JSON.stringify(result)]);
     },
     progress: async (progress: SummaryProgress) => {
-      await pool.query("UPDATE summary_jobs SET result=jsonb_build_object('progress',$2::jsonb),updated_at=NOW() WHERE id=$1", [job.id, JSON.stringify(progress)]);
+      await pool.query("UPDATE summary_jobs SET result=COALESCE(result,'{}'::jsonb) || jsonb_build_object('progress',$2::jsonb),updated_at=NOW() WHERE id=$1", [job.id, JSON.stringify(progress)]);
     },
   };
 }
@@ -124,7 +129,7 @@ export function createSummaryQueue(pool: Pool, prepare: (job: SummaryJob) => Pro
   let running: Promise<void> | null = null;
   const enqueue = async (accountId: string, specialistId: string): Promise<SummaryJob> => {
     try {
-      const resumed = await pool.query<SummaryJob>(`UPDATE summary_jobs SET status='queued',attempts=0,error=NULL,updated_at=NOW()
+      const resumed = await pool.query<SummaryJob>(`UPDATE summary_jobs SET status='queued',attempts=0,error=NULL,updated_at=NOW(),next_attempt_at=NOW()
         WHERE id=(SELECT id FROM summary_jobs WHERE account_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1)
         AND specialist_id=$2 AND status='failed'
         AND EXISTS (SELECT 1 FROM summary_job_contexts WHERE job_id=summary_jobs.id)
@@ -140,14 +145,14 @@ export function createSummaryQueue(pool: Pool, prepare: (job: SummaryJob) => Pro
   const run = () => {
     if (running) return running;
     running = (async () => {
-      const candidates = await pool.query<SummaryJob>("SELECT * FROM summary_jobs WHERE status IN ('queued','running') ORDER BY updated_at,id LIMIT 20");
+      const candidates = await pool.query<SummaryJob>("SELECT * FROM summary_jobs WHERE status IN ('queued','running') AND next_attempt_at<=NOW() ORDER BY updated_at,id LIMIT 20");
       for (const candidate of candidates.rows) {
         const client = await acquireSummaryLock(pool,candidate.account_id);
         if (!client) continue;
         let claimed = false;
         try {
           const claim = await client.query<SummaryJob>(`UPDATE summary_jobs SET status='running',attempts=attempts+1,updated_at=NOW(),error=NULL
-            WHERE id=$1 AND status IN ('queued','running') RETURNING *`, [candidate.id]);
+            WHERE id=$1 AND status IN ('queued','running') AND next_attempt_at<=NOW() RETURNING *`, [candidate.id]);
           const job = claim.rows[0];
           if (!job) continue;
           claimed = true;
@@ -161,9 +166,13 @@ export function createSummaryQueue(pool: Pool, prepare: (job: SummaryJob) => Pro
           await client.query('COMMIT');
           try { notify(completed.rows[0]); } catch (error) { console.error('[summary-queue] Notification failed:', error); }
         } catch (error) {
-          console.error('[summary-queue] Job failed:', candidate.id, error instanceof Error ? error.message : 'Unknown failure');
+          if (!(error instanceof SummaryHistoryPending)) console.error('[summary-queue] Job failed:', candidate.id, error instanceof Error ? error.message : 'Unknown failure');
           await client.query('ROLLBACK').catch(() => undefined);
           if (claimed) {
+            if (error instanceof SummaryHistoryPending) {
+              await client.query("UPDATE summary_jobs SET status='queued',attempts=GREATEST(0,attempts-1),next_attempt_at=NOW()+INTERVAL '30 seconds',updated_at=NOW(),error=NULL WHERE id=$1 AND status='running'", [candidate.id]);
+              continue;
+            }
             const message = error instanceof SummaryJobError ? error.message : 'No se pudo generar el informe. Reintenta; tus mensajes continúan pendientes.';
             const failed = await client.query<SummaryJob>("UPDATE summary_jobs SET status='failed',error=$2,updated_at=NOW() WHERE id=$1 AND status='running' RETURNING *", [candidate.id,message]);
             if (failed.rows[0]) {
@@ -179,3 +188,5 @@ export function createSummaryQueue(pool: Pool, prepare: (job: SummaryJob) => Pro
 }
 
 export class SummaryJobError extends Error {}
+
+export class SummaryHistoryPending extends Error {}

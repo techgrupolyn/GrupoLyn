@@ -95,6 +95,7 @@ jobs:
         working-directory: evolution-api
       - run: node --test scripts/tests/dependency-compatibility.test.mjs
       - run: node --test scripts/tests/webhook-batches.test.mjs
+      - run: node --test scripts/tests/history-recovery.test.mjs
       - run: node scripts/check-dashboard.cjs
       - run: npm audit --omit=dev
         working-directory: evolution-api

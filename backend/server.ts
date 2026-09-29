@@ -17,7 +17,7 @@ import { Readable } from 'stream';
 import { unwrapWhatsAppContent, nonTextWhatsAppKind } from './whatsapp-content.ts';
 import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from './meeting-organizer.ts';
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
-import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryMessagesReviewed, createSummaryQueue, publicSummaryJob, summaryJobStorage, SummaryJobError, type SummaryJob } from './summary-jobs.ts';
+import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryMessagesReviewed, createSummaryQueue, publicSummaryJob, summaryJobStorage, SummaryJobError, SummaryHistoryPending, type SummaryJob } from './summary-jobs.ts';
 import { generateBatchedGlobalSummary } from './global-summary-batches.ts';
 import { evolutionHistoryPages } from './evolution-history.ts';
 
@@ -3614,6 +3614,7 @@ async function prepareGlobalSummary(job: SummaryJob) {
 
     const selected: Array<{ chatId: string; variants: string[]; name: string; pendingCount: number; items: Array<{ id: string; timestamp: Date; line: string }> }> = [];
     const coverage = { pending: 0, texts: 0, excludedMedia: 0, empty: 0, unavailable: 0, groupsWithUnavailable: 0 };
+    const recovery: Array<{ group: string; status: string }> = [];
     for (const group of groups) {
       const remoteJid = unscopedAccountValue(group.id);
       let context = await getUnreadMessageContext(remoteJid, account, { unlimited: true });
@@ -3634,6 +3635,17 @@ async function prepareGlobalSummary(job: SummaryJob) {
       const unavailable = Math.max(0, context.pendingCount - context.rows.length);
       coverage.unavailable += unavailable;
       if (unavailable) coverage.groupsWithUnavailable += 1;
+      if (unavailable) {
+        try {
+          const response = await evolutionFetch<{ status: string }>(`/chat/requestHistory/${account.evolutionInstanceName}`, {
+            method: 'POST', body: JSON.stringify({ remoteJid }),
+          });
+          const allowed = ['requested', 'waiting', 'no_progress', 'no_anchor', 'disconnected', 'disabled', 'unsupported', 'busy'];
+          recovery.push({ group: remoteJid, status: allowed.includes(response?.status) ? response.status : 'unavailable' });
+        } catch {
+          recovery.push({ group: remoteJid, status: 'unavailable' });
+        }
+      }
       coverage.excludedMedia += context.rows.filter((message) => String(message.tipo || 'text').toLowerCase() !== 'text').length;
       coverage.empty += context.rows.filter((message) => String(message.tipo || 'text').toLowerCase() === 'text' && !String(message.texto || '').trim()).length;
       const candidates = context.rows
@@ -3651,8 +3663,19 @@ async function prepareGlobalSummary(job: SummaryJob) {
       if (items.length) selected.push({ chatId: unscopedAccountValue(group.id), variants: context.variants, name: group.nombre || 'Grupo sin nombre', pendingCount: context.pendingCount, items });
     }
     if (coverage.unavailable || coverage.empty) {
-      await pool.query("UPDATE summary_jobs SET result=COALESCE(result,'{}'::jsonb) || jsonb_build_object('coverage',$2::jsonb),updated_at=NOW() WHERE id=$1", [job.id, JSON.stringify(coverage)]);
-      throw new SummaryJobError(`No se generó un informe parcial: hay ${coverage.unavailable} pendientes sin contenido disponible tras consultar Evolution y ${coverage.empty} registros de texto vacíos. Se necesitan todos los textos pendientes. Ningún mensaje se ha marcado como analizado; comprueba la sincronización del historial y reintenta.`);
+      await pool.query("UPDATE summary_jobs SET result=COALESCE(result,'{}'::jsonb) || jsonb_build_object('coverage',$2::jsonb,'historyRecovery',$3::jsonb),updated_at=NOW() WHERE id=$1", [job.id, JSON.stringify(coverage), JSON.stringify(recovery)]);
+      if (recovery.some((item) => ['requested', 'waiting', 'no_anchor'].includes(item.status))) throw new SummaryHistoryPending();
+      const explanations: Record<string, string> = {
+        no_anchor: 'Hay grupos sin mensaje de referencia: no se puede solicitar su historial todavía; es necesario recibir un mensaje real de esos grupos o importar su historial.',
+        no_progress: 'WhatsApp no entregó mensajes anteriores tras la solicitud. Comprueba que el teléfono tenga conexión; reintenta más tarde.',
+        disconnected: 'La cuenta no está conectada a WhatsApp.',
+        disabled: 'Evolution no tiene habilitada la persistencia del historial.',
+        unsupported: 'El proveedor de esta cuenta no admite solicitudes de historial.',
+        unavailable: 'No se pudo solicitar historial al teléfono; comprueba que Evolution tenga la ruta requestHistory actualizada.',
+        busy: 'Evolution tiene otras recuperaciones pendientes; reintenta más tarde.',
+      };
+      const details = [...new Set(recovery.map((item) => explanations[item.status]).filter(Boolean))].join(' ');
+      throw new SummaryJobError(`No se generó un informe parcial: hay ${coverage.unavailable} pendientes sin contenido disponible tras consultar Evolution y ${coverage.empty} registros de texto vacíos. Se necesitan todos los textos pendientes. Ningún mensaje se ha marcado como analizado. ${details || 'Comprueba la sincronización del historial y reintenta.'}`);
     }
     if (!selected.length) throw new SummaryJobError('No hay mensajes de texto pendientes disponibles. Los audios y otros adjuntos están excluidos del análisis.');
     return { selectionVersion: 2, selected, coverage, totalPending: coverage.pending, groupCount: groups.length, model: spec.modelo || 'flash', systemPrompt: spec.system_prompt };

@@ -5,6 +5,19 @@ import { spawnSync } from 'node:child_process';
 
 const source = await readFile(new URL('../../deploy/scripts/deploy.sh', import.meta.url), 'utf8');
 const workflow = await readFile(new URL('../../.github/workflows/quality.yml', import.meta.url), 'utf8');
+const historyDeploy = await readFile(new URL('../../deploy/scripts/deploy-global-summary.sh', import.meta.url), 'utf8');
+
+test('recuperación telefónica compila en staging y respalda Evolution antes de detener servicios', () => {
+  assert.match(historyDeploy, /mode=\$\{2:-backend\}/);
+  assert.match(historyDeploy, /evolution-api\/package\.json evolution-api\/package-lock\.json evolution-api\/prisma frontend/);
+  const backup = historyDeploy.indexOf('"$backup/evolution-dist.tar.gz"');
+  const build = historyDeploy.indexOf('env LYN_EVOLUTION_BUILD_DIR="$stage"');
+  const stop = historyDeploy.indexOf('systemctl stop lyn-backend lyn-evolution');
+  assert.ok(backup > 0 && build > backup && stop > build);
+  assert.ok(historyDeploy.indexOf('node --check "$stage/main.js"') < stop);
+  assert.match(historyDeploy, /mv "\$ROOT\/evolution-api\/dist" "\$backup\/evolution-dist-before"/);
+  assert.doesNotMatch(historyDeploy, /npm ci|npm install|reset --hard|rm -rf/);
+});
 
 test('publica assets antes de sustituir index.html de manera atómica', () => {
   const assets = source.indexOf('rsync -a --chown=lyn:lyn "$ROOT/frontend/dist/assets/"');

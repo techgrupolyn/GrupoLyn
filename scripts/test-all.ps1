@@ -46,6 +46,7 @@ Invoke-ProjectCommand 'evolution-api' @('node', 'node_modules/prisma/build/index
 Invoke-ProjectCommand 'evolution-api' @('npm', 'run', 'build')
 Invoke-ProjectCommand '.' @('node', '--test', 'scripts/tests/dependency-compatibility.test.mjs')
 Invoke-ProjectCommand '.' @('node', '--test', 'scripts/tests/webhook-batches.test.mjs')
+Invoke-ProjectCommand '.' @('node', '--test', 'scripts/tests/history-recovery.test.mjs')
 Invoke-ProjectCommand '.' @('node', 'scripts/check-dashboard.cjs')
 foreach ($project in @('backend', 'frontend', 'evolution-api')) {
   Invoke-ProjectCommand $project @('npm', 'audit', '--omit=dev')
