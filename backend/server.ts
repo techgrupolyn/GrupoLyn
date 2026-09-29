@@ -14,7 +14,7 @@ import { iterateGoogleDriveFolderFiles, type GoogleDriveFile } from './google-dr
 import { meetingDirectoryContext, syncSupabaseDirectory, supabaseDirectoryConfigFromEnv, type MeetingDirectoryCandidate } from './supabase-directory.ts';
 import { authenticateWithSupabasePassword, isSupabaseAuthConfigured, supabaseAuthConfigFromEnv, SupabaseAuthServiceError } from './supabase-auth.ts';
 import { Readable } from 'stream';
-import { unwrapWhatsAppContent } from './whatsapp-content.ts';
+import { unwrapWhatsAppContent, nonTextWhatsAppKind } from './whatsapp-content.ts';
 import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from './meeting-organizer.ts';
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
 import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryMessagesReviewed, createSummaryQueue, publicSummaryJob, summaryJobStorage, SummaryJobError, type SummaryJob } from './summary-jobs.ts';
@@ -2009,7 +2009,7 @@ function extractTextFromMessage(message: MessageItem | string): string {
   return '';
 }
 
-function normalizeMediaFromMessage(rawPayload: Record<string, unknown>): { tipo: string; media: Record<string, unknown> } {
+function normalizeMediaFromMessage(rawPayload: Record<string, unknown>, messageType = ''): { tipo: string; media: Record<string, unknown> } {
   rawPayload = unwrapWhatsAppContent(rawPayload);
   const base: Record<string, unknown> = {};
 
@@ -2043,7 +2043,7 @@ function normalizeMediaFromMessage(rawPayload: Record<string, unknown>): { tipo:
     return { tipo: 'document', media: { ...doc, url } };
   }
 
-  return { tipo: 'text', media: {} };
+  return { tipo: nonTextWhatsAppKind(rawPayload, messageType) || 'text', media: {} };
 }
 
 function normalizeRemoteJid(jid = ''): string {
@@ -2385,7 +2385,7 @@ async function persistMessage(messageItem: MessageItem, account: WhatsAppAccount
     texto = extractTextFromMessage(messageItem?.message || messageItem);
     const rawPayload = messageItem as Record<string, unknown>;
     const messageWrapper = (rawPayload.message && typeof rawPayload.message === 'object') ? (rawPayload.message as Record<string, unknown>) : rawPayload;
-    const { tipo: mediaTipo, media } = normalizeMediaFromMessage(messageWrapper);
+    const { tipo: mediaTipo, media } = normalizeMediaFromMessage(messageWrapper, String(rawPayload.messageType || ''));
     tipo = mediaTipo;
     if ((tipo === 'image' || tipo === 'video') && !texto.trim()) {
       console.log('[media-text] caption vacio', { messageId, tipo, remoteJid, hasMessage: Boolean(messageItem?.message), keys: messageItem?.message ? Object.keys(messageItem.message).slice(0, 20) : [] });
@@ -2625,9 +2625,10 @@ async function getUnreadMessageContext(chatId: string, account: WhatsAppAccount 
   for (const message of rows) {
     const raw = message.raw as Record<string, unknown> | null;
     if (!raw) continue;
-    const content = unwrapWhatsAppContent(raw.message || raw);
-    const normalized = normalizeMediaFromMessage(content);
-    const recoveredText = String(message.texto || '').trim() || extractTextFromMessage(content as MessageItem);
+    const original = raw.message ?? raw;
+    const content = unwrapWhatsAppContent(original);
+    const normalized = normalizeMediaFromMessage(content, String(raw.messageType || ''));
+    const recoveredText = String(message.texto || '').trim() || extractTextFromMessage(original as MessageItem | string);
     if (normalized.tipo !== 'text' || recoveredText !== String(message.texto || '')) {
       message.tipo = normalized.tipo !== 'text' ? normalized.tipo : message.tipo;
       message.media = { ...normalized.media, ...(message.media || {}) };

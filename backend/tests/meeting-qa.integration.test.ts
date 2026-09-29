@@ -1249,6 +1249,99 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
+  it.each([false, true])('distingue eventos de textos vacíos sin ocultar contenido desconocido (incompleto=%s)', async (incomplete) => {
+    const accountId = `qa-message-types-${randomUUID()}`;
+    const chatId = `${accountId}::120363999900005@g.us`;
+    const events = ['reactionMessage', 'albumMessage', 'contactMessage', 'groupStatusMentionMessage', 'ptvMessage'];
+    const unknown = ['conversation', 'secretEncryptedMessage', 'protocolMessage', 'unknown'];
+    const fixtures = [
+      { id: 'text', raw: { messageType: 'conversation', message: 'Texto pendiente sin envoltura' } },
+      ...events.map((field) => ({ id: field, raw: { messageType: field, message: field === 'ptvMessage' ? null : { [field]: {}, messageContextInfo: {} } } })),
+      ...(incomplete ? unknown.map((field) => ({ id: `empty-${field}`, raw: { messageType: field, message: field === 'conversation' ? null : { [field]: {} } } })) : []),
+    ];
+    const fetcher = vi.fn().mockRejectedValue(new Error('Sin acceso externo en esta prueba'));
+    vi.stubGlobal('fetch', fetcher);
+    generation.mockReset().mockImplementation(async (prompt: string) => evidenceResponse(prompt));
+    try {
+      await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$1)', [accountId]);
+      await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count) VALUES($1,$2,'Tipos QA',$3,$3)", [chatId, accountId, fixtures.length]);
+      for (const fixture of fixtures) await server.pool.query("INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,tipo,raw,enviado_por_mi) VALUES($1,$2,$3,'QA','','text',$4::jsonb,FALSE)", [`${accountId}:${fixture.id}`, chatId, accountId, JSON.stringify(fixture.raw)]);
+      const queue = createSummaryQueue(server.pool, server.prepareGlobalSummary);
+      const job = await queue.enqueue(accountId, 'general');
+      await queue.run();
+      const result = (await server.pool.query('SELECT status,result,error FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
+      const rows = (await server.pool.query('SELECT id,tipo,texto FROM mensajes WHERE account_id=$1', [accountId])).rows;
+      expect(rows.find((row) => row.id === `${accountId}:text`)).toMatchObject({ tipo: 'text', texto: 'Texto pendiente sin envoltura' });
+      for (const field of events) expect(rows.find((row) => row.id === `${accountId}:${field}`).tipo).not.toBe('text');
+      if (incomplete) {
+        expect(result.status).toBe('failed');
+        expect(result.error).toContain('4 registros de texto vacíos');
+        expect(generation).not.toHaveBeenCalled();
+        expect((await server.pool.query('SELECT * FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rowCount).toBe(0);
+      } else {
+        expect(result.status, result.error).toBe('completed');
+        expect(result.result).toMatchObject({ mensajes_analizados: 1, coverage: { texts: 1, excludedMedia: 5, empty: 0 } });
+        expect((await server.pool.query('SELECT message_id FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rows).toEqual([{ message_id: `${accountId}:text` }]);
+      }
+      expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0]).toEqual({ unread_count: fixtures.length - (incomplete ? 0 : 1), whatsapp_unread_count: fixtures.length });
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      generation.mockReset();
+      await server.pool.query('DELETE FROM resumenes_globales_chat WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM summary_reviewed_messages WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM chats WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
+    }
+  });
+
+  it('recupera cada instancia por separado y un historial incompleto no bloquea otra cuenta', async () => {
+    const accountIds = [`qa-multi-${randomUUID()}`, `qa-multi-${randomUUID()}`];
+    const instances = accountIds.map((account) => `instance-${account}`);
+    const remoteJid = '120363999900008@g.us';
+    const fetcher = vi.fn(async (url: string, options: RequestInit) => {
+      const instance = instances.find((name) => url.endsWith(`/chat/findMessages/${name}`));
+      expect(instance).toBeTruthy();
+      expect(JSON.parse(String(options.body)).where.key).toEqual({ remoteJid, remoteJidAlt: remoteJid });
+      const records = instance === instances[1] ? ['text', 'reaction'].map((kind) => ({
+        key: { id: kind, remoteJid, fromMe: false, participant: '123456789@s.whatsapp.net' },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        messageType: kind === 'text' ? 'conversation' : 'reactionMessage',
+        message: kind === 'text' ? { conversation: 'Texto exclusivo de la segunda cuenta' } : { reactionMessage: { text: '👍' } },
+      })) : [];
+      return new Response(JSON.stringify({ messages: { pages: records.length ? 1 : 0, records } }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    generation.mockReset().mockImplementation(async (prompt: string) => evidenceResponse(prompt));
+    try {
+      const queue = createSummaryQueue(server.pool, server.prepareGlobalSummary);
+      for (const [index, accountId] of accountIds.entries()) {
+        await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$2)', [accountId, instances[index]]);
+        await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count) VALUES($1,$2,'Grupo compartido QA',2,2)", [`${accountId}::${remoteJid}`, accountId]);
+        await queue.enqueue(accountId, 'general');
+      }
+      await queue.run();
+      for (const [index, accountId] of accountIds.entries()) {
+        const job = (await server.pool.query('SELECT status,error,result FROM summary_jobs WHERE account_id=$1', [accountId])).rows[0];
+        expect(job.status, job.error).toBe(index === 0 ? 'failed' : 'completed');
+        const reviewed = (await server.pool.query('SELECT message_id FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rows;
+        expect(reviewed).toHaveLength(index === 0 ? 0 : 1);
+        if (index === 1) expect(job.result.coverage).toMatchObject({ texts: 1, excludedMedia: 1, unavailable: 0, empty: 0 });
+        expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE account_id=$1', [accountId])).rows[0]).toEqual({ unread_count: index === 0 ? 2 : 1, whatsapp_unread_count: 2 });
+      }
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect((await server.pool.query('SELECT id FROM mensajes WHERE account_id=$1', [accountIds[0]])).rowCount).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+      generation.mockReset();
+      await server.pool.query('DELETE FROM resumenes_globales_chat WHERE account_id=ANY($1::varchar[])', [accountIds]);
+      await server.pool.query('DELETE FROM summary_reviewed_messages WHERE account_id=ANY($1::varchar[])', [accountIds]);
+      await server.pool.query('DELETE FROM grupos WHERE account_id=ANY($1::varchar[])', [accountIds]);
+      await server.pool.query('DELETE FROM chats WHERE account_id=ANY($1::varchar[])', [accountIds]);
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=ANY($1::varchar[])', [accountIds]);
+    }
+  });
+
   it('Q-evidencia: una cita inventada no publica ni consume pendientes y permite corregir el reintento', async () => {
     const accountId = `qa-evidence-${randomUUID()}`;
     const chatId = `${accountId}::120363999900007@g.us`;

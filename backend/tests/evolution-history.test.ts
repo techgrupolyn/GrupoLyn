@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { evolutionHistoryPages } from '../evolution-history.ts';
 
 describe('historial de Evolution para informes', () => {
+  it.each(['evolution.production.env.example', 'instance/evolution.env.example'])('la plantilla %s conserva mensajes nuevos e históricos', async (path) => {
+    const source = await readFile(new URL(`../../deploy/env/${path}`, import.meta.url), 'utf8');
+    expect(source).toMatch(/^DATABASE_SAVE_DATA_NEW_MESSAGE=true\r?$/m);
+    expect(source).toMatch(/^DATABASE_SAVE_DATA_HISTORIC=true\r?$/m);
+  });
+
   it('recorre todas las páginas con offset y filtra ambos JID sin límite total', async () => {
     const remoteJid = '120363000000000@g.us';
     const fetcher = vi.fn(async (body: Record<string, unknown>) => ({ messages: {

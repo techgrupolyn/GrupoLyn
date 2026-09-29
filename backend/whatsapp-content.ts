@@ -9,3 +9,19 @@ export function unwrapWhatsAppContent(value: unknown): Record<string, unknown> {
   }
   return content;
 }
+
+export function nonTextWhatsAppKind(value: unknown, messageType = ''): string | null {
+  if (typeof value === 'string' && value.trim()) return null;
+  const content = unwrapWhatsAppContent(value);
+  if (typeof content.conversation === 'string' || content.extendedTextMessage) return null;
+  const kinds: Record<string, string> = {
+    imageMessage: 'image', videoMessage: 'video', audioMessage: 'audio', ptvMessage: 'video',
+    documentMessage: 'document', stickerMessage: 'sticker', albumMessage: 'album',
+    contactMessage: 'contact', contactsArrayMessage: 'contact',
+    reactionMessage: 'reaction', groupStatusMentionMessage: 'status_mention',
+  };
+  for (const [field, kind] of Object.entries(kinds)) {
+    if (content[field] && typeof content[field] === 'object') return kind;
+  }
+  return Object.hasOwn(kinds, messageType) ? kinds[messageType] : null;
+}

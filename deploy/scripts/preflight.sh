@@ -30,6 +30,9 @@ check_instance() {
   local evolution_keys=(SERVER_PORT DATABASE_CONNECTION_URI AUTHENTICATION_API_KEY)
   for key in "${backend_keys[@]}"; do require_value "$backend_env" "$key"; done
   for key in "${evolution_keys[@]}"; do require_value "$evolution_env" "$key"; done
+  if [[ "$(value_of "$evolution_env" DATABASE_SAVE_DATA_HISTORIC)" != 'true' ]]; then
+    echo "AVISO: DATABASE_SAVE_DATA_HISTORIC no está activado en $evolution_env; Evolution no guardará el historial recibido y los informes pueden quedar sin contenido suficiente." >&2
+  fi
   [[ "$(value_of "$backend_env" NODE_ENV)" == 'production' ]] || { echo 'NODE_ENV debe ser production.' >&2; return 1; }
   [[ "$(value_of "$backend_env" ALLOW_UNAUTHENTICATED_LOCAL_EXTENSION)" == 'false' ]] || { echo 'ALLOW_UNAUTHENTICATED_LOCAL_EXTENSION debe ser false en producción.' >&2; return 1; }
   [[ "$(value_of "$backend_env" BIND_HOST)" == '127.0.0.1' ]] || { echo 'BIND_HOST debe ser 127.0.0.1 en producción.' >&2; return 1; }

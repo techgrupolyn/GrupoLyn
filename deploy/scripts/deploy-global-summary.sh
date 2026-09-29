@@ -62,4 +62,4 @@ test "$(runuser -u postgres -- psql -X -d superagente -tAc "SELECT COUNT(*) FROM
 curl --fail --silent --show-error --max-time 20 https://ceo.grupolyn.com/health
 echo
 echo "BACKEND ACTUALIZADO: $expected"
-echo 'Publica también el ZIP de extensión 1.1.6 para mostrar la cobertura de todos los textos.'
+echo 'Esta corrección backend no requiere otra versión si ya usas la extensión 1.1.6. Verifica la cobertura real del historial antes de dar por resuelta la incidencia.'
