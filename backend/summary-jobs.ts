@@ -92,7 +92,7 @@ export function publicSummaryJob(job: SummaryJob) {
   const recovery = job.result?.historyRecovery as Array<{ status: string }> | undefined;
   const withoutAnchor = recovery?.filter((item) => item.status === 'no_anchor').length || 0;
   const description = progress?.stage === 'syncing' ? withoutAnchor
-    ? `Esperando un mensaje de referencia en ${withoutAnchor} grupos sin historial. Se reintentará automáticamente cuando llegue contenido. No se han descontado mensajes.`
+    ? `Falta un mensaje de referencia en ${withoutAnchor} grupos sin historial. No se puede solicitar ese contenido todavía. No se han descontado mensajes.`
     : 'Recuperando historial de WhatsApp mediante Evolution. Esperando contenido antes de analizar; no se han descontado mensajes.' : progress
     ? `${progress.stage === 'consolidating' ? 'Preparando el informe' : progress.stage === 'verifying' ? 'Verificando evidencias' : 'Analizando por lotes'}: ${progress.completedBatches}/${progress.totalBatches} lotes de texto verificados. Los contadores se actualizan al guardar el informe completo.`
     : 'El informe global se está generando. El resultado aparecerá automáticamente cuando termine.';

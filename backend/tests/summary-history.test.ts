@@ -10,7 +10,8 @@ describe('estado público de recuperación de historial', () => {
       } });
     expect(result.en_progreso).toBe(true);
     expect(result.resumen).toContain('mensaje de referencia en 1 grupos');
-    expect(result.resumen).toContain('automáticamente');
+    expect(result.resumen).toContain('No se puede solicitar');
+    expect(result.resumen).not.toContain('automáticamente');
     expect(result.resumen).not.toContain('100');
   });
 });

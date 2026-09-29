@@ -3664,7 +3664,7 @@ async function prepareGlobalSummary(job: SummaryJob) {
     }
     if (coverage.unavailable || coverage.empty) {
       await pool.query("UPDATE summary_jobs SET result=COALESCE(result,'{}'::jsonb) || jsonb_build_object('coverage',$2::jsonb,'historyRecovery',$3::jsonb),updated_at=NOW() WHERE id=$1", [job.id, JSON.stringify(coverage), JSON.stringify(recovery)]);
-      if (recovery.some((item) => ['requested', 'waiting', 'no_anchor'].includes(item.status))) throw new SummaryHistoryPending();
+      if (!recovery.some((item) => item.status === 'no_anchor') && recovery.some((item) => ['requested', 'waiting'].includes(item.status))) throw new SummaryHistoryPending();
       const explanations: Record<string, string> = {
         no_anchor: 'Hay grupos sin mensaje de referencia: no se puede solicitar su historial todavía; es necesario recibir un mensaje real de esos grupos o importar su historial.',
         no_progress: 'WhatsApp no entregó mensajes anteriores tras la solicitud. Comprueba que el teléfono tenga conexión; reintenta más tarde.',

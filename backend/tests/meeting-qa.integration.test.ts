@@ -1325,7 +1325,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       await queue.run();
       for (const [index, accountId] of accountIds.entries()) {
         const job = (await server.pool.query('SELECT status,error,result FROM summary_jobs WHERE account_id=$1', [accountId])).rows[0];
-        expect(job.status, job.error).toBe(index === 0 ? 'queued' : 'completed');
+        expect(job.status, job.error).toBe(index === 0 ? 'failed' : 'completed');
         const reviewed = (await server.pool.query('SELECT message_id FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rows;
         expect(reviewed).toHaveLength(index === 0 ? 0 : 1);
         if (index === 1) expect(job.result.coverage).toMatchObject({ texts: 1, excludedMedia: 1, unavailable: 0, empty: 0 });
@@ -1341,6 +1341,52 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       await server.pool.query('DELETE FROM grupos WHERE account_id=ANY($1::varchar[])', [accountIds]);
       await server.pool.query('DELETE FROM chats WHERE account_id=ANY($1::varchar[])', [accountIds]);
       await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=ANY($1::varchar[])', [accountIds]);
+    }
+  });
+
+  it.each(['requested', 'waiting'])('no espera indefinidamente si un grupo carece de referencia y otro está %s', async (status) => {
+    const accountId = `qa-mixed-history-${randomUUID()}`;
+    const instance = `instance-${accountId}`;
+    const groups = ['120363999900010@g.us', '120363999900011@g.us'];
+    const fetcher = vi.fn(async (url: string, options: RequestInit) => {
+      if (url.endsWith(`/chat/requestHistory/${instance}`)) {
+        const { remoteJid } = JSON.parse(String(options.body));
+        expect(groups).toContain(remoteJid);
+        return new Response(JSON.stringify({ status: remoteJid === groups[0] ? 'no_anchor' : status }), { status: 200 });
+      }
+      expect(url).toContain(`/chat/findMessages/${instance}`);
+      return new Response(JSON.stringify({ messages: { pages: 0, records: [] } }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    generation.mockReset();
+    try {
+      await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$2)', [accountId, instance]);
+      for (const remoteJid of groups) await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count) VALUES($1,$2,'Historial mixto QA',1,1)", [`${accountId}::${remoteJid}`, accountId]);
+      const queue = createSummaryQueue(server.pool, server.prepareGlobalSummary);
+      const job = await queue.enqueue(accountId, 'general');
+      await queue.run();
+      const saved = (await server.pool.query('SELECT * FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
+      expect(saved.status).toBe('failed');
+      expect(saved.error).toContain('sin mensaje de referencia');
+      expect(saved.result.coverage.unavailable).toBe(2);
+      expect(saved.result.historyRecovery).toEqual(expect.arrayContaining([
+        { group: groups[0], status: 'no_anchor' }, { group: groups[1], status },
+      ]));
+      const calls = fetcher.mock.calls.length;
+      await server.pool.query("UPDATE summary_jobs SET next_attempt_at=NOW()-INTERVAL '1 second' WHERE id=$1", [job.id]);
+      await createSummaryQueue(server.pool, server.prepareGlobalSummary).run();
+      expect(fetcher).toHaveBeenCalledTimes(calls);
+      expect(generation).not.toHaveBeenCalled();
+      expect((await server.pool.query('SELECT * FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rowCount).toBe(0);
+      expect((await server.pool.query('SELECT * FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rowCount).toBe(0);
+      expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE account_id=$1', [accountId])).rows).toEqual([
+        { unread_count: 1, whatsapp_unread_count: 1 }, { unread_count: 1, whatsapp_unread_count: 1 },
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+      generation.mockReset();
+      await server.pool.query('DELETE FROM chats WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
     }
   });
 
@@ -1370,7 +1416,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       const job = await queue.enqueue(accountId, 'general');
       await queue.run();
       let saved = (await server.pool.query('SELECT * FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
-      const waiting = ['no_anchor', 'requested', 'waiting'].includes(status);
+      const waiting = ['requested', 'waiting'].includes(status);
       expect(saved.status, saved.error).toBe(waiting ? 'queued' : 'failed');
       expect(saved.result.historyRecovery).toEqual([{ group: remoteJid, status }]);
       expect(generation).not.toHaveBeenCalled();
@@ -1395,6 +1441,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
         expect(saved.result.mensajes_analizados).toBe(1);
         expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0]).toEqual({ unread_count: 0, whatsapp_unread_count: 1 });
       } else {
+        if (status === 'no_anchor') expect(saved.error).toContain('sin mensaje de referencia');
         expect((await server.pool.query('SELECT * FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rowCount).toBe(0);
       }
     } finally {
