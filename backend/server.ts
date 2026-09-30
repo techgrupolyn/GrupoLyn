@@ -17,7 +17,7 @@ import { Readable } from 'stream';
 import { unwrapWhatsAppContent, nonTextWhatsAppKind } from './whatsapp-content.ts';
 import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from './meeting-organizer.ts';
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
-import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryMessagesReviewed, createSummaryQueue, publicSummaryJob, summaryJobStorage, SummaryJobError, SummaryHistoryPending, type SummaryJob } from './summary-jobs.ts';
+import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryMessagesReviewed, createSummaryQueue, publicSummaryJob, summaryJobStorage, SummaryJobError, type SummaryJob } from './summary-jobs.ts';
 import { generateBatchedGlobalSummary } from './global-summary-batches.ts';
 import { evolutionHistoryPages } from './evolution-history.ts';
 import { ensureWhatsAppReliability, createWhatsAppInbox, pendingWhatsAppCoverage, recordWhatsAppHealth } from './whatsapp-reliability.ts';
@@ -3389,35 +3389,31 @@ app.post('/api/sincronizar', async (req: Request, res: Response) => {
     res.json({ ok: true, full, account_id: account.id });
   } catch { res.status(502).json({ ok: false, error: 'Sincronización incompleta; se reintentará en segundo plano' }); }
 });
+async function getAvailableAnalysisMessages(accountId: string, database: Pool | PoolClient = pool, variants: string[] | null = null) {
+  const { rows } = await database.query<Mensaje & { chat_nombre: string }>(`
+    SELECT message.id,message.chat_id,message.remitente,message.remitente_jid,message.texto,
+      message.timestamp,message.tipo,message.raw,message.estado,chat.nombre AS chat_nombre
+    FROM mensajes message JOIN chats chat ON chat.account_id=message.account_id AND chat.id=message.chat_id
+    WHERE message.account_id=$1 AND message.chat_id LIKE '%@g.us' AND message.enviado_por_mi=FALSE
+      AND COALESCE(message.source,'')<>'dashboard' AND LOWER(COALESCE(message.tipo,'text'))='text'
+      AND ($2::text[] IS NULL OR message.chat_id=ANY($2::text[]))
+      AND NOT EXISTS (SELECT 1 FROM summary_reviewed_messages reviewed
+        WHERE reviewed.account_id=message.account_id AND reviewed.message_id=message.id)
+    ORDER BY message.timestamp DESC,message.id DESC`, [accountId, variants]);
+  return rows.flatMap((message) => {
+    const original = message.raw?.message ?? message.raw;
+    const normalized = normalizeMediaFromMessage(unwrapWhatsAppContent(original), String(message.raw?.messageType || ''));
+    const texto = String(message.texto || '').trim() || extractTextFromMessage(original as MessageItem | string).trim();
+    return normalized.tipo === 'text' && texto ? [{ ...message, texto }] : [];
+  });
+}
+
 async function getAnalysisPendingCounts(accountId: string, database: Pool | PoolClient = pool) {
-  const { rows } = await database.query<{ chat_id: string; pending: number; id: string | null; tipo: string | null; raw: Record<string, unknown> | null }>(`
-    SELECT chat.id AS chat_id, chat.unread_count AS pending, message.id, message.tipo, message.raw
-    FROM chats chat LEFT JOIN LATERAL (
-      SELECT candidate.* FROM (
-        SELECT incoming.* FROM (
-          SELECT id,tipo,texto,raw,timestamp FROM mensajes
-          WHERE account_id=chat.account_id AND chat_id=chat.id AND enviado_por_mi=FALSE
-          ORDER BY timestamp DESC,id DESC LIMIT GREATEST(chat.whatsapp_unread_count,chat.unread_count)
-        ) incoming WHERE NOT EXISTS (
-          SELECT 1 FROM summary_reviewed_messages reviewed
-          WHERE reviewed.account_id=chat.account_id AND reviewed.message_id=incoming.id
-        ) ORDER BY incoming.timestamp DESC,incoming.id DESC LIMIT chat.unread_count
-      ) candidate WHERE LOWER(COALESCE(candidate.tipo,'text'))='text'
-        AND COALESCE(candidate.texto,'') !~ '[^[:space:]]'
-    ) message ON TRUE
-    WHERE chat.account_id=$1 AND chat.id LIKE '%@g.us' AND chat.unread_count>0`, [accountId]);
-  const counts = new Map<string, { unread_count: number; excluded_empty_count: number; pending_before_empty_exclusion: number }>();
+  const rows = await getAvailableAnalysisMessages(accountId, database);
+  const counts = new Map<string, { unread_count: number }>();
   for (const row of rows) {
-    const count = counts.get(row.chat_id) || { unread_count: Number(row.pending), excluded_empty_count: 0, pending_before_empty_exclusion: Number(row.pending) };
-    if (row.id) {
-      const original = row.raw?.message ?? row.raw;
-      const recovered = extractTextFromMessage(original as MessageItem | string);
-      const normalized = normalizeMediaFromMessage(unwrapWhatsAppContent(original), String(row.raw?.messageType || ''));
-      if (normalized.tipo === 'text' && !String(recovered || '').trim()) {
-        count.excluded_empty_count += 1;
-        count.unread_count = Math.max(0, count.unread_count - 1);
-      }
-    }
+    const count = counts.get(row.chat_id) || { unread_count: 0 };
+    count.unread_count += 1;
     counts.set(row.chat_id, count);
   }
   return counts;
@@ -3429,17 +3425,15 @@ app.get('/api/chats', async (_req: Request, res: Response) => {
     const account = await getRequestWhatsappAccount(res);
     if (!account) return res.status(404).json({ error: 'Cuenta de WhatsApp no disponible' });
     const { rows } = await pool.query<Chat>(
-      `SELECT g.id, g.nombre, g.updated_at, g.profile_picture_url,
-              (SELECT texto FROM mensajes WHERE chat_id = g.id AND account_id = $1 AND enviado_por_mi = FALSE AND COALESCE(source, '') <> 'dashboard' ORDER BY timestamp DESC LIMIT 1) AS ultimo_mensaje,
-              COALESCE(c.unread_count, 0) AS unread_count
-       FROM grupos g
-       INNER JOIN chats c ON c.id = g.id AND c.account_id = g.account_id
-       WHERE g.account_id = $1
-       ORDER BY g.updated_at DESC`,
+      `SELECT c.id, COALESCE(g.nombre,c.nombre) AS nombre, c.updated_at, g.profile_picture_url,
+              (SELECT texto FROM mensajes WHERE chat_id = c.id AND account_id = $1 AND enviado_por_mi = FALSE AND COALESCE(source, '') <> 'dashboard' ORDER BY timestamp DESC LIMIT 1) AS ultimo_mensaje
+       FROM chats c LEFT JOIN grupos g ON c.id = g.id AND c.account_id = g.account_id
+       WHERE c.account_id = $1 AND c.id LIKE '%@g.us'
+       ORDER BY c.updated_at DESC`,
       [account.id],
     );
     const counts = await getAnalysisPendingCounts(account.id);
-    res.json(rows.map((row) => ({ ...row, ...counts.get(String(row.id)), id: toPublicChatId(String(row.id)), classification: null })));
+    res.json(rows.map((row) => ({ ...row, unread_count: counts.get(String(row.id))?.unread_count || 0, id: toPublicChatId(String(row.id)), classification: null })));
   } catch (error) {
     console.error('[chats] Error:', (error as Error).message);
     res.status(500).json({ error: (error as Error).message });
@@ -3658,10 +3652,6 @@ export function isWhatsAppTextMessage(message: Mensaje): boolean {
   return String(message.tipo || 'text').toLowerCase() === 'text' && Boolean(String(message.texto || '').trim());
 }
 
-function isEmptyWhatsAppTextMessage(message: Mensaje): boolean {
-  return String(message.tipo || 'text').toLowerCase() === 'text' && !String(message.texto || '').trim();
-}
-
 async function prepareGlobalSummary(job: SummaryJob) {
   const account = await getWhatsappAccount(job.account_id);
   if (!account) throw new SummaryJobError('Cuenta de WhatsApp no disponible.');
@@ -3670,83 +3660,23 @@ async function prepareGlobalSummary(job: SummaryJob) {
   if (!spec) throw new SummaryJobError('El especialista seleccionado ya no está disponible.');
   const storage = summaryJobStorage(pool, job);
   const snapshot = await storage.snapshot(async () => {
-    const { rows: groups } = await pool.query<{ id: string; nombre: string; unread_count: number; updated_at: Date }>(
-      `SELECT id, nombre, unread_count, updated_at
-       FROM chats
-       WHERE account_id = $1 AND id LIKE '%@g.us' AND unread_count > 0
-       ORDER BY updated_at DESC`,
-      [account.id],
-    );
-    if (!groups.length) throw new SummaryJobError('No hay mensajes no leídos pendientes en grupos.');
-
-    const selected: Array<{ chatId: string; variants: string[]; name: string; pendingCount: number; items: Array<{ id: string; timestamp: Date; line: string }> }> = [];
-    const coverage = { pending: 0, texts: 0, excludedMedia: 0, empty: 0, emptyExcluded: true, unavailable: 0, groupsWithUnavailable: 0 };
-    const recovery: Array<{ group: string; status: string }> = [];
-    for (const group of groups) {
-      const remoteJid = unscopedAccountValue(group.id);
-      let context = await getUnreadMessageContext(remoteJid, account, { unlimited: true });
-      if (context.rows.length < context.pendingCount || context.rows.some(isEmptyWhatsAppTextMessage)) {
-        await storage.progress({ stage: 'syncing', completedBatches: 0, totalBatches: 0, completedMessages: 0, totalMessages: 0 });
-        try {
-          for await (const messages of evolutionHistoryPages((body) => evolutionFetch(`/chat/findMessages/${account.evolutionInstanceName}`, { method: 'POST', body: JSON.stringify(body) }), remoteJid)) {
-            for (const message of messages) await persistMessage(message, account, { historical: true });
-            context = await getUnreadMessageContext(remoteJid, account, { unlimited: true });
-            if (context.rows.length >= context.pendingCount && !context.rows.some(isEmptyWhatsAppTextMessage)) break;
-          }
-        } catch (error) {
-          console.error('[global-summary/history]', account.id, (error as Error).message);
-          if (context.rows.length < context.pendingCount) throw new SummaryJobError('No se pudo recuperar el historial pendiente de Evolution. Reintenta; no se han descontado mensajes.');
-        }
-      }
-      coverage.pending += context.pendingCount;
-      const unavailable = Math.max(0, context.pendingCount - context.rows.length);
-      coverage.unavailable += unavailable;
-      if (unavailable) coverage.groupsWithUnavailable += 1;
-      if (unavailable) {
-        try {
-          const response = await evolutionFetch<{ status: string }>(`/chat/requestHistory/${account.evolutionInstanceName}`, {
-            method: 'POST', body: JSON.stringify({ remoteJid }),
-          });
-          const allowed = ['requested', 'waiting', 'no_progress', 'no_anchor', 'disconnected', 'disabled', 'unsupported', 'busy'];
-          recovery.push({ group: remoteJid, status: allowed.includes(response?.status) ? response.status : 'unavailable' });
-        } catch {
-          recovery.push({ group: remoteJid, status: 'unavailable' });
-        }
-      }
-      coverage.excludedMedia += context.rows.filter((message) => String(message.tipo || 'text').toLowerCase() !== 'text').length;
-      coverage.empty += context.rows.filter(isEmptyWhatsAppTextMessage).length;
-      const candidates = context.rows
-        .filter(isWhatsAppTextMessage)
-        .map((message) => {
-          const date = new Date(message.timestamp || Date.now());
-          const stamp = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-          const sender = String(message.remitente || message.remitente_jid || 'Contacto').trim();
-          const text = String(message.texto || '').trim();
-          return { id: String(message.id), timestamp: date, line: `${stamp} - ${sender}: ${text}` };
-        })
-        .reverse();
-      const items = candidates;
-      coverage.texts += items.length;
-      if (items.length) selected.push({ chatId: unscopedAccountValue(group.id), variants: context.variants, name: group.nombre || 'Grupo sin nombre', pendingCount: context.pendingCount, items });
+    const messages = await getAvailableAnalysisMessages(account.id);
+    if (!messages.length) throw new SummaryJobError('No hay textos disponibles pendientes de analizar.');
+    const groups = new Map<string, { chatId: string; variants: string[]; name: string; pendingCount: number; items: Array<{ id: string; timestamp: Date; line: string }> }>();
+    for (const message of messages) {
+      const remoteJid = unscopedAccountValue(message.chat_id);
+      const group = groups.get(remoteJid) || { chatId: remoteJid, variants: scopedChatIdVariants(account.id, remoteJid), name: message.chat_nombre || 'Grupo sin nombre', pendingCount: 0, items: [] };
+      const date = new Date(message.timestamp || Date.now());
+      const stamp = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+      const sender = String(message.remitente || message.remitente_jid || 'Contacto').trim();
+      group.items.push({ id: String(message.id), timestamp: date, line: `${stamp} - ${sender}: ${message.texto}` });
+      group.pendingCount += 1;
+      groups.set(remoteJid, group);
     }
-    if (coverage.unavailable) {
-      await pool.query("UPDATE summary_jobs SET result=COALESCE(result,'{}'::jsonb) || jsonb_build_object('coverage',$2::jsonb,'historyRecovery',$3::jsonb),updated_at=NOW() WHERE id=$1", [job.id, JSON.stringify(coverage), JSON.stringify(recovery)]);
-      if (!recovery.some((item) => item.status === 'no_anchor') && recovery.some((item) => ['requested', 'waiting'].includes(item.status))) throw new SummaryHistoryPending();
-      const explanations: Record<string, string> = {
-        no_anchor: 'Hay grupos sin mensaje de referencia: no se puede solicitar su historial todavía; es necesario recibir un mensaje real de esos grupos o importar su historial.',
-        no_progress: 'WhatsApp no entregó mensajes anteriores tras la solicitud. Comprueba que el teléfono tenga conexión; reintenta más tarde.',
-        disconnected: 'La cuenta no está conectada a WhatsApp.',
-        disabled: 'Evolution no tiene habilitada la persistencia del historial.',
-        unsupported: 'El proveedor de esta cuenta no admite solicitudes de historial.',
-        unavailable: 'No se pudo solicitar historial al teléfono; comprueba que Evolution tenga la ruta requestHistory actualizada.',
-        busy: 'Evolution tiene otras recuperaciones pendientes; reintenta más tarde.',
-      };
-      const details = [...new Set(recovery.map((item) => explanations[item.status]).filter(Boolean))].join(' ');
-      throw new SummaryJobError(`No se generó un informe parcial: hay ${coverage.unavailable} pendientes sin contenido disponible tras consultar Evolution. Los ${coverage.empty} registros de texto vacíos están excluidos y no bloquean el análisis. Ningún mensaje se ha marcado como analizado. ${details || 'Comprueba la sincronización del historial y reintenta.'}`);
-    }
-    if (!selected.length) throw new SummaryJobError('No hay mensajes de texto pendientes disponibles. Los textos vacíos, audios y otros adjuntos están excluidos del análisis.');
-    return { selectionVersion: 3, selected, coverage, totalPending: coverage.pending, groupCount: groups.length, model: spec.modelo || 'flash', systemPrompt: spec.system_prompt };
-  }, (stored) => stored.selectionVersion === 3 && stored.coverage?.unavailable === 0 && stored.coverage?.emptyExcluded === true);
+    const selected = [...groups.values()].map((group) => ({ ...group, items: group.items.reverse() }));
+    const coverage = { scope: 'available_texts', pending: messages.length, texts: messages.length };
+    return { selectionVersion: 4, selected, coverage, totalPending: messages.length, groupCount: selected.length, model: spec.modelo || 'flash', systemPrompt: spec.system_prompt };
+  }, (stored) => stored.selectionVersion === 4 && stored.coverage?.scope === 'available_texts');
   const { selected, totalPending } = snapshot;
   const generation = await generateBatchedGlobalSummary(selected, {
     ...storage,
@@ -3848,8 +3778,11 @@ app.post('/api/chat/summary', async (req: Request, res: Response) => {
     summaryAccountId = account.id;
     summaryClient = await acquireSummaryLock(pool, account.id);
     if (!summaryClient) return res.status(409).json({ error: 'Hay informes en curso. Espera un momento y vuelve a intentarlo.' });
-    const { variants, pendingCount, rows } = await getUnreadMessageContext(chatId, account);
-    if (!pendingCount) return res.status(422).json({ error: 'El chat no tiene mensajes no leidos pendientes de revisar.' });
+    const variants = scopedChatIdVariants(account.id, chatId);
+    const available = await getAvailableAnalysisMessages(account.id, pool, variants);
+    const pendingCount = available.length;
+    const rows = available.slice(0, PENDING_CONTEXT_MESSAGE_LIMIT);
+    if (!pendingCount) return res.status(422).json({ error: 'El chat no tiene textos disponibles pendientes de analizar.' });
     const historyItems = rows
       .filter(isWhatsAppTextMessage)
       .map((m) => {
@@ -3950,7 +3883,8 @@ ${historial}`;
     }
     let pendingRemaining = pendingCount;
     if (summaryId) {
-      pendingRemaining = await markSummaryMessagesReviewed(summaryClient, account.id, variants, messageIds);
+      await markSummaryMessagesReviewed(summaryClient, account.id, variants, messageIds);
+      pendingRemaining = (await getAvailableAnalysisMessages(account.id, summaryClient, variants)).length;
       await summaryClient.query('COMMIT');
       publish('chats-updated', { source: 'summary-reviewed', accountId: account.id, chatId: unscopedAccountValue(finalChatId), pendingRemaining });
     }
@@ -6926,20 +6860,20 @@ app.get('/api/pendientes', async (req: Request, res: Response) => {
     if (!account) return res.status(404).json({ error: 'Cuenta de WhatsApp no disponible' });
     const usuarioId = String(req.query.usuario_id || '').trim();
     const esDireccion = String(req.query.es_direccion || '').trim() === 'true';
-    let query = `SELECT DISTINCT ON (m.chat_id) m.id, m.chat_id, m.remitente, m.texto, m.timestamp, m.estado, c.nombre AS chat_nombre, COALESCE(c.unread_count, 0) AS unread_count FROM mensajes m INNER JOIN chats c ON c.id = m.chat_id AND c.account_id = m.account_id WHERE m.account_id = $1::varchar AND m.enviado_por_mi = FALSE AND m.chat_id LIKE '%@g.us' AND COALESCE(c.unread_count, 0) > 0`;
-    const params: string[] = [account.id];
+    let rows = await getAvailableAnalysisMessages(account.id);
     if (usuarioId && !esDireccion) {
-      query += ` AND m.id IN (SELECT mensaje_id FROM mensaje_usuario WHERE usuario_id = $2::varchar)`;
-      params.push(usuarioId);
+      const assigned = await pool.query('SELECT mu.mensaje_id FROM mensaje_usuario mu JOIN mensajes message ON message.id=mu.mensaje_id WHERE message.account_id=$1 AND mu.usuario_id=$2', [account.id, usuarioId]);
+      const ids = new Set(assigned.rows.map((row) => row.mensaje_id));
+      rows = rows.filter((row) => ids.has(row.id));
     }
-    query += ' ORDER BY m.chat_id, m.timestamp DESC';
-    const { rows } = await pool.query<Mensaje & { chat_nombre?: string; unread_count?: number }>(query, params);
-    const counts = await getAnalysisPendingCounts(account.id);
-    const mapped = rows.map((r) => {
-      const chatId = unscopedAccountValue(String(r.chat_id || ''));
-      return { ...r, chat_id: chatId, nombre: r.chat_nombre || chatId, unread_count: Number(r.unread_count || 0), ...counts.get(String(r.chat_id)) };
-    }).filter((chat) => chat.unread_count > 0);
-    res.json(mapped);
+    const mapped = new Map<string, { id: string; chat_id: string; remitente: string; texto: string; timestamp: Date; estado?: string; nombre: string; chat_nombre: string; unread_count: number }>();
+    for (const row of rows) {
+      const chatId = unscopedAccountValue(row.chat_id);
+      const item = mapped.get(chatId) || { id: row.id, chat_id: chatId, remitente: row.remitente, texto: row.texto, timestamp: row.timestamp, estado: row.estado, nombre: row.chat_nombre || chatId, chat_nombre: row.chat_nombre, unread_count: 0 };
+      item.unread_count += 1;
+      mapped.set(chatId, item);
+    }
+    res.json([...mapped.values()]);
   } catch (error) {
     console.error('[pendientes] Error:', (error as Error).message);
     res.status(500).json({ error: (error as Error).message });
