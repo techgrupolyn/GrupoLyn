@@ -26,3 +26,11 @@ El backend crea la nueva tabla al iniciar. El script `deploy/scripts/deploy-glob
 El ZIP de producción se preparó en `extension/dist/release-1.1.9/lyn-superagente-extension-1.1.9.zip`, con manifiesto y código visual verificados. SHA256: `DF8D7C5028C700793CFA96D6AAA12EDF5CC7841DD360BC92509A0709EDE17F5D`.
 
 Actualizar también la extensión para mostrar los porcentajes procesados y las omisiones correctamente. Después del despliegue, reintentar el informe fallido; comprobar `mensajes_analizados`, `mensajes_omitidos`, el contador y la conservación de originales. La validación local no certifica publicación en Chrome Web Store, despliegue ni calidad semántica del proveedor real.
+
+## Corrección de la preparación de CI
+
+La prueba de rutas del webhook suponía que la base ya había pasado por el arranque del backend. En una base nueva con solo `apply-schema.ts`, faltaba `whatsapp_message_inbox`; en `NODE_ENV=test` el arranque no se ejecuta automáticamente. Se reprodujo el mismo 500 con una base local nueva. Las comprobaciones anteriores habían utilizado una base QA ya inicializada y no detectaron esta diferencia.
+
+La prueba ahora llama explícitamente a `ensureDatabaseSchema`, crea y limpia una cuenta sintética propia y verifica almacenamiento real, deduplicación y vaciado de la cola durable, además del 200. Otra prueba exige 500 si falla la recepción durable: no se oculta el error ni se debilita la protección de mensajes. Solo se admiten bases QA locales o la base efímera de CI. Los archivos de pruebas se ejecutan en serie para evitar inicializaciones de esquema concurrentes cuando el ejecutor local comparte la base QA.
+
+Con bases separadas para rutas e integración, como en CI, pasan las 250 pruebas de backend; dos pruebas externas opcionales siguen omitidas. TypeScript aprobado. Esta corrección solo modifica pruebas, su configuración y documentación; no cambia el comportamiento productivo ni el ZIP 1.1.9.
