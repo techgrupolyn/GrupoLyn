@@ -40,6 +40,19 @@ test('publica assets antes de sustituir index.html de manera atómica', () => {
   assert.doesNotMatch(source, /rsync[^\n]*--delete[^\n]*dist\/assets/);
 });
 
+test('dependencias backend se preparan antes de detener y se conservan las anteriores', () => {
+  assert.match(historyDeploy, /mode.*backend-deps/);
+  assert.match(historyDeploy, /gitlyn diff --quiet "\$before" "\$expected" -- backend\/package.json evolution-api frontend/);
+  const install = historyDeploy.indexOf('npm --prefix "$dependency_stage" ci --omit=dev --no-audit --no-fund');
+  const stop = historyDeploy.indexOf('systemctl stop lyn-backend\n');
+  assert.ok(install > historyDeploy.indexOf('sha256sum -c SHA256SUMS'));
+  assert.ok(stop > install);
+  assert.ok(historyDeploy.indexOf('test -f "$dependency_stage/node_modules/tsx/dist/cli.mjs"') < stop);
+  assert.match(historyDeploy, /mv "\$ROOT\/backend\/node_modules" "\$backup\/backend-node_modules-before"/);
+  assert.match(historyDeploy, /mv "\$backup\/backend-node_modules-before" "\$ROOT\/backend\/node_modules"/);
+  assert.doesNotMatch(historyDeploy, /npm (audit fix|update)|--force|rm -rf/);
+});
+
 test('CI habilita las integraciones PostgreSQL en una base aislada', () => {
   assert.match(workflow, /QA_TEST_DATABASE_URL: postgresql:\/\/postgres:postgres@127\.0\.0\.1:5432\/lyn_qa_retest/);
   assert.match(workflow, /CREATE DATABASE lyn_qa_retest/);

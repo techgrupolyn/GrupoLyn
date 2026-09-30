@@ -5,7 +5,7 @@ umask 077
 ROOT=/opt/lyn
 expected=${1:?Indica el commit aprobado completo}
 mode=${2:-backend}
-[[ "$mode" == backend || "$mode" == phone-history ]] || { echo 'Modo de despliegue inválido.' >&2; exit 1; }
+[[ "$mode" == backend || "$mode" == backend-deps || "$mode" == phone-history ]] || { echo 'Modo de despliegue inválido.' >&2; exit 1; }
 backup='pendiente de crear'
 trap 'echo "DESPLIEGUE DETENIDO. Respaldo: $backup. Revisa el registro antes de repetir." >&2' ERR
 [[ $(id -u) -eq 0 ]] || { echo 'Ejecuta con sudo.' >&2; exit 1; }
@@ -25,6 +25,8 @@ if [[ "$mode" == phone-history ]]; then
   test -f "$ROOT/evolution-api/node_modules/tsup/dist/cli-default.js"
   grep -qx 'DATABASE_SAVE_DATA_HISTORIC=true' /etc/lyn/evolution.env
   grep -qx 'DATABASE_SAVE_DATA_NEW_MESSAGE=true' /etc/lyn/evolution.env
+elif [[ "$mode" == backend-deps ]]; then
+  gitlyn diff --quiet "$before" "$expected" -- backend/package.json evolution-api frontend
 else
   gitlyn diff --quiet "$before" "$expected" -- backend/package.json backend/package-lock.json evolution-api frontend
 fi
@@ -67,9 +69,45 @@ sha256sum previous-commit.txt repository.bundle local-changes.patch config.tar.g
 if [[ "$mode" == phone-history ]]; then sha256sum evolution-unit.txt evolution-dist.tar.gz >> SHA256SUMS; fi
 sha256sum -c SHA256SUMS
 echo "RESPALDO VERIFICADO: $backup"
+if [[ "$mode" == backend-deps ]]; then
+  dependency_stage=$(mktemp -d /var/tmp/lyn-backend-deps-XXXXXXXX)
+  gitlyn show "$expected:backend/package.json" > "$dependency_stage/package.json"
+  gitlyn show "$expected:backend/package-lock.json" > "$dependency_stage/package-lock.json"
+  chown lyn:lyn "$dependency_stage" "$dependency_stage/package.json" "$dependency_stage/package-lock.json"
+  echo 'Instalando dependencias backend en staging; el servicio sigue activo.'
+  runuser -u lyn -- npm --prefix "$dependency_stage" ci --omit=dev --no-audit --no-fund
+  test -f "$dependency_stage/node_modules/tsx/dist/cli.mjs"
+  runuser -u lyn -- node -e '
+    const fs = require("node:fs");
+    const root = process.argv[1];
+    const lock = JSON.parse(fs.readFileSync(root + "/package-lock.json", "utf8"));
+    for (const name of ["engine.io", "ip-address", "socket.io", "tsx"]) {
+      const installed = JSON.parse(fs.readFileSync(root + "/node_modules/" + name + "/package.json", "utf8"));
+      if (installed.version !== lock.packages["node_modules/" + name].version) throw new Error("Version inesperada: " + name);
+      console.log(name + ": " + installed.version);
+    }
+    require(root + "/node_modules/socket.io");
+    require(root + "/node_modules/pg");
+  ' "$dependency_stage"
+fi
 gitlyn stash push -m "Respaldo locks antes de informes globales $expected" -- backend/package-lock.json evolution-api/package-lock.json
 gitlyn merge --ff-only "$expected"
 source "$ROOT/deploy/scripts/readiness.sh"
+if [[ "$mode" == backend-deps ]]; then
+  test ! -e "$backup/backend-node_modules-before"
+  systemctl stop lyn-backend
+  if ! mv "$ROOT/backend/node_modules" "$backup/backend-node_modules-before"; then
+    systemctl start lyn-backend
+    echo 'No se pudo respaldar node_modules; no se sustituyeron dependencias.' >&2
+    exit 1
+  fi
+  if ! mv "$dependency_stage/node_modules" "$ROOT/backend/node_modules"; then
+    mv "$backup/backend-node_modules-before" "$ROOT/backend/node_modules"
+    systemctl start lyn-backend
+    echo 'No se pudieron instalar las dependencias preparadas; se restauró node_modules.' >&2
+    exit 1
+  fi
+fi
 if [[ "$mode" == phone-history ]]; then
   stage=$(mktemp -d "$ROOT/evolution-api/.history-build-XXXXXXXX")
   chown lyn:lyn "$stage"
@@ -86,6 +124,10 @@ if [[ "$mode" == phone-history ]]; then
 fi
 systemctl restart lyn-backend
 wait_for_backend /etc/lyn/backend.env
+if [[ "$mode" == backend-deps ]]; then
+  mv "$dependency_stage" "$backup/backend-dependency-install"
+  echo "Dependencias anteriores conservadas en: $backup/backend-node_modules-before"
+fi
 systemctl is-active lyn-backend lyn-evolution nginx
 test "$(runuser -u postgres -- psql -X -d superagente -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='resumenes_globales_chat' AND column_name IN ('evidence','coverage')")" = 2
 test "$(runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d superagente -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('whatsapp_message_inbox','whatsapp_sync_health')")" = 2
