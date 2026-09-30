@@ -89,10 +89,11 @@ wait_for_backend /etc/lyn/backend.env
 systemctl is-active lyn-backend lyn-evolution nginx
 test "$(runuser -u postgres -- psql -X -d superagente -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='resumenes_globales_chat' AND column_name IN ('evidence','coverage')")" = 2
 test "$(runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d superagente -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('whatsapp_message_inbox','whatsapp_sync_health')")" = 2
+test "$(runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d superagente -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='summary_skipped_messages'")" = 1
 if [[ "$mode" == phone-history ]]; then
   test "$(runuser -u postgres -- psql -X -d superagente -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='summary_jobs' AND column_name='next_attempt_at'")" = 1
 fi
 curl --fail --silent --show-error --max-time 20 https://ceo.grupolyn.com/health
 echo
 echo "BACKEND ACTUALIZADO: $expected"
-echo 'El contador y el informe usan solo textos disponibles no analizados. Compatible con extensiones 1.1.6/1.1.7; la 1.1.8 actualiza las explicaciones. Un error antiguo permanece en el historial: genera un nuevo informe para validar la nueva política.'
+echo 'Los mensajes aislados no verificables se omiten y descuentan al guardar, sin borrar originales ni marcarlos como analizados. La extensión 1.1.9 distingue verificados y omitidos en el progreso. Reintenta el informe fallido para continuar; verifica el resultado y el contador.'

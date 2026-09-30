@@ -32,6 +32,11 @@ export async function ensureSummaryJobs(pool: Pool) {
       account_id VARCHAR(120) NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE, message_id VARCHAR(255) NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(account_id,message_id)
     );
+    CREATE TABLE IF NOT EXISTS summary_skipped_messages (
+      account_id VARCHAR(120) NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+      message_id VARCHAR(255) NOT NULL, reason TEXT NOT NULL CHECK(reason='insufficient_evidence'),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(account_id,message_id)
+    );
     INSERT INTO summary_reviewed_messages(account_id,message_id)
       SELECT account_id,message_id FROM (
         SELECT account_id, UNNEST(mensaje_ids) AS message_id FROM resumenes_chat WHERE ai_fallback=FALSE

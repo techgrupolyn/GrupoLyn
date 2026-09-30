@@ -33,7 +33,7 @@ test('el panel prioriza el informe global y muestra el contador de mensajes pend
   assert.match(html, /id="global-report-progress" aria-live="polite"/);
   assert.match(sidepanel, /function renderPendingUnreadCounter/);
   assert.match(sidepanel, /if \(success\) await loadChats\(\);/);
-  assert.equal(manifest.version, '1.1.8');
+  assert.equal(manifest.version, '1.1.9');
 });
 
 function reportHarness() {
@@ -238,4 +238,26 @@ test('recuperar historial no inventa progreso de IA', () => {
   const markup = progressMarkup({ en_progreso: true, progress: { stage: 'syncing', completedMessages: 0, totalMessages: 0 } });
   assert.match(markup, /Recuperando historial pendiente/);
   assert.doesNotMatch(markup, /value="|% analizado/);
+});
+
+test('el avance distingue verificados de omitidos sin declararlos analizados', () => {
+  const progress = { completedMessages: 2004, skippedMessages: 1, totalMessages: 2271 };
+  const markup = progressMarkup({ en_progreso: true, progress });
+  assert.match(markup, /2004 verificados y 1 omitidos/);
+  assert.match(markup, /% procesado de la selección/);
+  assert.match(markup, /se descontarán solo al guardar/);
+  assert.doesNotMatch(markup, /% analizado/);
+  assert.match(progressMarkup({ status: 'failed', progress }), /mensajes siguen pendientes/);
+});
+
+test('un informe con omisiones llega al 100 procesado manteniendo el número real verificado', () => {
+  for (const verified of [0, 2270]) {
+    const markup = progressMarkup({ status: 'completed', mensajes_analizados: verified, mensajes_omitidos: 1,
+      coverage: { scope: 'available_texts', verified, skipped: 1 } });
+    assert.match(markup, /100 % procesado/);
+    assert.match(markup, new RegExp(`${verified} verificados y 1 omitidos`));
+    assert.match(markup, /Informe guardado con omisiones/);
+    assert.match(markup, /sin marcarlos como analizados ni borrar/);
+  }
+  assert.match(progressMarkup({ mensajes_contexto: 0, coverage: { skipped: 1, scope: 'available_texts' } }), /100 % procesado/);
 });

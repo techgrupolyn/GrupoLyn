@@ -761,28 +761,33 @@ function globalReportProgressMarkup(data) {
   if (!data) return '';
   const progress = data.progress || {};
   const valid = (completed, total) => Number.isSafeInteger(total) && total > 0 && Number.isSafeInteger(completed) && completed >= 0 && completed <= total;
+  const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
   const savedCount = data.mensajes_analizados ?? data.mensajes_contexto;
-  const saved = data.status === 'completed' || (!data.status && !data.en_progreso && valid(savedCount, savedCount));
+  const coverage = data.coverage;
+  const savedSkipped = count(data.mensajes_omitidos ?? coverage?.skipped);
+  const saved = data.status === 'completed' || (!data.status && !data.en_progreso && valid(count(savedCount) + savedSkipped, count(savedCount) + savedSkipped));
   if (!data.en_progreso && data.status !== 'failed' && !saved) return '';
   let total = progress.totalMessages;
   let completed = progress.completedMessages;
+  const skipped = saved ? savedSkipped : count(progress.skippedMessages);
+  const verified = saved ? count(savedCount) : count(completed);
   let unit = 'textos seleccionados';
-  if (saved) { total = savedCount; completed = savedCount; }
+  if (saved) { total = count(savedCount) + skipped; completed = total; }
+  else if (skipped && valid(completed, total) && completed + skipped <= total) { completed += skipped; }
   else if (!valid(completed, total)) { total = progress.totalBatches; completed = progress.completedBatches; unit = 'lotes'; }
   const known = valid(completed, total);
   const tenths = known ? Math.floor(completed / total * 1000) : null;
   const percent = tenths === null ? null : tenths / 10;
   const format = (value) => value.toLocaleString('es-ES', { maximumFractionDigits: 1 });
   const failed = data.status === 'failed';
-  const coverage = data.coverage;
-  const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
   const missing = count(coverage?.unavailable) + (coverage?.emptyExcluded === true ? 0 : count(coverage?.empty));
-  const unknownCoverage = saved && !coverage && Number(data.mensajes_pendientes) > Number(savedCount);
-  const stage = failed ? 'Análisis detenido' : saved ? missing ? 'Informe parcial guardado' : unknownCoverage ? 'Informe guardado · cobertura no verificada' : 'Informe guardado' : progress.stage === 'syncing' ? 'Recuperando historial pendiente…' : progress.stage === 'consolidating' ? 'Preparando y guardando informe…' : progress.stage === 'verifying' ? 'Verificando evidencias…' : known ? 'Analizando mensajes…' : 'Preparando el análisis…';
-  const detail = known ? `${format(completed)} de ${format(total)} ${unit} verificados. ${format((1000 - tenths) / 10)} % restante del análisis.` : 'Calculando el total. El porcentaje aparecerá cuando el servidor tenga la selección preparada.';
-  const note = failed ? 'El informe no se guardó; tus mensajes siguen pendientes.' : saved ? 'El porcentaje corresponde solo a los textos seleccionados, no a todos los pendientes de WhatsApp.' : 'El porcentaje mide contenido verificado, no tiempo restante. Puedes cerrar el panel; el trabajo continúa en el servidor.';
+  const unknownCoverage = saved && !coverage && Number(data.mensajes_pendientes) > count(savedCount) + skipped;
+  const stage = failed ? 'Análisis detenido' : saved ? missing ? 'Informe parcial guardado' : skipped ? 'Informe guardado con omisiones' : unknownCoverage ? 'Informe guardado · cobertura no verificada' : 'Informe guardado' : progress.stage === 'syncing' ? 'Recuperando historial pendiente…' : progress.stage === 'consolidating' ? 'Preparando y guardando informe…' : progress.stage === 'verifying' ? 'Verificando evidencias…' : known ? 'Analizando mensajes…' : 'Preparando el análisis…';
+  const detail = known ? skipped ? `${format(completed)} de ${format(total)} textos procesados: ${format(verified)} verificados y ${format(skipped)} omitidos por evidencia insuficiente. ${format((1000 - tenths) / 10)} % restante.` : `${format(completed)} de ${format(total)} ${unit} verificados. ${format((1000 - tenths) / 10)} % restante del análisis.` : 'Calculando el total. El porcentaje aparecerá cuando el servidor tenga la selección preparada.';
+  const note = failed ? 'El informe no se guardó; tus mensajes siguen pendientes.' : skipped ? saved ? 'Los omitidos se descontaron del contador, sin marcarlos como analizados ni borrar sus originales.' : 'Verificados y omitidos se descontarán solo al guardar. El porcentaje mide mensajes procesados, no tiempo restante.' : saved ? 'El porcentaje corresponde solo a los textos seleccionados, no a todos los pendientes de WhatsApp.' : 'El porcentaje mide contenido verificado, no tiempo restante. Puedes cerrar el panel; el trabajo continúa en el servidor.';
   const coverageDetail = saved && coverage?.scope === 'available_texts' ? '<p>Informe de los textos disponibles al iniciar. Los vacíos, adjuntos y mensajes sin contenido disponible no cuentan como pendientes de análisis.</p>' : saved && coverage ? `<p>${format(count(coverage.excludedMedia))} adjuntos excluidos · ${format(count(coverage.unavailable))} pendientes sin contenido disponible · ${format(count(coverage.empty))} textos vacíos${coverage.emptyExcluded === true ? ' excluidos del contador de análisis. Los adjuntos y el historial faltante no se descuentan' : '. No se han descontado esos mensajes'}.</p>` : unknownCoverage ? '<p>No se comprobó la cobertura de todos los pendientes en este informe anterior. Genera uno nuevo para comprobar el historial disponible.</p>' : '';
-  return `<div class="report-progress"><div class="report-progress-heading"><span>${stage}</span><strong>${known ? `${format(percent)} % analizado de la selección` : 'En proceso'}</strong></div><progress max="100"${known ? ` value="${percent}" aria-valuetext="${format(percent)} % analizado de la selección"` : ''} aria-label="Progreso del análisis global"></progress><p>${detail}</p><p>${note}</p>${coverageDetail}</div>`;
+  const percentLabel = `${format(percent ?? 0)} % ${skipped ? 'procesado' : 'analizado'} de la selección`;
+  return `<div class="report-progress"><div class="report-progress-heading"><span>${stage}</span><strong>${known ? percentLabel : 'En proceso'}</strong></div><progress max="100"${known ? ` value="${percent}" aria-valuetext="${percentLabel}"` : ''} aria-label="Progreso del análisis global"></progress><p>${detail}</p><p>${note}</p>${coverageDetail}</div>`;
 }
 
 function globalReportDescription(data) {
@@ -798,6 +803,8 @@ function globalReportDescription(data) {
   const parts = [];
   if (Number.isFinite(groups)) parts.push(`${groups} grupos`);
   if (Number.isFinite(messages)) parts.push(`${messages} mensajes analizados`);
+  const omitted = Number(data.mensajes_omitidos ?? data.coverage?.skipped);
+  if (omitted > 0) parts.push(`${omitted} omitidos por evidencia insuficiente`);
   if (Number.isFinite(pending)) parts.push(`${pending} mensajes pendientes al iniciar`);
   return parts.join(' · ');
 }

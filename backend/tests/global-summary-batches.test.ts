@@ -115,11 +115,60 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
     expect(() => parseEvidenceAnalysis(JSON.stringify({ findings: [], informational: [['G1-M1', 'G1-M999']] }), [source])).toThrow('ajeno');
   });
 
-  it('una negación invertida o una tarea omitida impide publicar aunque la cita exista', async () => {
+  it('una negación invertida se rechaza y el mensaje aislado no verificable se omite explícitamente', async () => {
     expect(() => validateEvidenceAudit(JSON.stringify({ approved: [], rejected: [{ index: 0, reason: 'Negación invertida' }], missing: [] }), [finding])).toThrow();
     const options = harness();
     options.generate.mockImplementation(async (prompt) => prompt.startsWith('ETAPA: VERIFICACION') ? { ...evidenceResponse(prompt), text: JSON.stringify({ approved: [], rejected: [], missing: [{ source: 'G1-M1', reason: 'Se omitió la tarea' }] }) } : evidenceResponse(prompt));
-    await expect(generateBatchedGlobalSummary([{ name: 'QA', items: [{ line: 'Hay que pedir el plano' }] }], options)).rejects.toThrow('evidencia suficiente');
+    const result = await generateBatchedGlobalSummary([{ name: 'QA', items: [{ id: 'bad', line: 'Hay que pedir el plano' }] }], options);
+    expect(result.skippedMessages).toEqual([{ messageId: 'bad', reason: 'insufficient_evidence' }]);
+    expect(result.evidence.groups).toEqual([]);
+    expect(result.text).toContain('0 mensajes de texto revisados');
+    expect(result.text).toContain('MENSAJES OMITIDOS: 1');
+    expect(options.progress.mock.calls.at(-1)![0]).toMatchObject({ completedMessages: 0, skippedMessages: 1, totalMessages: 1 });
+  });
+
+  it('aísla un mensaje inválido y verifica el resto sin incluirlo como contexto ni evidencia', async () => {
+    const options = harness();
+    options.generate.mockImplementation(async (prompt) => {
+      const data = evidencePayload(prompt);
+      return data.primary.some((item: EvidenceSource) => item.line === 'INVALIDO') ? { ...evidenceResponse(prompt), text: '{}' } : evidenceResponse(prompt);
+    });
+    const groups = [{ name: 'QA', items: Array.from({ length: 321 }, (_, index) => ({ id: `message-${index}`, line: index === 200 ? 'INVALIDO' : `Texto ${index}` })) }];
+    const result = await generateBatchedGlobalSummary(groups, options);
+    expect(result.skippedMessages).toEqual([{ messageId: 'message-200', reason: 'insufficient_evidence' }]);
+    expect(result.evidence.groups[0].messageCount).toBe(320);
+    expect(options.progress.mock.calls.at(-1)![0]).toMatchObject({ completedMessages: 320, skippedMessages: 1, totalMessages: 321 });
+    const calls = options.generate.mock.calls;
+    expect(calls.filter(([prompt]) => {
+      const data = evidencePayload(prompt);
+      return data.primary.length === 160 && data.primary[0].ref === 'G1-M1';
+    })).toHaveLength(2);
+    const last = evidencePayload(calls.at(-1)![0]);
+    expect([...last.primary, ...last.context].some((item: EvidenceSource) => item.line === 'INVALIDO')).toBe(false);
+  });
+
+  it('omite el mensaje completo si falla un fragmento y elimina sus hallazgos anteriores', async () => {
+    const options = harness();
+    options.generate.mockImplementation(async (prompt) => {
+      const data = evidencePayload(prompt);
+      if (data.primary.some((item: EvidenceSource) => item.ref === 'G1-M1-P5')) return { ...evidenceResponse(prompt), text: '{}' };
+      if (data.analysis) return evidenceResponse(prompt);
+      return { ...evidenceResponse(prompt), text: JSON.stringify({ findings: data.primary.map((item: EvidenceSource) => ({ ...finding, text: item.line.slice(0, 50), topicRef: null, evidence: [{ source: item.ref, quote: item.line.slice(0, 50) }] })), informational: [] }) };
+    });
+    const result = await generateBatchedGlobalSummary([{ name: 'QA', items: [{ id: 'giant', line: 'EXTENSO '.repeat(5000) }, { id: 'good', line: 'Revisar plano' }] }], options);
+    expect(result.skippedMessages.map((item) => item.messageId)).toEqual(['giant']);
+    expect(result.evidence.groups[0].sources.map((item) => item.messageId)).toEqual(['good']);
+    expect(result.text).not.toContain('EXTENSO');
+    expect(result.text).toContain('Revisar plano');
+    expect(options.progress.mock.calls.at(-1)![0]).toMatchObject({ completedMessages: 1, skippedMessages: 1, totalMessages: 2 });
+  });
+
+  it.each([429, 503])('no descarta mensajes por fallos del proveedor (%s)', async (status) => {
+    const options = harness();
+    options.generate.mockRejectedValue(Object.assign(new Error('Proveedor indisponible'), { status }));
+    await expect(generateBatchedGlobalSummary([{ name: 'QA', items: [{ id: 'pending', line: 'Texto' }] }], options)).rejects.toThrow('Proveedor indisponible');
+    expect(options.generate).toHaveBeenCalledTimes(3);
+    expect(options.progress.mock.calls.every(([update]) => update.skippedMessages === 0)).toBe(true);
   });
 
   it('conserva incertidumbres y secuencia de estados sin mezclar grupos', () => {

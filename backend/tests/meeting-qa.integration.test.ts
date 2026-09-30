@@ -1529,46 +1529,80 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
-  it('Q-evidencia: una cita inventada no publica ni consume pendientes y permite corregir el reintento', async () => {
+  it.each([0, 2])('Q-evidencia: omite un texto no verificable, conserva %s válidos y descuenta solo al guardar', async (validCount) => {
     const accountId = `qa-evidence-${randomUUID()}`;
     const chatId = `${accountId}::120363999900007@g.us`;
     const messageId = `${accountId}:original`;
+    const otherAccount = `${accountId}-other`;
+    const invitationId = randomUUID();
+    const activationId = randomUUID();
+    const headers = { 'x-extension-activation': activationId };
     const fetcher = vi.fn().mockRejectedValue(new Error('No se permite red en esta regresión'));
     vi.stubGlobal('fetch', fetcher);
-    let invalidCitation = true;
     generation.mockReset().mockImplementation(async (prompt: string) => {
       const data = evidencePayload(prompt);
       if (data.analysis) return evidenceResponse(prompt);
+      const invalid = data.primary.find((item: { line: string }) => item.line.includes('Revisar planos'));
+      if (!invalid) return evidenceResponse(prompt);
       return { ...evidenceResponse(prompt), text: JSON.stringify({ findings: [{
         kind: 'task', state: 'pending', topicRef: null, text: 'Revisar planos',
-        evidence: [{ source: data.primary[0].ref, quote: invalidCitation ? 'Pedro aprobó el pago' : 'Revisar planos' }],
+        evidence: [{ source: invalid.ref, quote: 'Pedro aprobó el pago' }],
       }], informational: [] }) };
     });
     try {
       await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$1)', [accountId]);
-      await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count) VALUES($1,$2,'QA evidencia',1,1)", [chatId, accountId]);
+      await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$1)', [otherAccount]);
+      await server.pool.query("INSERT INTO extension_invitations(id,code_hash,expires_at,created_by,account_id) VALUES($1::uuid,$1::text,NOW()+INTERVAL '1 hour','qa',$2)", [invitationId, accountId]);
+      await server.pool.query('INSERT INTO extension_activations(id,invitation_id,account_id) VALUES($1,$2,$3)', [activationId, invitationId, accountId]);
+      await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count) VALUES($1,$2,'QA evidencia',$3,$3)", [chatId, accountId, validCount + 1]);
       await server.pool.query("INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,enviado_por_mi) VALUES($1,$2,$3,'QA','Revisar planos',FALSE)", [messageId, chatId, accountId]);
-      const queue = createSummaryQueue(server.pool, server.prepareGlobalSummary);
-      const job = await queue.enqueue(accountId, 'general');
-      await queue.run();
+      for (let index = 0; index < validCount; index++) await server.pool.query("INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,enviado_por_mi) VALUES($1,$2,$3,'QA','Mensaje válido',FALSE)", [`${accountId}:valid-${index}`, chatId, accountId]);
+      await server.pool.query("INSERT INTO summary_skipped_messages(account_id,message_id,reason) VALUES($1,$2,'insufficient_evidence')", [otherAccount, `${accountId}:valid-0`]);
+      const rollbackQueue = createSummaryQueue(server.pool, async (job) => {
+        const save = await server.prepareGlobalSummary(job);
+        return async (client) => { await save(client); throw new Error('Fallo SQL simulado después de guardar omisiones'); };
+      });
+      const job = await rollbackQueue.enqueue(accountId, 'general');
+      await rollbackQueue.run();
       expect((await server.pool.query('SELECT status FROM summary_jobs WHERE id=$1', [job.id])).rows[0].status).toBe('failed');
-      expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0]).toEqual({ unread_count: 1, whatsapp_unread_count: 1 });
       expect((await server.pool.query('SELECT * FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rowCount).toBe(0);
       expect((await server.pool.query('SELECT * FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rowCount).toBe(0);
-      invalidCitation = false;
+      expect((await server.pool.query('SELECT * FROM summary_skipped_messages WHERE account_id=$1', [accountId])).rowCount).toBe(0);
+      expect((await request(server.app).get('/api/chats').set(headers)).body[0].unread_count).toBe(validCount + 1);
+      const queue = createSummaryQueue(server.pool, server.prepareGlobalSummary);
       expect((await queue.enqueue(accountId, 'general')).id).toBe(job.id);
       await queue.run();
-      const summary = (await server.pool.query('SELECT evidence FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rows[0];
-      expect(summary.evidence.groups[0].sources[0].messageId).toBe(messageId);
-      expect(summary.evidence.groups[0].findings[0].evidence[0].quote).toBe('Revisar planos');
-      expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0]).toEqual({ unread_count: 0, whatsapp_unread_count: 1 });
+      const saved = (await server.pool.query('SELECT status,result,error FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
+      expect(saved.status, saved.error).toBe('completed');
+      expect(saved.result).toMatchObject({ mensajes_analizados: validCount, mensajes_omitidos: 1, mensajes_procesados: validCount + 1, mensajes_pendientes_restantes: 0 });
+      const summary = (await server.pool.query('SELECT resumen,mensaje_ids,evidence FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rows[0];
+      expect(summary.mensaje_ids).toHaveLength(validCount);
+      expect(summary.mensaje_ids).not.toContain(messageId);
+      expect(summary.resumen).not.toContain('Pedro aprobó');
+      expect(summary.evidence.skippedMessages).toEqual([{ messageId, reason: 'insufficient_evidence' }]);
+      expect((await server.pool.query('SELECT message_id,reason FROM summary_skipped_messages WHERE account_id=$1', [accountId])).rows).toEqual([{ message_id: messageId, reason: 'insufficient_evidence' }]);
+      expect((await server.pool.query('SELECT message_id FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rowCount).toBe(validCount);
+      expect((await server.pool.query('SELECT id FROM mensajes WHERE account_id=$1', [accountId])).rowCount).toBe(validCount + 1);
+      expect((await server.pool.query('SELECT whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0].whatsapp_unread_count).toBe(validCount + 1);
+      for (let repeat = 0; repeat < 2; repeat++) {
+        expect((await request(server.app).get('/api/chats').set(headers)).body[0].unread_count).toBe(0);
+        expect((await request(server.app).get('/api/pendientes').set(headers)).body).toEqual([]);
+      }
+      const next = await queue.enqueue(accountId, 'general');
+      await queue.run();
+      expect((await server.pool.query('SELECT error FROM summary_jobs WHERE id=$1', [next.id])).rows[0].error).toContain('No hay textos disponibles');
+      expect((await server.pool.query('SELECT id FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rowCount).toBe(1);
       expect(fetcher).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
+      generation.mockReset();
+      await server.pool.query('DELETE FROM extension_activations WHERE id=$1', [activationId]);
+      await server.pool.query('DELETE FROM extension_invitations WHERE id=$1', [invitationId]);
       await server.pool.query('DELETE FROM resumenes_globales_chat WHERE account_id=$1', [accountId]);
       await server.pool.query('DELETE FROM summary_reviewed_messages WHERE account_id=$1', [accountId]);
       await server.pool.query('DELETE FROM chats WHERE account_id=$1', [accountId]);
       await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [otherAccount]);
     }
   });
 

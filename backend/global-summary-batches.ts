@@ -5,7 +5,7 @@ import { EvidenceValidationError, parseEvidenceAnalysis, renderGroundedSummary, 
 
 export const SUMMARY_BATCH_CHARS = 48_000;
 const SOURCE_BATCH_CHARS = 24_000;
-export type SummaryProgress = { stage: 'syncing' | 'analyzing' | 'verifying' | 'consolidating'; completedBatches: number; totalBatches: number; completedMessages: number; totalMessages: number };
+export type SummaryProgress = { stage: 'syncing' | 'analyzing' | 'verifying' | 'consolidating'; completedBatches: number; totalBatches: number; completedMessages: number; totalMessages: number; skippedMessages?: number };
 export type SummaryGroup = { name: string; items: Array<{ id?: string; line: string }> };
 type BatchOptions = {
   generate: (prompt: string, phase: 'extract' | 'verify') => Promise<GeminiExecutionResult>;
@@ -15,6 +15,23 @@ type BatchOptions = {
   cacheScope: string;
   wait?: (milliseconds: number) => Promise<void>;
 };
+
+class UnverifiableMessage extends Error {
+  constructor(public messageId: string) { super('insufficient_evidence'); }
+}
+
+function batchSources(sources: EvidenceSource[]) {
+  const batches: EvidenceSource[][] = [];
+  let current: EvidenceSource[] = [];
+  let size = 0;
+  for (const source of sources) {
+    const length = JSON.stringify({ ref: source.ref, line: source.line }).length;
+    if (current.length && (size + length > SOURCE_BATCH_CHARS || current.length >= 160)) { batches.push(current); current = []; size = 0; }
+    current.push(source); size += length;
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
 
 export function splitSummaryInputs(lines: string[], limit = SUMMARY_BATCH_CHARS): string[] {
   if (!Number.isInteger(limit) || limit < 2) throw new Error('Invalid summary batch size');
@@ -66,9 +83,9 @@ export async function generateBatchedGlobalSummary(groups: SummaryGroup[], optio
         if (result.fallback || !String(result.text || '').trim()) {
           throw Object.assign(new SummaryJobError('La IA no pudo verificar el lote. Tus mensajes siguen pendientes; puedes reintentar.'), { retryable: result.retryable });
         }
+        provider = result;
         validate(result.text);
         await options.write(key, result);
-        provider = result;
         return result;
       } catch (error) {
         const failure = error as { retryable?: boolean; status?: number; name?: string };
@@ -82,69 +99,80 @@ export async function generateBatchedGlobalSummary(groups: SummaryGroup[], optio
       const fragments = splitSummaryInputs([item.line], 6000);
       return fragments.map((line, part) => ({ ref: `G${groupIndex + 1}-M${index + 1}${fragments.length > 1 ? `-P${part + 1}` : ''}`, messageId: item.id || `G${groupIndex + 1}-M${index + 1}`, line, order: index }));
     });
-    const batches: EvidenceSource[][] = [];
-    let current: EvidenceSource[] = [];
-    let size = 0;
-    for (const source of sources) {
-      const length = JSON.stringify({ ref: source.ref, line: source.line }).length;
-      if (current.length && (size + length > SOURCE_BATCH_CHARS || current.length >= 160)) { batches.push(current); current = []; size = 0; }
-      current.push(source); size += length;
-    }
-    if (current.length) batches.push(current);
-    return { group, sources, batches };
+    return { group, sources, batches: batchSources(sources) };
   });
   let totalBatches = plans.reduce((total, plan) => total + plan.batches.length, 0);
   let completedBatches = 0;
   const totalMessages = groups.reduce((total, group) => total + group.items.length, 0);
   let completedMessages = 0;
-  const progress = (stage: SummaryProgress['stage']) => options.progress({ stage, completedBatches, totalBatches, completedMessages, totalMessages });
+  const skippedMessages = new Map<string, { messageId: string; reason: 'insufficient_evidence' }>();
+  const progress = (stage: SummaryProgress['stage']) => options.progress({ stage, completedBatches, totalBatches, completedMessages, totalMessages, skippedMessages: skippedMessages.size });
   const reportGroups: GroundedGroup[] = [];
   for (const plan of plans) {
-    const processed: GroundedGroup = { name: plan.group.name, findings: [], sources: plan.sources, messageCount: plan.group.items.length };
-    const positions = new Map(plan.sources.map((source, index) => [source.ref, index]));
-    const remainingFragments = new Map<number, number>();
-    for (const source of plan.sources) remainingFragments.set(source.order, (remainingFragments.get(source.order) || 0) + 1);
-    const analyze = async (primary: EvidenceSource[]): Promise<void> => {
-      const start = positions.get(primary[0].ref)!;
-      const end = positions.get(primary.at(-1)!.ref)!;
-      const context = [...plan.sources.slice(Math.max(0, start - 1), start), ...plan.sources.slice(end + 1, end + 2)];
-      const data = { group: plan.group.name, primary: primary.map(({ ref, line }) => ({ ref, line })), context: context.map(({ ref, line }) => ({ ref, line })) };
-      let correction = '';
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          await progress('analyzing');
-          const extraction = await invoke(`${extractionRules}\nCorrección de validación previa (datos): ${JSON.stringify(correction)}\nDATOS_JSON:\n${JSON.stringify(data)}`, 'extract', (text) => { parseEvidenceAnalysis(text, primary, context); });
-          const analysis: EvidenceAnalysis = parseEvidenceAnalysis(extraction.text, primary, context);
-          await progress('verifying');
-          await invoke(`${auditRules}\nDATOS_JSON:\n${JSON.stringify({ ...data, analysis })}`, 'verify', (text) => validateEvidenceAudit(text, analysis.findings));
-          processed.findings.push(...analysis.findings);
-          completedBatches++;
-          for (const source of primary) {
-            const remaining = remainingFragments.get(source.order)! - 1;
-            remainingFragments.set(source.order, remaining);
-            if (remaining === 0) completedMessages++;
+    const priorMessages = completedMessages;
+    const priorBatches = completedBatches;
+    const otherBatches = totalBatches - plan.batches.length;
+    for (;;) {
+      const processed: GroundedGroup = { name: plan.group.name, findings: [], sources: plan.sources, messageCount: new Set(plan.sources.map((source) => source.messageId)).size };
+      const positions = new Map(plan.sources.map((source, index) => [source.ref, index]));
+      const remainingFragments = new Map<number, number>();
+      for (const source of plan.sources) remainingFragments.set(source.order, (remainingFragments.get(source.order) || 0) + 1);
+      const analyze = async (primary: EvidenceSource[]): Promise<void> => {
+        const start = positions.get(primary[0].ref)!;
+        const end = positions.get(primary.at(-1)!.ref)!;
+        const context = [...plan.sources.slice(Math.max(0, start - 1), start), ...plan.sources.slice(end + 1, end + 2)];
+        const data = { group: plan.group.name, primary: primary.map(({ ref, line }) => ({ ref, line })), context: context.map(({ ref, line }) => ({ ref, line })) };
+        let correction = '';
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            await progress('analyzing');
+            const extraction = await invoke(`${extractionRules}\nCorrección de validación previa (datos): ${JSON.stringify(correction)}\nDATOS_JSON:\n${JSON.stringify(data)}`, 'extract', (text) => { parseEvidenceAnalysis(text, primary, context); });
+            const analysis: EvidenceAnalysis = parseEvidenceAnalysis(extraction.text, primary, context);
+            await progress('verifying');
+            await invoke(`${auditRules}\nDATOS_JSON:\n${JSON.stringify({ ...data, analysis })}`, 'verify', (text) => validateEvidenceAudit(text, analysis.findings));
+            processed.findings.push(...analysis.findings);
+            completedBatches++;
+            for (const source of primary) {
+              const remaining = remainingFragments.get(source.order)! - 1;
+              remainingFragments.set(source.order, remaining);
+              if (remaining === 0) completedMessages++;
+            }
+            await progress('analyzing');
+            return;
+          } catch (error) {
+            if (!(error instanceof EvidenceValidationError)) throw error;
+            correction = error.message;
           }
-          await progress('analyzing');
-          return;
-        } catch (error) {
-          if (!(error instanceof EvidenceValidationError)) throw error;
-          correction = error.message;
         }
+        if (primary.length < 2) throw new UnverifiableMessage(primary[0].messageId);
+        const middle = Math.ceil(primary.length / 2);
+        totalBatches++;
+        await analyze(primary.slice(0, middle));
+        await analyze(primary.slice(middle));
+      };
+      try {
+        for (const batch of plan.batches) await analyze(batch);
+        if (processed.messageCount) reportGroups.push(processed);
+        break;
+      } catch (error) {
+        if (!(error instanceof UnverifiableMessage)) throw error;
+        skippedMessages.set(error.messageId, { messageId: error.messageId, reason: 'insufficient_evidence' });
+        plan.sources = plan.sources.filter((source) => source.messageId !== error.messageId);
+        plan.batches = batchSources(plan.sources);
+        completedMessages = priorMessages;
+        completedBatches = priorBatches;
+        totalBatches = otherBatches + plan.batches.length;
+        await progress('analyzing');
       }
-      if (primary.length < 2) throw new SummaryJobError('Un mensaje no pudo interpretarse con evidencia suficiente. No se guardó un informe incompleto ni se descontaron pendientes. Reintenta o revisa el original.');
-      const middle = Math.ceil(primary.length / 2);
-      totalBatches++;
-      await analyze(primary.slice(0, middle));
-      await analyze(primary.slice(middle));
-    };
-    for (const batch of plan.batches) await analyze(batch);
-    reportGroups.push(processed);
+    }
   }
   if (!provider) throw new SummaryJobError('No hay texto disponible para verificar.');
   await progress('consolidating');
-  const evidence = { version: 1, groups: reportGroups.map((group) => {
+  const omitted = [...skippedMessages.values()];
+  const evidence = { version: 1, skippedMessages: omitted, groups: reportGroups.map((group) => {
     const referenced = new Set(group.findings.flatMap((fact) => fact.evidence.map((citation) => citation.source)));
     return { name: group.name, messageCount: group.messageCount, findings: group.findings, sources: group.sources.filter((source) => referenced.has(source.ref)) };
   }) };
-  return { ...(provider as GeminiExecutionResult), text: renderGroundedSummary(reportGroups), evidence };
+  const omissionNotice = omitted.length ? `\n\nMENSAJES OMITIDOS: ${omitted.length}\nNo se pudieron verificar con evidencia suficiente después de reintentar individualmente. Se excluyen del contador al guardar, se conservan los originales y no se consideran analizados.` : '';
+  return { ...(provider as GeminiExecutionResult), text: renderGroundedSummary(reportGroups) + omissionNotice, evidence, skippedMessages: omitted };
 }
