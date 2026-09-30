@@ -27,7 +27,8 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
     expect(new Set(primary.map((item) => item.ref)).size).toBe(20000);
     expect(options.generate.mock.calls.every(([prompt]) => prompt.length <= SUMMARY_BATCH_CHARS)).toBe(true);
     expect(options.generate.mock.calls.filter(([prompt]) => prompt.startsWith('ETAPA: VERIFICACION')).length).toBe(options.generate.mock.calls.length / 2);
-    for (const group of groups) expect(report.text).toContain(`## ${group.name}`);
+    expect(report.text).toContain('No se identificaron asuntos relevantes');
+    expect(report.text).not.toContain('## Proyecto');
     const progress = options.progress.mock.calls.at(-1)![0];
     expect(progress.completedBatches).toBe(progress.totalBatches);
     expect(progress).toMatchObject({ completedMessages: 20000, totalMessages: 20000 });
@@ -38,6 +39,7 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
     const options = harness();
     options.generate.mockImplementation(async (prompt) => {
       const data = evidencePayload(prompt);
+      if (data.sources) return evidenceResponse(prompt);
       if (data.analysis) return evidenceResponse(prompt);
       return { ...evidenceResponse(prompt), text: JSON.stringify({ findings: data.primary.map((item: EvidenceSource) => ({ ...finding, text: item.line, topicRef: null, kind: 'task', state: 'pending', evidence: [{ source: item.ref, quote: item.line }] })), informational: [] }) };
     });
@@ -77,7 +79,7 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
     const options = harness();
     options.generate.mockImplementation(async (prompt) => evidencePayload(prompt).primary.length > 2 ? { ...evidenceResponse(prompt), text: '{JSON incompleto' } : evidenceResponse(prompt));
     const report = await generateBatchedGlobalSummary([{ name: 'QA', items: Array.from({ length: 8 }, (_, index) => ({ line: `Texto ${index}` })) }], options);
-    expect(report.text).toContain('8 mensajes de texto');
+    expect(report.evidence.groups[0].messageCount).toBe(8);
     const progress = options.progress.mock.calls.at(-1)![0];
     expect(progress.completedBatches).toBe(4);
     expect(progress.totalBatches).toBe(4);
@@ -122,7 +124,7 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
     const result = await generateBatchedGlobalSummary([{ name: 'QA', items: [{ id: 'bad', line: 'Hay que pedir el plano' }] }], options);
     expect(result.skippedMessages).toEqual([{ messageId: 'bad', reason: 'insufficient_evidence' }]);
     expect(result.evidence.groups).toEqual([]);
-    expect(result.text).toContain('0 mensajes de texto revisados');
+    expect(result.text).toContain('No se identificaron asuntos relevantes');
     expect(result.text).toContain('MENSAJES OMITIDOS: 1');
     expect(options.progress.mock.calls.at(-1)![0]).toMatchObject({ completedMessages: 0, skippedMessages: 1, totalMessages: 1 });
   });
@@ -151,6 +153,7 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
     const options = harness();
     options.generate.mockImplementation(async (prompt) => {
       const data = evidencePayload(prompt);
+      if (data.sources) return evidenceResponse(prompt);
       if (data.primary.some((item: EvidenceSource) => item.ref === 'G1-M1-P5')) return { ...evidenceResponse(prompt), text: '{}' };
       if (data.analysis) return evidenceResponse(prompt);
       return { ...evidenceResponse(prompt), text: JSON.stringify({ findings: data.primary.map((item: EvidenceSource) => ({ ...finding, text: item.line.slice(0, 50), topicRef: null, evidence: [{ source: item.ref, quote: item.line.slice(0, 50) }] })), informational: [] }) };

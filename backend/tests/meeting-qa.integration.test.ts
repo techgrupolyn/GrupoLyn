@@ -996,6 +996,57 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   },60000);
 
+  it('la síntesis respeta el prompt configurado y no consume mensajes si falla su auditoría', async () => {
+    const accountId = `qa-synthesis-${randomUUID()}`;
+    const chatId = `${accountId}::120363999930000@g.us`;
+    const specialistId = `qa-role-${randomUUID()}`;
+    const role = 'Agrupa por obra. Omite saludos, apartados vacíos y asuntos ajenos a obras. No cierres un problema solo por haberlo comentado.';
+    let failAudit = true;
+    generation.mockReset().mockImplementation(async (prompt: string, _model: string, system: string) => {
+      expect(prompt).toContain(JSON.stringify(role));
+      expect(system).toMatch(/PROMPT_DEL_ROL|Agrupa por obra/);
+      const data = evidencePayload(prompt);
+      if (data.draft && failAudit) return { ...evidenceResponse(prompt), text: JSON.stringify({ approved: false, issues: ['La fuga no está resuelta'] }) };
+      if (!data.sources && !data.analysis) return { ...evidenceResponse(prompt), text: JSON.stringify({ findings: [{
+        kind: 'blocker', state: 'pending', topicRef: null, text: 'Obra Dana: sigue la fuga sin reparar.',
+        evidence: [{ source: data.primary[0].ref, quote: 'Obra Dana: sigue la fuga sin reparar.' }],
+      }], informational: [] }) };
+      return evidenceResponse(prompt);
+    });
+    try {
+      await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$1)', [accountId]);
+      await server.pool.query("INSERT INTO especialistas(id,nombre,rol,sistema_prompt,modelo) VALUES($1,'QA síntesis','general',$2,'flash')", [specialistId, role]);
+      await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count) VALUES($1,$2,'Obra Dana',1,1)", [chatId, accountId]);
+      await server.pool.query("INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,timestamp,tipo,enviado_por_mi) VALUES($1,$2,$3,'Laura','Obra Dana: sigue la fuga sin reparar.','2026-09-29T10:00:00Z','text',FALSE)", [`${accountId}:1`, chatId, accountId]);
+      const queue = createSummaryQueue(server.pool, server.prepareGlobalSummary);
+      const job = await queue.enqueue(accountId, specialistId);
+      await queue.run();
+      expect((await server.pool.query('SELECT status FROM summary_jobs WHERE id=$1', [job.id])).rows[0].status).toBe('failed');
+      for (const table of ['resumenes_globales_chat', 'summary_reviewed_messages', 'summary_skipped_messages']) expect((await server.pool.query(`SELECT COUNT(*)::int AS count FROM ${table} WHERE account_id=$1`, [accountId])).rows[0].count).toBe(0);
+      expect((await server.pool.query('SELECT unread_count FROM chats WHERE id=$1', [chatId])).rows[0].unread_count).toBe(1);
+      failAudit = false;
+      const extractions = generation.mock.calls.filter(([prompt]) => prompt.startsWith('ETAPA: EXTRACCION')).length;
+      expect((await queue.enqueue(accountId, specialistId)).id).toBe(job.id);
+      await queue.run();
+      const state = (await server.pool.query('SELECT status,error FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
+      expect(state.status, state.error).toBe('completed');
+      expect(generation.mock.calls.filter(([prompt]) => prompt.startsWith('ETAPA: EXTRACCION')).length).toBe(extractions);
+      const report = (await server.pool.query('SELECT resumen,evidence FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rows[0];
+      expect(report.resumen).toContain('RESUMEN EJECUTIVO DEL PERIODO');
+      expect(report.resumen).not.toContain('HALLAZGOS Y SECUENCIA');
+      expect(report.evidence.synthesis.rolePrompt).toBe(role);
+      expect(report.evidence.synthesis.entries[0].sources).toEqual(['G1-F1']);
+      expect(report.evidence.groups[0].sources[0].line).toContain('2026-09-29T10:00:00.000Z');
+      expect((await server.pool.query('SELECT unread_count FROM chats WHERE id=$1', [chatId])).rows[0].unread_count).toBe(0);
+    } finally {
+      generation.mockReset();
+      await server.pool.query('DELETE FROM resumenes_globales_chat WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM chats WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
+      await server.pool.query('DELETE FROM especialistas WHERE id=$1', [specialistId]);
+    }
+  });
+
   it('Q-20000: lotes durables, fallo parcial y reanudación sin consumir mensajes nuevos', async () => {
     const accountId = `qa-20k-${randomUUID()}`;
     const chatId = `${accountId}::120363999920000@g.us`;
