@@ -107,4 +107,46 @@ describe('síntesis final guiada por el prompt del rol', () => {
     })).rejects.toThrow('prompt del rol');
     expect(generate).not.toHaveBeenCalled();
   });
+
+  it('343 textos sin hallazgos del rol producen un reporte descriptivo con evidencia de todos los textos', async () => {
+    const cache = new Map();
+    const options = {
+      systemPrompt: role, cacheScope: 'descriptive-QA', generate: vi.fn(async (prompt: string) => evidenceResponse(prompt)),
+      read: async (key: string) => cache.get(key) || null, write: async (key: string, value: unknown) => { cache.set(key, value); }, progress: async () => {},
+    };
+    const groups = [{ name: 'Familia', items: Array.from({ length: 343 }, (_, index) => ({ id: `family-${index}`, line: `Saludo familiar ${index}.` })) }];
+    const result = await generateBatchedGlobalSummary(groups, options);
+    expect(result.text).toContain('REPORTE DEL CONTENIDO ANALIZADO');
+    expect(result.text).toContain('## Familia');
+    expect(result.evidence.synthesis).toMatchObject({ kind: 'descriptive', rolePrompt: role });
+    expect(result.evidence.groups[0].findings).toEqual([]);
+    expect(result.evidence.groups[0].sources).toHaveLength(343);
+    expect(new Set(result.evidence.synthesis.entries.flatMap((entry) => entry.sources)).size).toBe(343);
+    expect(result.skippedMessages).toEqual([]);
+    expect(options.generate.mock.calls.filter(([prompt]) => evidencePayload(prompt).mode === 'describe').every(([prompt]) => !prompt.includes(JSON.stringify(role)))).toBe(true);
+    options.generate.mockClear();
+    await generateBatchedGlobalSummary(groups, options);
+    expect(options.generate).not.toHaveBeenCalled();
+  });
+
+  it('una exclusión total en la síntesis del rol también activa descripción de los originales', async () => {
+    const input = group('Ventas', ['Se ofrecen 40 dólares.']);
+    const result = await synthesizeGlobalReport([input], role, asOf, async (prompt, phase, validate) => {
+      const data = evidencePayload(prompt);
+      const response = phase === 'synthesize' && data.mode === 'detail' ? { ...evidenceResponse(prompt), text: JSON.stringify({ entries: [], excluded: data.sources.map((source: { id: string }) => ({ source: source.id, reason: 'outside_scope' })) }) } : evidenceResponse(prompt);
+      validate(response.text);
+      return response;
+    }, async () => {});
+    expect(result.synthesis.kind).toBe('descriptive');
+    expect(result.synthesis.entries[0].sources).toEqual(['M0']);
+    expect(result.synthesis.excluded).toHaveLength(1);
+    expect(result.text).toContain('## Ventas');
+  });
+
+  it('no admite un reporte descriptivo vacío, exclusiones ni cambio de grupo', () => {
+    const original = { id: 'M1', group: 'Familia', text: 'Buenos días.' };
+    expect(() => parseReportDraft(JSON.stringify({ entries: [], excluded: [{ source: 'M1', reason: 'routine' }] }), [original], 'describe')).toThrow('Exclusión');
+    expect(() => parseReportDraft(JSON.stringify({ entries: [], excluded: [] }), [original], 'describe')).toThrow('Faltan');
+    expect(() => parseReportDraft(JSON.stringify({ ...draft, entries: [{ ...draft.entries[0], sources: ['M1'] }] }), [original], 'describe')).toThrow('mezcló grupos');
+  });
 });

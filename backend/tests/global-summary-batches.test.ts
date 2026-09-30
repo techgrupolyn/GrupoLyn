@@ -26,9 +26,11 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
     expect(primary).toHaveLength(20000);
     expect(new Set(primary.map((item) => item.ref)).size).toBe(20000);
     expect(options.generate.mock.calls.every(([prompt]) => prompt.length <= SUMMARY_BATCH_CHARS)).toBe(true);
-    expect(options.generate.mock.calls.filter(([prompt]) => prompt.startsWith('ETAPA: VERIFICACION')).length).toBe(options.generate.mock.calls.length / 2);
-    expect(report.text).toContain('No se identificaron asuntos relevantes');
-    expect(report.text).not.toContain('## Proyecto');
+    expect(options.generate.mock.calls.filter(([prompt]) => prompt.startsWith('ETAPA: VERIFICACION')).length).toBe(options.generate.mock.calls.filter(([prompt]) => prompt.startsWith('ETAPA: EXTRACCION')).length);
+    expect(report.text).toContain('REPORTE DEL CONTENIDO ANALIZADO');
+    for (const group of groups) expect(report.text).toContain(`## ${group.name}`);
+    expect(report.evidence.synthesis.kind).toBe('descriptive');
+    expect(new Set(report.evidence.synthesis.entries.flatMap((entry) => entry.sources)).size).toBe(20000);
     const progress = options.progress.mock.calls.at(-1)![0];
     expect(progress.completedBatches).toBe(progress.totalBatches);
     expect(progress).toMatchObject({ completedMessages: 20000, totalMessages: 20000 });
@@ -77,7 +79,7 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
 
   it('subdivide lotes densos en vez de recortar hallazgos', async () => {
     const options = harness();
-    options.generate.mockImplementation(async (prompt) => evidencePayload(prompt).primary.length > 2 ? { ...evidenceResponse(prompt), text: '{JSON incompleto' } : evidenceResponse(prompt));
+    options.generate.mockImplementation(async (prompt) => evidencePayload(prompt).primary?.length > 2 ? { ...evidenceResponse(prompt), text: '{JSON incompleto' } : evidenceResponse(prompt));
     const report = await generateBatchedGlobalSummary([{ name: 'QA', items: Array.from({ length: 8 }, (_, index) => ({ line: `Texto ${index}` })) }], options);
     expect(report.evidence.groups[0].messageCount).toBe(8);
     const progress = options.progress.mock.calls.at(-1)![0];
@@ -94,7 +96,7 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
     const groups = [{ name: 'QA', items: [{ line: 'Texto largo '.repeat(5000) }, { line: 'Mensaje final' }] }];
     options.generate.mockImplementation(async (prompt) => {
       const latest = options.progress.mock.calls.at(-1)![0];
-      expect(latest.completedMessages).toBe(0);
+      expect(latest.completedMessages).toBe(evidencePayload(prompt).sources ? 2 : 0);
       expect(latest.totalMessages).toBe(2);
       return evidenceResponse(prompt);
     });
@@ -133,6 +135,7 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
     const options = harness();
     options.generate.mockImplementation(async (prompt) => {
       const data = evidencePayload(prompt);
+      if (data.sources) return evidenceResponse(prompt);
       return data.primary.some((item: EvidenceSource) => item.line === 'INVALIDO') ? { ...evidenceResponse(prompt), text: '{}' } : evidenceResponse(prompt);
     });
     const groups = [{ name: 'QA', items: Array.from({ length: 321 }, (_, index) => ({ id: `message-${index}`, line: index === 200 ? 'INVALIDO' : `Texto ${index}` })) }];
@@ -143,9 +146,9 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
     const calls = options.generate.mock.calls;
     expect(calls.filter(([prompt]) => {
       const data = evidencePayload(prompt);
-      return data.primary.length === 160 && data.primary[0].ref === 'G1-M1';
+      return data.primary?.length === 160 && data.primary[0].ref === 'G1-M1';
     })).toHaveLength(2);
-    const last = evidencePayload(calls.at(-1)![0]);
+    const last = evidencePayload(calls.filter(([prompt]) => prompt.startsWith('ETAPA: VERIFICACION')).at(-1)![0]);
     expect([...last.primary, ...last.context].some((item: EvidenceSource) => item.line === 'INVALIDO')).toBe(false);
   });
 
@@ -189,7 +192,7 @@ describe('informes sin pérdida por compresión y con evidencias', () => {
     options.generate.mockResolvedValueOnce({ text: 'local', provider: 'local-fallback', model: 'stub', fallback: true, retryable: true }).mockRejectedValueOnce(Object.assign(new Error('Temporal'), { status: 503 }));
     await generateBatchedGlobalSummary([{ name: 'QA', items: [{ line: 'Texto' }] }], options);
     expect(options.wait).toHaveBeenCalledTimes(2);
-    expect(options.write).toHaveBeenCalledTimes(2);
+    expect(options.write).toHaveBeenCalledTimes(6);
   });
 
   it('cerrar una tarea no cierra las demás con la misma referencia de obra', () => {

@@ -1306,10 +1306,16 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       expect(mediaGeneration).not.toHaveBeenCalled();
       const reviewed = await server.pool.query('SELECT message_id FROM summary_reviewed_messages WHERE account_id=$1', [accountId]);
       expect(reviewed.rows.map((row) => row.message_id)).toEqual([ids[0]]);
+      const report = (await server.pool.query('SELECT resumen,evidence FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rows[0];
+      expect(report.resumen).toContain('REPORTE DEL CONTENIDO ANALIZADO');
+      expect(report.evidence.synthesis.kind).toBe('descriptive');
+      expect(report.evidence.groups[0].sources.map((source: { messageId: string }) => source.messageId)).toEqual([ids[0]]);
+      const callsBeforeMediaOnly = generation.mock.calls.length;
+      expect(callsBeforeMediaOnly).toBe(7);
       const mediaOnly = await queue.enqueue(accountId, 'general');
       await queue.run();
       expect((await server.pool.query('SELECT status FROM summary_jobs WHERE id=$1', [mediaOnly.id])).rows[0].status).toBe('failed');
-      expect(generation).toHaveBeenCalledTimes(3);
+      expect(generation).toHaveBeenCalledTimes(callsBeforeMediaOnly);
       expect(fetcher).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
@@ -1593,6 +1599,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     generation.mockReset().mockImplementation(async (prompt: string) => {
       const data = evidencePayload(prompt);
       if (data.analysis) return evidenceResponse(prompt);
+      if (data.sources) return evidenceResponse(prompt);
       const invalid = data.primary.find((item: { line: string }) => item.line.includes('Revisar planos'));
       if (!invalid) return evidenceResponse(prompt);
       return { ...evidenceResponse(prompt), text: JSON.stringify({ findings: [{

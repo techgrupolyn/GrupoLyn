@@ -175,9 +175,10 @@ export async function generateBatchedGlobalSummary(groups: SummaryGroup[], optio
   await progress('consolidating');
   const report = await synthesizeGlobalReport(reportGroups, options.systemPrompt || '', options.asOf, invoke, () => progress('consolidating'));
   const omitted = [...skippedMessages.values()];
-  const evidence = { version: 2, synthesis: report.synthesis, skippedMessages: omitted, groups: reportGroups.map((group) => {
+  const descriptiveReferences = new Set(report.synthesis.kind === 'descriptive' ? report.synthesis.entries.flatMap((entry) => entry.sources) : []);
+  const evidence = { version: 3, synthesis: report.synthesis, skippedMessages: omitted, groups: reportGroups.map((group) => {
     const referenced = new Set(group.findings.flatMap((fact) => fact.evidence.map((citation) => citation.source)));
-    return { name: group.name, messageCount: group.messageCount, findings: group.findings, sources: group.sources.filter((source) => referenced.has(source.ref)) };
+    return { name: group.name, messageCount: group.messageCount, findings: group.findings, sources: group.sources.filter((source) => referenced.has(source.ref) || descriptiveReferences.has(source.ref)) };
   }) };
   const omissionNotice = omitted.length ? `\n\nMENSAJES OMITIDOS: ${omitted.length}\nNo se pudieron verificar con evidencia suficiente después de reintentar individualmente. Se excluyen del contador al guardar, se conservan los originales y no se consideran analizados.` : '';
   return { ...(provider as GeminiExecutionResult), text: report.text + omissionNotice, evidence, skippedMessages: omitted };
