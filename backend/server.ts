@@ -3389,6 +3389,40 @@ app.post('/api/sincronizar', async (req: Request, res: Response) => {
     res.json({ ok: true, full, account_id: account.id });
   } catch { res.status(502).json({ ok: false, error: 'Sincronización incompleta; se reintentará en segundo plano' }); }
 });
+async function getAnalysisPendingCounts(accountId: string, database: Pool | PoolClient = pool) {
+  const { rows } = await database.query<{ chat_id: string; pending: number; id: string | null; tipo: string | null; raw: Record<string, unknown> | null }>(`
+    SELECT chat.id AS chat_id, chat.unread_count AS pending, message.id, message.tipo, message.raw
+    FROM chats chat LEFT JOIN LATERAL (
+      SELECT candidate.* FROM (
+        SELECT incoming.* FROM (
+          SELECT id,tipo,texto,raw,timestamp FROM mensajes
+          WHERE account_id=chat.account_id AND chat_id=chat.id AND enviado_por_mi=FALSE
+          ORDER BY timestamp DESC,id DESC LIMIT GREATEST(chat.whatsapp_unread_count,chat.unread_count)
+        ) incoming WHERE NOT EXISTS (
+          SELECT 1 FROM summary_reviewed_messages reviewed
+          WHERE reviewed.account_id=chat.account_id AND reviewed.message_id=incoming.id
+        ) ORDER BY incoming.timestamp DESC,incoming.id DESC LIMIT chat.unread_count
+      ) candidate WHERE LOWER(COALESCE(candidate.tipo,'text'))='text'
+        AND COALESCE(candidate.texto,'') !~ '[^[:space:]]'
+    ) message ON TRUE
+    WHERE chat.account_id=$1 AND chat.id LIKE '%@g.us' AND chat.unread_count>0`, [accountId]);
+  const counts = new Map<string, { unread_count: number; excluded_empty_count: number; pending_before_empty_exclusion: number }>();
+  for (const row of rows) {
+    const count = counts.get(row.chat_id) || { unread_count: Number(row.pending), excluded_empty_count: 0, pending_before_empty_exclusion: Number(row.pending) };
+    if (row.id) {
+      const original = row.raw?.message ?? row.raw;
+      const recovered = extractTextFromMessage(original as MessageItem | string);
+      const normalized = normalizeMediaFromMessage(unwrapWhatsAppContent(original), String(row.raw?.messageType || ''));
+      if (normalized.tipo === 'text' && !String(recovered || '').trim()) {
+        count.excluded_empty_count += 1;
+        count.unread_count = Math.max(0, count.unread_count - 1);
+      }
+    }
+    counts.set(row.chat_id, count);
+  }
+  return counts;
+}
+
 app.get('/api/chats', async (_req: Request, res: Response) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   try {
@@ -3404,7 +3438,8 @@ app.get('/api/chats', async (_req: Request, res: Response) => {
        ORDER BY g.updated_at DESC`,
       [account.id],
     );
-    res.json(rows.map((row) => ({ ...row, id: toPublicChatId(String(row.id)), classification: null })));
+    const counts = await getAnalysisPendingCounts(account.id);
+    res.json(rows.map((row) => ({ ...row, ...counts.get(String(row.id)), id: toPublicChatId(String(row.id)), classification: null })));
   } catch (error) {
     console.error('[chats] Error:', (error as Error).message);
     res.status(500).json({ error: (error as Error).message });
@@ -3645,7 +3680,7 @@ async function prepareGlobalSummary(job: SummaryJob) {
     if (!groups.length) throw new SummaryJobError('No hay mensajes no leídos pendientes en grupos.');
 
     const selected: Array<{ chatId: string; variants: string[]; name: string; pendingCount: number; items: Array<{ id: string; timestamp: Date; line: string }> }> = [];
-    const coverage = { pending: 0, texts: 0, excludedMedia: 0, empty: 0, unavailable: 0, groupsWithUnavailable: 0 };
+    const coverage = { pending: 0, texts: 0, excludedMedia: 0, empty: 0, emptyExcluded: true, unavailable: 0, groupsWithUnavailable: 0 };
     const recovery: Array<{ group: string; status: string }> = [];
     for (const group of groups) {
       const remoteJid = unscopedAccountValue(group.id);
@@ -3660,7 +3695,7 @@ async function prepareGlobalSummary(job: SummaryJob) {
           }
         } catch (error) {
           console.error('[global-summary/history]', account.id, (error as Error).message);
-          throw new SummaryJobError('No se pudo recuperar el historial pendiente de Evolution. Reintenta; no se han descontado mensajes.');
+          if (context.rows.length < context.pendingCount) throw new SummaryJobError('No se pudo recuperar el historial pendiente de Evolution. Reintenta; no se han descontado mensajes.');
         }
       }
       coverage.pending += context.pendingCount;
@@ -3694,7 +3729,7 @@ async function prepareGlobalSummary(job: SummaryJob) {
       coverage.texts += items.length;
       if (items.length) selected.push({ chatId: unscopedAccountValue(group.id), variants: context.variants, name: group.nombre || 'Grupo sin nombre', pendingCount: context.pendingCount, items });
     }
-    if (coverage.unavailable || coverage.empty) {
+    if (coverage.unavailable) {
       await pool.query("UPDATE summary_jobs SET result=COALESCE(result,'{}'::jsonb) || jsonb_build_object('coverage',$2::jsonb,'historyRecovery',$3::jsonb),updated_at=NOW() WHERE id=$1", [job.id, JSON.stringify(coverage), JSON.stringify(recovery)]);
       if (!recovery.some((item) => item.status === 'no_anchor') && recovery.some((item) => ['requested', 'waiting'].includes(item.status))) throw new SummaryHistoryPending();
       const explanations: Record<string, string> = {
@@ -3707,11 +3742,11 @@ async function prepareGlobalSummary(job: SummaryJob) {
         busy: 'Evolution tiene otras recuperaciones pendientes; reintenta más tarde.',
       };
       const details = [...new Set(recovery.map((item) => explanations[item.status]).filter(Boolean))].join(' ');
-      throw new SummaryJobError(`No se generó un informe parcial: hay ${coverage.unavailable} pendientes sin contenido disponible tras consultar Evolution y ${coverage.empty} registros de texto vacíos. Se necesitan todos los textos pendientes. Ningún mensaje se ha marcado como analizado. ${details || 'Comprueba la sincronización del historial y reintenta.'}`);
+      throw new SummaryJobError(`No se generó un informe parcial: hay ${coverage.unavailable} pendientes sin contenido disponible tras consultar Evolution. Los ${coverage.empty} registros de texto vacíos están excluidos y no bloquean el análisis. Ningún mensaje se ha marcado como analizado. ${details || 'Comprueba la sincronización del historial y reintenta.'}`);
     }
-    if (!selected.length) throw new SummaryJobError('No hay mensajes de texto pendientes disponibles. Los audios y otros adjuntos están excluidos del análisis.');
-    return { selectionVersion: 2, selected, coverage, totalPending: coverage.pending, groupCount: groups.length, model: spec.modelo || 'flash', systemPrompt: spec.system_prompt };
-  }, (stored) => stored.selectionVersion === 2 && stored.coverage?.unavailable === 0 && stored.coverage?.empty === 0);
+    if (!selected.length) throw new SummaryJobError('No hay mensajes de texto pendientes disponibles. Los textos vacíos, audios y otros adjuntos están excluidos del análisis.');
+    return { selectionVersion: 3, selected, coverage, totalPending: coverage.pending, groupCount: groups.length, model: spec.modelo || 'flash', systemPrompt: spec.system_prompt };
+  }, (stored) => stored.selectionVersion === 3 && stored.coverage?.unavailable === 0 && stored.coverage?.emptyExcluded === true);
   const { selected, totalPending } = snapshot;
   const generation = await generateBatchedGlobalSummary(selected, {
     ...storage,
@@ -3736,12 +3771,10 @@ async function prepareGlobalSummary(job: SummaryJob) {
     for (const group of selected) {
       await markSummaryMessagesReviewed(client, account.id, group.variants, group.items.map((item) => item.id));
     }
-    const remaining = await client.query<{ groups: number; messages: number }>(
-      `SELECT COUNT(*)::integer AS groups, COALESCE(SUM(unread_count),0)::integer AS messages
-       FROM chats WHERE account_id=$1 AND id LIKE '%@g.us' AND unread_count>0`, [account.id],
-    );
+    const remaining = [...(await getAnalysisPendingCounts(account.id, client)).values()];
     return { summaryId: persisted.rows[0].id, resumen: summary, specialistId: spec.id, grupos_pendientes: snapshot.groupCount,
-      grupos_analizados: selected.length, grupos_restantes: remaining.rows[0].groups, mensajes_pendientes_restantes: remaining.rows[0].messages,
+      grupos_analizados: selected.length, grupos_restantes: remaining.filter((chat) => chat.unread_count > 0).length,
+      mensajes_pendientes_restantes: remaining.reduce((total, chat) => total + chat.unread_count, 0),
       coverage: snapshot.coverage || null, mensajes_pendientes: totalPending, mensajes_analizados: messageIds.length, created_at: new Date().toISOString() };
   };
 }
@@ -6901,10 +6934,12 @@ app.get('/api/pendientes', async (req: Request, res: Response) => {
     }
     query += ' ORDER BY m.chat_id, m.timestamp DESC';
     const { rows } = await pool.query<Mensaje & { chat_nombre?: string; unread_count?: number }>(query, params);
+    const counts = await getAnalysisPendingCounts(account.id);
     const mapped = rows.map((r) => {
       const chatId = unscopedAccountValue(String(r.chat_id || ''));
-      return { ...r, chat_id: chatId, nombre: r.chat_nombre || chatId, unread_count: Number(r.unread_count || 0) };
-    });    res.json(mapped);
+      return { ...r, chat_id: chatId, nombre: r.chat_nombre || chatId, unread_count: Number(r.unread_count || 0), ...counts.get(String(r.chat_id)) };
+    }).filter((chat) => chat.unread_count > 0);
+    res.json(mapped);
   } catch (error) {
     console.error('[pendientes] Error:', (error as Error).message);
     res.status(500).json({ error: (error as Error).message });

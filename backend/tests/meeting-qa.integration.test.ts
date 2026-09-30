@@ -1107,7 +1107,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       } else {
         expect(saved.status).toBe('completed');
         expect(saved.result.coverage).toEqual({ pending, texts: 205,
-          excludedMedia: 2, empty: 0, unavailable: 0, groupsWithUnavailable: 0 });
+          excludedMedia: 2, empty: 0, emptyExcluded: true, unavailable: 0, groupsWithUnavailable: 0 });
         expect(saved.result.mensajes_analizados).toBe(205);
         expect(counters).toEqual({ unread_count: 2, whatsapp_unread_count: pending });
         expect(fetcher).toHaveBeenCalledTimes(3);
@@ -1251,7 +1251,8 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
-  it.each([false, true])('reconsulta textos vacíos aunque el contador esté cubierto y conserva contenido conocido (recuperable=%s)', async (recoverable) => {
+  it.each(['empty', 'recovered', 'offline'])('excluye textos vacíos sin borrar registros y conserva contenido conocido (%s)', async (scenario) => {
+    const recoverable = scenario === 'recovered';
     const accountId = `qa-empty-repair-${randomUUID()}`;
     const remoteJid = '120363999900012@g.us';
     const chatId = `${accountId}::${remoteJid}`;
@@ -1260,6 +1261,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     const knownRaw = { message: { conversation: knownText }, messageType: 'conversation' };
     const fetcher = vi.fn(async (url: string, options: RequestInit) => {
       expect(url).toContain(`/chat/findMessages/${accountId}`);
+      if (scenario === 'offline') throw new Error('Evolution no disponible');
       const { page, where } = JSON.parse(String(options.body));
       expect(where.key).toEqual({ remoteJid, remoteJidAlt: remoteJid });
       const record = {
@@ -1284,18 +1286,19 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       const job = await queue.enqueue(accountId, 'general');
       await queue.run();
       const saved = (await server.pool.query('SELECT status,result,error FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
-      expect(fetcher).toHaveBeenCalledTimes(2);
-      expect(saved.status, saved.error).toBe(recoverable ? 'completed' : 'failed');
+      expect(fetcher).toHaveBeenCalledTimes(scenario === 'offline' ? 1 : 2);
+      expect(saved.status, saved.error).toBe('completed');
       const known = (await server.pool.query('SELECT texto,tipo,raw FROM mensajes WHERE id=$1', [`${accountId}::known`])).rows[0];
       expect(known).toEqual({ texto: knownText, tipo: 'text', raw: knownRaw });
-      expect(saved.result.coverage).toMatchObject({ pending: 3, texts: recoverable ? 2 : 1, empty: recoverable ? 0 : 1, excludedMedia: 1, unavailable: 0 });
+      expect(saved.result.coverage).toMatchObject({ pending: 3, texts: recoverable ? 2 : 1, empty: recoverable ? 0 : 1, emptyExcluded: true, excludedMedia: 1, unavailable: 0 });
       const reviewed = (await server.pool.query('SELECT message_id FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rows.map((row) => row.message_id);
-      expect(reviewed).toHaveLength(recoverable ? 2 : 0);
+      expect(reviewed).toHaveLength(recoverable ? 2 : 1);
       expect(reviewed).not.toContain(`${accountId}::sticker`);
-      expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0]).toEqual({ unread_count: recoverable ? 1 : 3, whatsapp_unread_count: 3 });
+      expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0]).toEqual({ unread_count: recoverable ? 1 : 2, whatsapp_unread_count: 3 });
+      expect((await server.pool.query('SELECT id FROM mensajes WHERE account_id=$1', [accountId])).rowCount).toBe(3);
       if (!recoverable) {
-        expect(generation).not.toHaveBeenCalled();
-        expect((await server.pool.query('SELECT id FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rowCount).toBe(0);
+        expect(reviewed).not.toContain(`${accountId}::empty`);
+        expect((await server.pool.query('SELECT texto FROM mensajes WHERE id=$1', [`${accountId}::empty`])).rows[0].texto).toBe('');
       }
     } finally {
       vi.unstubAllGlobals();
@@ -1304,6 +1307,69 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       await server.pool.query('DELETE FROM summary_reviewed_messages WHERE account_id=$1', [accountId]);
       await server.pool.query('DELETE FROM grupos WHERE account_id=$1', [accountId]);
       await server.pool.query('DELETE FROM chats WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
+    }
+  });
+
+  it.each([{ empty: 246, texts: 2 }, { empty: 55, texts: 2 }, { empty: 3, texts: 0 }])('excluye $empty vacíos y analiza $texts textos sin eliminar registros', async ({ empty, texts }) => {
+    const accountId = `qa-empty-volume-${randomUUID()}`;
+    const chatId = `${accountId}::120363999900015@g.us`;
+    const invitationId = randomUUID();
+    const activationId = randomUUID();
+    const headers = { 'x-extension-activation': activationId };
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messages: { pages: 0, records: [] } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetcher);
+    generation.mockReset().mockImplementation(async (prompt: string) => evidenceResponse(prompt));
+    try {
+      await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$1)', [accountId]);
+      await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count) VALUES($1,$2,'Vacíos QA',$3,$3)", [chatId, accountId, empty + texts]);
+      await server.pool.query("INSERT INTO grupos(id,account_id,nombre) VALUES($1,$2,'Vacíos QA')", [chatId, accountId]);
+      await server.pool.query("INSERT INTO extension_invitations(id,code_hash,expires_at,created_by,account_id) VALUES($1::uuid,$1::text,NOW()+INTERVAL '1 hour','qa',$2)", [invitationId, accountId]);
+      await server.pool.query('INSERT INTO extension_activations(id,invitation_id,account_id) VALUES($1,$2,$3)', [activationId, invitationId, accountId]);
+      await server.pool.query(`INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,tipo,enviado_por_mi)
+        SELECT $2 || ':' || sequence,$1,$2,'QA',CASE WHEN sequence <= $3 THEN CASE WHEN sequence % 2 = 0 THEN '' ELSE '   ' END ELSE 'Confirmar planos ' || sequence END,'text',FALSE
+        FROM generate_series(1,$4::integer) sequence`, [chatId, accountId, empty, empty + texts]);
+      for (let refresh = 0; refresh < 2; refresh++) {
+        const chats = await request(server.app).get('/api/chats').set(headers);
+        expect(chats.status).toBe(200);
+        expect(chats.body).toHaveLength(1);
+        expect(chats.body[0]).toMatchObject({ unread_count: texts, excluded_empty_count: empty, pending_before_empty_exclusion: empty + texts });
+      }
+      const pending = await request(server.app).get('/api/pendientes').set(headers);
+      expect(pending.status).toBe(200);
+      expect(pending.body).toHaveLength(texts ? 1 : 0);
+      if (texts) expect(pending.body[0].unread_count).toBe(texts);
+      const queue = createSummaryQueue(server.pool, server.prepareGlobalSummary);
+      const job = await queue.enqueue(accountId, 'general');
+      await queue.run();
+      const saved = (await server.pool.query('SELECT status,result,error FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
+      if (texts) {
+        expect(saved.status, saved.error).toBe('completed');
+        expect(saved.result).toMatchObject({ mensajes_analizados: texts, mensajes_pendientes_restantes: 0, grupos_restantes: 0, coverage: { empty, emptyExcluded: true, unavailable: 0 } });
+        expect((await server.pool.query('SELECT message_id FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rows.map((row) => row.message_id).sort()).toEqual([`${accountId}:${empty + 1}`, `${accountId}:${empty + 2}`].sort());
+      } else {
+        expect(saved.status).toBe('failed');
+        expect(saved.error).toContain('No hay mensajes de texto pendientes disponibles');
+        expect(generation).not.toHaveBeenCalled();
+        expect((await server.pool.query('SELECT id FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rowCount).toBe(0);
+      }
+      expect((await server.pool.query('SELECT id FROM mensajes WHERE account_id=$1', [accountId])).rowCount).toBe(empty + texts);
+      expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0]).toEqual({ unread_count: empty, whatsapp_unread_count: empty + texts });
+      expect((await request(server.app).get('/api/chats').set(headers)).body[0].unread_count).toBe(0);
+      expect((await request(server.app).get('/api/pendientes').set(headers)).body).toEqual([]);
+      await server.pool.query("UPDATE mensajes SET raw=$2::jsonb WHERE id=$1", [`${accountId}:1`, JSON.stringify({ message: { conversation: 'Texto recuperado, vuelve a ser pendiente' } })]);
+      expect((await request(server.app).get('/api/chats').set(headers)).body[0].unread_count).toBe(1);
+      await server.pool.query('UPDATE chats SET unread_count=unread_count+1,whatsapp_unread_count=whatsapp_unread_count+1 WHERE id=$1', [chatId]);
+      expect((await request(server.app).get('/api/chats').set(headers)).body[0].unread_count).toBe(2);
+    } finally {
+      vi.unstubAllGlobals();
+      generation.mockReset();
+      await server.pool.query('DELETE FROM resumenes_globales_chat WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM summary_reviewed_messages WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM grupos WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM chats WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM extension_activations WHERE id=$1', [activationId]);
+      await server.pool.query('DELETE FROM extension_invitations WHERE id=$1', [invitationId]);
       await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
     }
   });
@@ -1332,17 +1398,11 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       const rows = (await server.pool.query('SELECT id,tipo,texto FROM mensajes WHERE account_id=$1', [accountId])).rows;
       expect(rows.find((row) => row.id === `${accountId}:text`)).toMatchObject({ tipo: 'text', texto: 'Texto pendiente sin envoltura' });
       for (const field of events) expect(rows.find((row) => row.id === `${accountId}:${field}`).tipo).not.toBe('text');
-      if (incomplete) {
-        expect(result.status).toBe('failed');
-        expect(result.error).toContain('4 registros de texto vacíos');
-        expect(generation).not.toHaveBeenCalled();
-        expect((await server.pool.query('SELECT * FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rowCount).toBe(0);
-      } else {
-        expect(result.status, result.error).toBe('completed');
-        expect(result.result).toMatchObject({ mensajes_analizados: 1, coverage: { texts: 1, excludedMedia: 5, empty: 0 } });
-        expect((await server.pool.query('SELECT message_id FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rows).toEqual([{ message_id: `${accountId}:text` }]);
-      }
-      expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0]).toEqual({ unread_count: fixtures.length - (incomplete ? 0 : 1), whatsapp_unread_count: fixtures.length });
+      expect(result.status, result.error).toBe('completed');
+      expect(result.result).toMatchObject({ mensajes_analizados: 1, coverage: { texts: 1, excludedMedia: 5, empty: incomplete ? 4 : 0, emptyExcluded: true } });
+      expect((await server.pool.query('SELECT message_id FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rows).toEqual([{ message_id: `${accountId}:text` }]);
+      expect(rows).toHaveLength(fixtures.length);
+      expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0]).toEqual({ unread_count: fixtures.length - 1, whatsapp_unread_count: fixtures.length });
       expect(fetcher).toHaveBeenCalledTimes(incomplete ? 1 : 0);
     } finally {
       vi.unstubAllGlobals();

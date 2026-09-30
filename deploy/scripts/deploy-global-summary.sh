@@ -95,4 +95,4 @@ fi
 curl --fail --silent --show-error --max-time 20 https://ceo.grupolyn.com/health
 echo
 echo "BACKEND ACTUALIZADO: $expected"
-echo 'Esta corrección backend no requiere otra versión si ya usas la extensión 1.1.6. Verifica la cobertura real del historial antes de dar por resuelta la incidencia.'
+echo 'El contador corregido funciona con la extensión 1.1.6; publica la 1.1.7 para actualizar las etiquetas de textos vacíos excluidos. Verifica el contador y la cobertura real antes de cerrar la incidencia.'

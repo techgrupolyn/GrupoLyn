@@ -33,7 +33,7 @@ test('el panel prioriza el informe global y muestra el contador de mensajes pend
   assert.match(html, /id="global-report-progress" aria-live="polite"/);
   assert.match(sidepanel, /function renderPendingUnreadCounter/);
   assert.match(sidepanel, /if \(success\) await loadChats\(\);/);
-  assert.equal(manifest.version, '1.1.6');
+  assert.equal(manifest.version, '1.1.7');
 });
 
 function reportHarness() {
@@ -206,6 +206,14 @@ test('144 de 3035 no se presenta como cobertura de todos los pendientes', () => 
   assert.match(markup, /144 de 144 textos seleccionados/);
   assert.match(markup, /no a todos los pendientes/);
   assert.match(markup, /100 % analizado de la selección/);
+});
+
+test('los textos vacíos excluidos no convierten el informe en parcial', () => {
+  const markup = progressMarkup({ status: 'completed', mensajes_analizados: 3396,
+    coverage: { pending: 4558, texts: 3396, excludedMedia: 916, unavailable: 0, empty: 246, emptyExcluded: true } });
+  assert.match(markup, /Informe guardado/);
+  assert.match(markup, /246 textos vacíos excluidos/);
+  assert.doesNotMatch(markup, /Informe parcial guardado/);
 });
 
 test('un informe parcial diferencia historial faltante, adjuntos y textos vacíos', () => {
