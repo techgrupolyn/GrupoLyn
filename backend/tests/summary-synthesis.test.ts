@@ -22,7 +22,7 @@ describe('síntesis final guiada por el prompt del rol', () => {
     expect(parseReportDraft(JSON.stringify(draft), [source], 'detail')).toEqual(draft);
     expect(() => parseReportDraft(JSON.stringify({ entries: [], excluded: [] }), [source], 'detail')).toThrow('Faltan asuntos');
     expect(() => parseReportDraft(JSON.stringify({ ...draft, entries: [{ ...draft.entries[0], sources: ['otra-cuenta'] }] }), [source], 'detail')).toThrow('desconocida');
-    expect(() => parseReportDraft(JSON.stringify({ ...draft, entries: [...draft.entries, ...draft.entries] }), [source], 'detail')).toThrow('duplicada');
+    expect(() => parseReportDraft(JSON.stringify({ ...draft, entries: [{ ...draft.entries[0], sources: ['F1', 'F1'] }] }), [source], 'detail')).toThrow('duplicada');
     expect(() => parseReportDraft(JSON.stringify({ ...draft, entries: [{ ...draft.entries[0], subject: 'Obra Pepe' }] }), [source], 'merge')).toThrow('entidad');
     expect(() => parseReportDraft(JSON.stringify({ entries: [], excluded: [{ source: 'F1', reason: 'routine' }] }), [source], 'merge')).toThrow('Exclusión');
   });
@@ -128,7 +128,7 @@ describe('síntesis final guiada por el prompt del rol', () => {
     expect(report.text).not.toContain('Todo ejecutado');
     expect(report.synthesis.entries.flatMap((entry) => entry.sources)).toEqual(['G1-F1', 'G1-F2']);
     expect(report.synthesis.overview).toEqual([]);
-    expect(report.synthesis.recoveries.map((item) => item.mode)).toEqual(['merge', 'merge', 'overview']);
+    expect(report.synthesis.recoveries.map((item) => item.mode)).toEqual(['merge', 'overview']);
     expect(report.text).toContain('detalle completo validado');
   });
 
@@ -139,6 +139,117 @@ describe('síntesis final guiada por el prompt del rol', () => {
       validate(response.text);
       return response;
     }, async () => {})).rejects.toThrow('402 créditos agotados');
+  });
+
+  it('una fuente puede sustentar asuntos distintos sin permitir exclusiones contradictorias ni referencias ajenas', () => {
+    const entries = [draft.entries[0], { ...draft.entries[0], section: 'Problemas', text: 'El material sigue sin confirmación.' }];
+    for (const mode of ['detail', 'merge', 'overview'] as const) {
+      expect(parseReportDraft(JSON.stringify({ entries, excluded: [] }), [source], mode).entries).toHaveLength(2);
+    }
+    expect(() => parseReportDraft(JSON.stringify({ entries, excluded: [{ source: 'F1', reason: 'routine' }] }), [source], 'detail')).toThrow('representada');
+    expect(() => parseReportDraft(JSON.stringify({ entries: [], excluded: [{ source: 'F1', reason: 'routine' }, { source: 'F1', reason: 'routine' }] }), [source], 'detail')).toThrow('previamente');
+    expect(() => parseReportDraft(JSON.stringify({ entries: [{ ...entries[0], sources: ['ajena'] }], excluded: [] }), [source], 'detail')).toThrow('desconocida');
+  });
+
+  it('acota rechazos masivos sin perder hallazgos ni subdividir la consolidación por entidad', async () => {
+    const texts = Array.from({ length: 500 }, (_, index) => `Obra Dana: pendiente ${index}, fecha sin confirmar.`);
+    const calls = new Map<string, number>();
+    const progress = vi.fn(async () => {});
+    const result = await synthesizeGlobalReport([group('Obra Dana', texts)], role, asOf, async (prompt, _phase, validate) => {
+      const data = evidencePayload(prompt);
+      calls.set(data.mode, (calls.get(data.mode) || 0) + 1);
+      const response = { ...evidenceResponse(prompt), text: JSON.stringify(data.draft ? { approved: false, issues: ['No se acredita el nuevo estado'] } : { entries: (data.mode === 'overview' ? data.sources.slice(0, 5) : data.sources).map((item: typeof source) => ({ subject: item.subject || 'Obra Dana', section: 'Decisiones', text: 'Todo ejecutado.', sources: [item.id] })), excluded: [] }) };
+      validate(response.text);
+      return response;
+    }, progress);
+    const groups = [group('Obra Dana', texts)];
+    const serialized = JSON.stringify(groups).length;
+    expect(calls.get('detail')).toBeLessThan(12 * (Math.ceil(serialized / 14000) + 2));
+    expect(calls.get('merge') || 0).toBe(0);
+    expect(calls.get('overview')).toBe(6);
+    expect(result.text).not.toContain('Todo ejecutado.');
+    expect(new Set(result.synthesis.entries.flatMap((entry) => entry.sources)).size).toBe(500);
+    for (const text of texts) expect(result.text).toContain(text);
+    expect(result.synthesis.overview).toEqual([]);
+    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ mode: 'detail', operation: 'retained', recoveredParts: expect.any(Number) }));
+  });
+
+  it('merge conserva todo un lote validado tras tres rechazos en vez de abrir un árbol por fuente', async () => {
+    const texts = Array.from({ length: 40 }, (_, index) => `Obra Dana: pendiente ${index}.`);
+    let mergeCalls = 0;
+    const result = await synthesizeGlobalReport([group('Obra Dana', texts)], role, asOf, async (prompt, _phase, validate) => {
+      const data = evidencePayload(prompt);
+      let response = evidenceResponse(prompt);
+      if (data.mode === 'merge') {
+        mergeCalls++;
+        response = { ...response, text: JSON.stringify({ entries: data.sources.map((item: typeof source) => ({ subject: 'Otra obra', section: 'Pendientes', text: item.text, sources: [item.id] })), excluded: [] }) };
+      }
+      validate(response.text);
+      return response;
+    }, async () => {});
+    expect(mergeCalls).toBe(3);
+    expect(result.synthesis.entries).toHaveLength(40);
+    expect(result.text).not.toContain('Otra obra');
+    expect(result.synthesis.recoveries.filter((item) => item.mode === 'merge')).toHaveLength(1);
+  });
+
+  it('reanuda árboles v3 antiguos sin nuevas llamadas de detalle en hojas profundas y conserva las aprobadas', async () => {
+    const texts = Array.from({ length: 32 }, (_, index) => `Obra Dana: pendiente ${index}.`);
+    const read = async (key: string): Promise<SynthesisCheckpoint | null> => {
+      const [version, , mode, , sources] = JSON.parse(key);
+      expect(version).toBe('synthesis-v3');
+      if (mode !== 'detail') return null;
+      if (sources.length > 1) return { kind: 'split' };
+      if (sources[0].id === 'G1-F1') return { kind: 'validated', draft: { entries: [{ subject: 'Obra Dana', section: 'Pendientes', text: 'Obra Dana: pendiente 0, sin confirmación.', sources: ['G1-F1'] }], excluded: [] } };
+      return null;
+    };
+    const invoke = vi.fn(async (prompt: string, _phase: unknown, validate: (text: string) => void) => {
+      expect(evidencePayload(prompt).mode).not.toBe('detail');
+      const response = evidenceResponse(prompt);
+      validate(response.text);
+      return response;
+    });
+    const result = await synthesizeGlobalReport([group('Obra Dana', texts)], role, asOf, invoke, async () => {}, async () => {}, { read, write: async () => {} });
+    expect(result.text).toContain('pendiente 0, sin confirmación.');
+    expect(new Set(result.synthesis.entries.flatMap((entry) => entry.sources)).size).toBe(32);
+    expect(result.synthesis.recoveries.filter((item) => item.mode === 'detail')).toHaveLength(31);
+  });
+
+  it('las reglas de generación y auditoría delimitan cada etapa sin exigir un informe completo', async () => {
+    const modes = new Set<string>();
+    await synthesizeGlobalReport([group('Obra Dana', ['Dana: falta material.', 'Dana: falta permiso.'])], role, asOf, async (prompt, _phase, validate) => {
+      const data = evidencePayload(prompt);
+      modes.add(data.mode);
+      expect(prompt).toContain(`ALCANCE_DE_ESTA_ETAPA (${data.mode})`);
+      expect(prompt).toContain('No redactes ni exijas RESUMEN EJECUTIVO DEL PERIODO en detail, merge o describe');
+      if (data.mode === 'merge') expect(prompt).toContain('Conserva literalmente subject');
+      if (data.mode === 'overview') expect(prompt).toContain('No exijas repetir todos los detalles');
+      const response = evidenceResponse(prompt);
+      validate(response.text);
+      return response;
+    }, async () => {});
+    expect([...modes]).toEqual(['detail', 'merge', 'overview']);
+  });
+
+  it('limita también las pasadas ejecutivas aunque cada reducción pequeña supere la auditoría', async () => {
+    const texts = Array.from({ length: 400 }, (_, index) => `Asunto ${index}: ${'contenido verificado '.repeat(35)}`);
+    let maximumLevel = 0;
+    const report = await synthesizeGlobalReport([group('QA', texts)], role, asOf, async (prompt, _phase, validate) => {
+      const data = evidencePayload(prompt);
+      if (data.draft) {
+        const response = evidenceResponse(prompt);
+        validate(response.text);
+        return response;
+      }
+      for (const item of data.sources) maximumLevel = Math.max(maximumLevel, Number(/^L(\d+)-/.exec(item.id)?.[1] || 0));
+      const response = { ...evidenceResponse(prompt), text: JSON.stringify({ entries: (data.mode === 'overview' ? data.sources.slice(0, 10) : data.sources).map((item: typeof source) => ({ subject: item.subject || item.id, section: 'Pendientes', text: item.text.slice(0, data.mode === 'overview' ? 599 : 1800), sources: [item.id] })), excluded: [] }) };
+      validate(response.text);
+      return response;
+    }, async () => {});
+    expect(report.synthesis.entries).toHaveLength(400);
+    expect(report.synthesis.overview).toEqual([]);
+    expect(report.synthesis.recoveries.at(-1)?.reason).toContain('límite de pasadas');
+    expect(maximumLevel).toBeGreaterThan(0);
   });
 
   it('reanuda 5656 textos sin repetir extracción ni síntesis aprobada y elimina borradores rechazados', async () => {

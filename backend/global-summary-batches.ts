@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto';
 import type { GeminiExecutionResult } from './geminiService.ts';
 import { SummaryJobError } from './summary-jobs.ts';
 import { EvidenceValidationError, parseEvidenceAnalysis, validateEvidenceAudit, type EvidenceAnalysis, type EvidenceSource, type GroundedGroup } from './summary-evidence.ts';
-import { synthesizeGlobalReport, type SummaryPhase, type SynthesisStorage } from './summary-synthesis.ts';
+import { synthesizeGlobalReport, type SummaryPhase, type SynthesisStorage, type SynthesisProgress } from './summary-synthesis.ts';
 
 export const SUMMARY_BATCH_CHARS = 48_000;
 const SOURCE_BATCH_CHARS = 24_000;
-export type SummaryProgress = { stage: 'syncing' | 'analyzing' | 'verifying' | 'consolidating'; completedBatches: number; totalBatches: number; completedMessages: number; totalMessages: number; skippedMessages?: number };
+export type SummaryProgress = { stage: 'syncing' | 'analyzing' | 'verifying' | 'consolidating'; completedBatches: number; totalBatches: number; completedMessages: number; totalMessages: number; skippedMessages?: number; synthesis?: SynthesisProgress };
 export type SummaryGroup = { name: string; items: Array<{ id?: string; line: string }> };
 type BatchOptions = {
   generate: (prompt: string, phase: SummaryPhase) => Promise<GeminiExecutionResult>;
@@ -115,7 +115,7 @@ export async function generateBatchedGlobalSummary(groups: SummaryGroup[], optio
   const totalMessages = groups.reduce((total, group) => total + group.items.length, 0);
   let completedMessages = 0;
   const skippedMessages = new Map<string, { messageId: string; reason: 'insufficient_evidence' }>();
-  const progress = (stage: SummaryProgress['stage']) => options.progress({ stage, completedBatches, totalBatches, completedMessages, totalMessages, skippedMessages: skippedMessages.size });
+  const progress = (stage: SummaryProgress['stage'], synthesis?: SynthesisProgress) => options.progress({ stage, completedBatches, totalBatches, completedMessages, totalMessages, skippedMessages: skippedMessages.size, ...(synthesis ? { synthesis } : {}) });
   const reportGroups: GroundedGroup[] = [];
   for (const plan of plans) {
     const priorMessages = completedMessages;
@@ -177,7 +177,7 @@ export async function generateBatchedGlobalSummary(groups: SummaryGroup[], optio
   }
   if (!provider) throw new SummaryJobError('No hay texto disponible para verificar.');
   await progress('consolidating');
-  const report = await synthesizeGlobalReport(reportGroups, options.systemPrompt || '', options.asOf, invoke, () => progress('consolidating'), async (prompt, phase) => {
+  const report = await synthesizeGlobalReport(reportGroups, options.systemPrompt || '', options.asOf, invoke, (synthesis) => progress('consolidating', synthesis), async (prompt, phase) => {
     const key = cacheKey(prompt, phase);
     invalidated.add(key);
     await options.remove?.(key);
