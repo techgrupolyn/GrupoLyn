@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { encryptGoogleDriveSecret } from '../google-drive.ts';
-import { acquireSummaryLock, releaseSummaryLock, createSummaryQueue, markSummaryMessagesReviewed } from '../summary-jobs.ts';
+import { acquireSummaryLock, releaseSummaryLock, createSummaryQueue, markSummaryMessagesReviewed, publicSummaryJob } from '../summary-jobs.ts';
 import { evidencePayload, evidenceResponse } from './summary-evidence-fixtures.ts';
 import { createWhatsAppInbox } from '../whatsapp-reliability.ts';
 
@@ -996,17 +996,22 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   },60000);
 
-  it('la síntesis respeta el prompt configurado y no consume mensajes si falla su auditoría', async () => {
+  it('la síntesis conserva hallazgos verificados sin publicar una reformulación rechazada ni omitir mensajes', async () => {
     const accountId = `qa-synthesis-${randomUUID()}`;
     const chatId = `${accountId}::120363999930000@g.us`;
     const specialistId = `qa-role-${randomUUID()}`;
     const role = 'Agrupa por obra. Omite saludos, apartados vacíos y asuntos ajenos a obras. No cierres un problema solo por haberlo comentado.';
-    let failAudit = true;
     generation.mockReset().mockImplementation(async (prompt: string, _model: string, system: string) => {
       expect(prompt).toContain(JSON.stringify(role));
       expect(system).toMatch(/PROMPT_DEL_ROL|Agrupa por obra/);
       const data = evidencePayload(prompt);
-      if (data.draft && failAudit) return { ...evidenceResponse(prompt), text: JSON.stringify({ approved: false, issues: ['La fuga no está resuelta'] }) };
+      if (data.draft) return { ...evidenceResponse(prompt), text: JSON.stringify({ approved: false, issues: ['La fuga no está resuelta'] }) };
+      if (data.sources) {
+        const response = evidenceResponse(prompt);
+        const draft = JSON.parse(response.text);
+        draft.entries.forEach((entry: { text: string }) => { entry.text = 'Obra Dana: fuga reparada y cerrada.'; });
+        return { ...response, text: JSON.stringify(draft) };
+      }
       if (!data.sources && !data.analysis) return { ...evidenceResponse(prompt), text: JSON.stringify({ findings: [{
         kind: 'blocker', state: 'pending', topicRef: null, text: 'Obra Dana: sigue la fuga sin reparar.',
         evidence: [{ source: data.primary[0].ref, quote: 'Obra Dana: sigue la fuga sin reparar.' }],
@@ -1021,21 +1026,19 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       const queue = createSummaryQueue(server.pool, server.prepareGlobalSummary);
       const job = await queue.enqueue(accountId, specialistId);
       await queue.run();
-      expect((await server.pool.query('SELECT status FROM summary_jobs WHERE id=$1', [job.id])).rows[0].status).toBe('failed');
-      for (const table of ['resumenes_globales_chat', 'summary_reviewed_messages', 'summary_skipped_messages']) expect((await server.pool.query(`SELECT COUNT(*)::int AS count FROM ${table} WHERE account_id=$1`, [accountId])).rows[0].count).toBe(0);
-      expect((await server.pool.query('SELECT unread_count FROM chats WHERE id=$1', [chatId])).rows[0].unread_count).toBe(1);
-      failAudit = false;
-      const extractions = generation.mock.calls.filter(([prompt]) => prompt.startsWith('ETAPA: EXTRACCION')).length;
-      expect((await queue.enqueue(accountId, specialistId)).id).toBe(job.id);
       await queue.run();
       const state = (await server.pool.query('SELECT status,error FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
       expect(state.status, state.error).toBe('completed');
-      expect(generation.mock.calls.filter(([prompt]) => prompt.startsWith('ETAPA: EXTRACCION')).length).toBe(extractions);
+      for (const table of ['resumenes_globales_chat', 'summary_reviewed_messages']) expect((await server.pool.query(`SELECT COUNT(*)::int AS count FROM ${table} WHERE account_id=$1`, [accountId])).rows[0].count).toBe(1);
+      expect((await server.pool.query('SELECT * FROM summary_skipped_messages WHERE account_id=$1', [accountId])).rowCount).toBe(0);
       const report = (await server.pool.query('SELECT resumen,evidence FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rows[0];
-      expect(report.resumen).toContain('RESUMEN EJECUTIVO DEL PERIODO');
+      expect(report.resumen).toContain('Obra Dana: sigue la fuga sin reparar.');
+      expect(report.resumen).toContain('Asuntos verificados pendientes de agrupar');
+      expect(report.resumen).not.toContain('fuga reparada y cerrada');
       expect(report.resumen).not.toContain('HALLAZGOS Y SECUENCIA');
       expect(report.evidence.synthesis.rolePrompt).toBe(role);
       expect(report.evidence.synthesis.entries[0].sources).toEqual(['G1-F1']);
+      expect(report.evidence.synthesis.recoveries.map((item: { mode: string }) => item.mode)).toEqual(['detail', 'overview']);
       expect(report.evidence.groups[0].sources[0].line).toContain('2026-09-29T10:00:00.000Z');
       expect((await server.pool.query('SELECT unread_count FROM chats WHERE id=$1', [chatId])).rows[0].unread_count).toBe(0);
     } finally {
@@ -1252,6 +1255,56 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
     }
   }, 60000);
+
+  it('Q-SINTESIS: conserva diagnósticos privados, reanuda tras rechazo y guarda exactamente una vez', async () => {
+    const accountId = `qa-synthesis-${randomUUID()}`;
+    const chatId = `${accountId}::120363999900091@g.us`;
+    const text = 'Obra Dana: falta confirmar el material.';
+    let reject = true;
+    generation.mockReset().mockImplementation(async (prompt: string) => {
+      const data = evidencePayload(prompt);
+      const response = evidenceResponse(prompt);
+      if (reject && data.mode === 'describe' && data.draft) return { ...response, text: JSON.stringify({ approved: false, issues: ['El responsable no está confirmado'] }) };
+      return response;
+    });
+    try {
+      await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$1)', [accountId]);
+      await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count) VALUES($1,$2,'Obra Dana',1,1)", [chatId, accountId]);
+      await server.pool.query("INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,enviado_por_mi) VALUES($1,$2,$1,'QA',$3,FALSE)", [accountId, chatId, text]);
+      const queue = createSummaryQueue(server.pool, server.prepareGlobalSummary);
+      const job = await queue.enqueue(accountId, 'general');
+      await queue.run();
+      const failed = (await server.pool.query('SELECT * FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
+      expect(failed.status).toBe('failed');
+      expect(failed.result.synthesisDiagnostic).toMatchObject({ mode: 'describe', sources: ['G1-M1'], reason: expect.stringContaining('responsable no está confirmado') });
+      expect(publicSummaryJob(failed)).not.toHaveProperty('synthesisDiagnostic');
+      expect(failed.result.progress).toMatchObject({ stage: 'consolidating', completedMessages: 1 });
+      expect((await server.pool.query('SELECT unread_count FROM chats WHERE id=$1', [chatId])).rows[0].unread_count).toBe(1);
+      expect((await server.pool.query('SELECT * FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rowCount).toBe(0);
+      expect((await server.pool.query('SELECT * FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rowCount).toBe(0);
+      expect((await server.pool.query('SELECT * FROM summary_job_contexts WHERE job_id=$1', [job.id])).rowCount).toBe(1);
+      reject = false;
+      generation.mockClear();
+      const resumed = createSummaryQueue(server.pool, server.prepareGlobalSummary);
+      expect((await resumed.enqueue(accountId, 'general')).id).toBe(job.id);
+      await resumed.run();
+      await resumed.run();
+      expect(generation.mock.calls.some(([prompt]) => /^ETAPA: (EXTRACCION|VERIFICACION)/.test(prompt))).toBe(false);
+      const completed = (await server.pool.query('SELECT * FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
+      expect(completed.status).toBe('completed');
+      expect(completed.result.resumen).toContain(text);
+      expect(completed.result).not.toHaveProperty('synthesisDiagnostic');
+      expect((await server.pool.query('SELECT * FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rowCount).toBe(1);
+      expect((await server.pool.query('SELECT * FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rowCount).toBe(1);
+      expect((await server.pool.query('SELECT unread_count FROM chats WHERE id=$1', [chatId])).rows[0].unread_count).toBe(0);
+      expect((await server.pool.query('SELECT * FROM summary_job_batches WHERE job_id=$1', [job.id])).rowCount).toBe(0);
+    } finally {
+      generation.mockReset();
+      await server.pool.query('DELETE FROM resumenes_globales_chat WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM chats WHERE account_id=$1', [accountId]);
+      await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
+    }
+  });
 
   it('Q-02: fallo transaccional no consume mensajes ni guarda un informe incompleto', async () => {
     const accountId=`qa-rollback-${randomUUID()}`;

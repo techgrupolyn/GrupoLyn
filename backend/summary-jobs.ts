@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import type { GeminiExecutionResult } from './geminiService.ts';
 import type { SummaryProgress } from './global-summary-batches.ts';
+import type { SynthesisCheckpoint } from './summary-synthesis.ts';
 
 export type SummaryJob = { id: string; account_id: string; specialist_id: string; status: string; attempts: number; error: string | null; result: Record<string, unknown> | null };
 type SaveSummary = (client: PoolClient) => Promise<Record<string, unknown>>;
@@ -93,6 +94,7 @@ export async function markSummaryMessagesReviewed(client: PoolClient, accountId:
 }
 
 export function publicSummaryJob(job: SummaryJob) {
+  const { synthesisDiagnostic: _diagnostic, ...publicResult } = job.result || {};
   const progress = job.result?.progress as SummaryProgress | undefined;
   const recovery = job.result?.historyRecovery as Array<{ status: string }> | undefined;
   const withoutAnchor = recovery?.filter((item) => item.status === 'no_anchor').length || 0;
@@ -102,13 +104,23 @@ export function publicSummaryJob(job: SummaryJob) {
     ? `${progress.stage === 'consolidating' ? 'Preparando el informe' : progress.stage === 'verifying' ? 'Verificando evidencias' : 'Analizando por lotes'}: ${progress.completedBatches}/${progress.totalBatches} lotes de texto verificados. Los contadores se actualizan al guardar el informe completo.`
     : 'El informe global se está generando. El resultado aparecerá automáticamente cuando termine.';
   return { jobId: job.id, status: job.status, specialistId: job.specialist_id, en_progreso: ['queued','running'].includes(job.status),
-    error: job.error, ...(job.result || {}),
+    error: job.error, ...publicResult,
     ...(job.status === 'queued' || job.status === 'running' ? { resumen: description } : {}),
   };
 }
 
 export function summaryJobStorage(pool: Pool, job: SummaryJob) {
+  const synthesisKey = (key: string) => `synthesis:${createHash('sha256').update(key).digest('hex')}`;
   return {
+    synthesis: {
+      read: async (key: string): Promise<SynthesisCheckpoint | null> => {
+        const result = await pool.query('SELECT result FROM summary_job_batches WHERE job_id=$1 AND cache_key=$2', [job.id, synthesisKey(key)]);
+        return result.rows[0]?.result || null;
+      },
+      write: async (key: string, value: SynthesisCheckpoint) => {
+        await pool.query('INSERT INTO summary_job_batches(job_id,cache_key,result) VALUES($1,$2,$3::jsonb) ON CONFLICT(job_id,cache_key) DO UPDATE SET result=EXCLUDED.result', [job.id, synthesisKey(key), JSON.stringify(value)]);
+      },
+    },
     snapshot: async <Snapshot>(create: () => Promise<Snapshot>, reusable: (snapshot: Snapshot) => boolean = () => true): Promise<Snapshot> => {
       const existing = await pool.query('SELECT snapshot FROM summary_job_contexts WHERE job_id=$1', [job.id]);
       if (existing.rows[0] && reusable(existing.rows[0].snapshot)) return existing.rows[0].snapshot;
@@ -123,6 +135,9 @@ export function summaryJobStorage(pool: Pool, job: SummaryJob) {
     },
     write: async (key: string, result: GeminiExecutionResult) => {
       await pool.query('INSERT INTO summary_job_batches(job_id,cache_key,result) VALUES($1,$2,$3::jsonb) ON CONFLICT DO NOTHING', [job.id, key, JSON.stringify(result)]);
+    },
+    remove: async (key: string) => {
+      await pool.query('DELETE FROM summary_job_batches WHERE job_id=$1 AND cache_key=$2', [job.id, key]);
     },
     progress: async (progress: SummaryProgress) => {
       await pool.query("UPDATE summary_jobs SET result=COALESCE(result,'{}'::jsonb) || jsonb_build_object('progress',$2::jsonb),updated_at=NOW() WHERE id=$1", [job.id, JSON.stringify(progress)]);
@@ -179,7 +194,10 @@ export function createSummaryQueue(pool: Pool, prepare: (job: SummaryJob) => Pro
               continue;
             }
             const message = error instanceof SummaryJobError ? error.message : 'No se pudo generar el informe. Reintenta; tus mensajes continúan pendientes.';
-            const failed = await client.query<SummaryJob>("UPDATE summary_jobs SET status='failed',error=$2,updated_at=NOW() WHERE id=$1 AND status='running' RETURNING *", [candidate.id,message]);
+            const diagnostic = error instanceof SummarySynthesisError ? JSON.stringify(error.diagnostic) : null;
+            const failed = await client.query<SummaryJob>(`UPDATE summary_jobs SET status='failed',error=$2,updated_at=NOW(),
+              result=CASE WHEN $3::jsonb IS NULL THEN result ELSE COALESCE(result,'{}'::jsonb) || jsonb_build_object('synthesisDiagnostic',$3::jsonb) END
+              WHERE id=$1 AND status='running' RETURNING *`, [candidate.id,message,diagnostic]);
             if (failed.rows[0]) {
               try { notify(failed.rows[0]); } catch (error) { console.error('[summary-queue] Notification failed:', error); }
             }
@@ -193,5 +211,14 @@ export function createSummaryQueue(pool: Pool, prepare: (job: SummaryJob) => Pro
 }
 
 export class SummaryJobError extends Error {}
+
+export class SummarySynthesisError extends SummaryJobError {
+  readonly diagnostic: { code: string; mode: string; sources: string[]; reason: string };
+
+  constructor(diagnostic: { mode: string; sources: string[]; reason: string }) {
+    super('No se pudo validar la síntesis final. Los textos ya procesados se conservan para reanudar con el mismo rol. No se guardó el informe ni se descontaron mensajes.');
+    this.diagnostic = { code: 'synthesis_validation_failed', ...diagnostic, reason: diagnostic.reason.slice(0, 2000) };
+  }
+}
 
 export class SummaryHistoryPending extends Error {}

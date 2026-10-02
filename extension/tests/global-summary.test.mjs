@@ -33,7 +33,7 @@ test('el panel prioriza el informe global y muestra el contador de mensajes pend
   assert.match(html, /id="global-report-progress" aria-live="polite"/);
   assert.match(sidepanel, /function renderPendingUnreadCounter/);
   assert.match(sidepanel, /if \(success\) await loadChats\(\);/);
-  assert.equal(manifest.version, '1.1.9');
+  assert.equal(manifest.version, '1.1.10');
 });
 
 function reportHarness() {
@@ -170,11 +170,23 @@ test('no redondea al 100 prematuramente ni confunde analizar con guardar', () =>
   data.progress.stage = 'consolidating';
   const saving = progressMarkup(data);
   assert.match(saving, /value="100"/);
-  assert.match(saving, /0 % restante del análisis/);
+  assert.match(saving, /Síntesis y guardado pendientes/);
+  assert.match(saving, /esta fase no tiene un porcentaje medido/);
+  assert.doesNotMatch(saving, /0 % restante/);
   assert.match(saving, /Preparando y guardando/);
   assert.doesNotMatch(saving, /Informe guardado/);
   assert.match(progressMarkup({ status: 'completed', mensajes_analizados: 20000 }), /Informe guardado/);
   assert.match(progressMarkup({ mensajes_contexto: 20000 }), /value="100"/);
+});
+
+test('5656 textos procesados no significan informe guardado cuando falla la síntesis', () => {
+  const markup = progressMarkup({ status: 'failed', progress: { stage: 'consolidating', completedMessages: 5655, skippedMessages: 1, totalMessages: 5656 } });
+  assert.match(markup, /value="100"/);
+  assert.match(markup, /5655 verificados y 1 omitidos/);
+  assert.match(markup, /Informe final detenido/);
+  assert.match(markup, /no al informe terminado/);
+  assert.match(markup, /Reintenta con el mismo rol/);
+  assert.doesNotMatch(markup, /0 % restante|Informe guardado/);
 });
 
 test('fallar conserva el último avance y soporta servidores anteriores por lotes', () => {

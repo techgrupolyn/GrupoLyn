@@ -48,6 +48,29 @@ La exclusión no aplica a fallos de red, cuota, fallback o base de datos. Estos 
 
 ## Extensión y despliegue
 
+### Recuperación de la síntesis final
+
+El 100 % de textos procesados no significa informe guardado: después se redacta, audita y guarda el resultado. La extensión 1.1.10 distingue esta fase, también cuando falla, sin inventar un porcentaje de síntesis.
+
+La síntesis permite tres intentos por partición; el tercero recibe la propuesta rechazada y las observaciones de la auditoría. Los borradores rechazados se invalidan, no se reutilizan indefinidamente como si hubieran sido aprobados. Los apartados que pasan la auditoría y las subdivisiones se guardan en `summary_job_batches`, por trabajo. Reintentar el último trabajo fallido con la misma cuenta y rol conserva la selección inicial y reutiliza los lotes y apartados aprobados. Las claves de extracción y verificación anteriores no cambian. Los informes anteriores a esta mejora conservan sus resultados de llamadas en caché; no tienen todavía los nuevos checkpoints de particiones.
+
+Si falla la reformulación de un punto ya validado, se conserva ese mismo punto sin añadir conclusiones. Si no puede clasificarse o redactarse un hallazgo de la extracción ya verificado contra sus citas, se conserva literalmente bajo «Asuntos verificados pendientes de agrupar», sin inventar una obra ni descartar el hallazgo. Si falla la selección ejecutiva, se entrega el detalle completo validado con un aviso explícito, sin publicar la selección rechazada. Estas recuperaciones se registran en `evidence.synthesis.recoveries`. No se aplica esta salida a un detalle nunca validado ni a errores de cuota, conexión o almacenamiento.
+
+Si no puede validarse ni el detalle individual, el trabajo sigue fallando sin guardar ni descontar mensajes, pero conserva el motivo y referencias en `summary_jobs.result.synthesisDiagnostic`. Este diagnóstico no se expone en la respuesta pública del trabajo. El mensaje al usuario diferencia el fallo de síntesis y explica cómo reanudar. Una mejora del código no garantiza que un proveedor externo apruebe cualquier texto: se mantiene la barrera contra conclusiones no sustentadas.
+
+Consulta de diagnóstico de solo lectura (no requiere consultar conversaciones ni claves):
+
+```sql
+SELECT id, account_id, status, updated_at,
+       result->'progress' AS progreso,
+       result->'synthesisDiagnostic' AS diagnostico
+FROM summary_jobs
+WHERE account_id = 'director-01'
+ORDER BY updated_at DESC LIMIT 3;
+```
+
+El backend es compatible con la extensión anterior; la aclaración visual requiere la 1.1.10. No hace falta borrar ni recrear el trabajo de Alex. Desplegar el backend solo tras publicar y aprobar el commit, usando el procedimiento con respaldo `deploy/scripts/deploy-global-summary.sh` en modo `backend`; después reintentar desde la misma cuenta y rol. La publicación y el resultado real de ese trabajo deben verificarse por separado de las pruebas locales.
+
 La extensión no espera a `SYNC_NOW` antes de encolar el informe. La sincronización y recuperación periódicas continúan por separado, sin bloquear la selección disponible. Un fallo al refrescar la lista después de aceptar el trabajo no lo presenta como fallido.
 
 El cambio principal requiere desplegar el backend y reiniciarlo. El arranque crea `summary_skipped_messages` sin borrar datos existentes. Las extensiones anteriores reciben el contador corregido y el aviso de omisiones dentro del informe, pero conservan las explicaciones visuales antiguas; las etiquetas de progreso procesado requieren actualizar la extensión. Este documento no acredita un despliegue ni una publicación en Chrome Web Store.

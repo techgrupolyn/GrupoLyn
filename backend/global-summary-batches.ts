@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { GeminiExecutionResult } from './geminiService.ts';
 import { SummaryJobError } from './summary-jobs.ts';
 import { EvidenceValidationError, parseEvidenceAnalysis, validateEvidenceAudit, type EvidenceAnalysis, type EvidenceSource, type GroundedGroup } from './summary-evidence.ts';
-import { synthesizeGlobalReport, type SummaryPhase } from './summary-synthesis.ts';
+import { synthesizeGlobalReport, type SummaryPhase, type SynthesisStorage } from './summary-synthesis.ts';
 
 export const SUMMARY_BATCH_CHARS = 48_000;
 const SOURCE_BATCH_CHARS = 24_000;
@@ -12,6 +12,8 @@ type BatchOptions = {
   generate: (prompt: string, phase: SummaryPhase) => Promise<GeminiExecutionResult>;
   read: (key: string) => Promise<GeminiExecutionResult | null>;
   write: (key: string, result: GeminiExecutionResult) => Promise<void>;
+  remove?: (key: string) => Promise<void>;
+  synthesis?: SynthesisStorage;
   progress: (progress: SummaryProgress) => Promise<void>;
   cacheScope: string;
   systemPrompt?: string;
@@ -77,10 +79,12 @@ export async function generateBatchedGlobalSummary(groups: SummaryGroup[], optio
   if ((options.systemPrompt || '').length > 12_000) throw new SummaryJobError('El prompt del rol supera el tamaño admitido para verificar cada lote. Reduce sus instrucciones; no se descartaron mensajes.');
   const wait = options.wait || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   let provider: GeminiExecutionResult | undefined;
+  const cacheKey = (prompt: string, phase: SummaryPhase) => createHash('sha256').update(JSON.stringify(['evidence-v1', options.cacheScope, phase, prompt])).digest('hex');
+  const invalidated = new Set<string>();
   const invoke = async (prompt: string, phase: SummaryPhase, validate: (text: string) => void) => {
     if (prompt.length > SUMMARY_BATCH_CHARS) throw new EvidenceValidationError('Se necesita subdividir el lote para verificar sus evidencias.');
-    const key = createHash('sha256').update(JSON.stringify(['evidence-v1', options.cacheScope, phase, prompt])).digest('hex');
-    const cached = await options.read(key);
+    const key = cacheKey(prompt, phase);
+    const cached = invalidated.has(key) ? null : await options.read(key);
     if (cached) { validate(cached.text); provider = cached; return cached; }
     for (let attempt = 0; ; attempt++) {
       try {
@@ -173,7 +177,11 @@ export async function generateBatchedGlobalSummary(groups: SummaryGroup[], optio
   }
   if (!provider) throw new SummaryJobError('No hay texto disponible para verificar.');
   await progress('consolidating');
-  const report = await synthesizeGlobalReport(reportGroups, options.systemPrompt || '', options.asOf, invoke, () => progress('consolidating'));
+  const report = await synthesizeGlobalReport(reportGroups, options.systemPrompt || '', options.asOf, invoke, () => progress('consolidating'), async (prompt, phase) => {
+    const key = cacheKey(prompt, phase);
+    invalidated.add(key);
+    await options.remove?.(key);
+  }, options.synthesis);
   const omitted = [...skippedMessages.values()];
   const descriptiveReferences = new Set(report.synthesis.kind === 'descriptive' ? report.synthesis.entries.flatMap((entry) => entry.sources) : []);
   const evidence = { version: 3, synthesis: report.synthesis, skippedMessages: omitted, groups: reportGroups.map((group) => {

@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { parseReportDraft, synthesizeGlobalReport, type ReportDraft } from '../summary-synthesis.ts';
+import { parseReportDraft, synthesizeGlobalReport, type ReportDraft, type SynthesisCheckpoint } from '../summary-synthesis.ts';
 import { generateBatchedGlobalSummary, SUMMARY_BATCH_CHARS } from '../global-summary-batches.ts';
 import type { GroundedGroup } from '../summary-evidence.ts';
 import { evidencePayload, evidenceResponse } from './summary-evidence-fixtures.ts';
+import { SummarySynthesisError } from '../summary-jobs.ts';
 
 const role = 'Agrupar siempre por obra. Obra Dana y Obra Pepe no se mezclan. Resumen general, Problemas detectados, Soluciones y decisiones tomadas, Pendientes, Cambios relevantes, Riesgos / bloqueos. Omitir conversaciones vecinales y apartados vacíos. No considerar solucionado un problema simplemente porque se haya hablado de él.';
 const asOf = '2026-09-30T12:00:00Z';
@@ -75,8 +76,105 @@ describe('síntesis final guiada por el prompt del rol', () => {
       if (!data.sources && !data.analysis) return { ...evidenceResponse(prompt), text: JSON.stringify({ findings: [{ kind: 'task', state: 'pending', text: source.text, topicRef: null, evidence: [{ source: data.primary[0].ref, quote: source.text }] }], informational: [] }) };
       return evidenceResponse(prompt);
     }) };
-    await expect(generateBatchedGlobalSummary([{ name: 'Obra Dana', items: [{ id: 'valid', line: source.text }] }], options)).rejects.toThrow('síntesis final');
+    const report = await generateBatchedGlobalSummary([{ name: 'Obra Dana', items: [{ id: 'valid', line: source.text }] }], options);
+    expect(report.skippedMessages).toEqual([]);
+    expect(report.text).toContain(source.text);
+    expect(report.text).toContain('Asuntos verificados pendientes de agrupar');
+    expect(report.evidence.synthesis.entries[0].text).toBe(source.text);
   });
+
+  it('guarda el motivo, etapa y referencias cuando tampoco puede validar el detalle individual', async () => {
+    const input = group('Dana', [source.text]);
+    input.findings = [];
+    const operation = synthesizeGlobalReport([input], role, asOf, async (prompt, _phase, validate) => {
+      const data = evidencePayload(prompt);
+      const response = data.draft ? { ...evidenceResponse(prompt), text: JSON.stringify({ approved: false, issues: ['No se ha confirmado el responsable'] }) } : evidenceResponse(prompt);
+      validate(response.text);
+      return response;
+    }, async () => {});
+    await expect(operation).rejects.toBeInstanceOf(SummarySynthesisError);
+    await expect(operation).rejects.toMatchObject({ diagnostic: { code: 'synthesis_validation_failed', mode: 'describe', sources: ['M0'], reason: expect.stringContaining('No se ha confirmado el responsable') } });
+  });
+
+  it('el tercer intento repara con la propuesta rechazada y las observaciones del auditor', async () => {
+    let audits = 0;
+    let repaired = false;
+    const result = await synthesizeGlobalReport([group('Dana', [source.text])], role, asOf, async (prompt, _phase, validate) => {
+      const data = evidencePayload(prompt);
+      let response = evidenceResponse(prompt);
+      if (data.mode === 'detail' && data.draft && ++audits <= 2) response = { ...response, text: JSON.stringify({ approved: false, issues: ['Mantén el pendiente explícito'] }) };
+      if (data.mode === 'detail' && !data.draft && audits === 2) {
+        expect(prompt).toContain('PROPUESTA_RECHAZADA');
+        expect(prompt).toContain('Mantén el pendiente explícito');
+        repaired = true;
+      }
+      validate(response.text);
+      return response;
+    }, async () => {});
+    expect(repaired).toBe(true);
+    expect(result.text).toContain(source.text);
+  });
+
+  it('conserva todo el detalle validado si falla reformularlo o preparar la selección ejecutiva', async () => {
+    const texts = ['Obra Dana: falta confirmar el material.', 'Obra Dana: Ana revisará los planos el viernes.'];
+    const report = await synthesizeGlobalReport([group('Obra Dana', texts)], role, asOf, async (prompt, _phase, validate) => {
+      const data = evidencePayload(prompt);
+      let response = evidenceResponse(prompt);
+      if (data.mode !== 'detail') response = { ...response, text: JSON.stringify(data.draft ? { approved: false, issues: ['La reformulación altera el estado'] } : { entries: data.sources.map((item: typeof source) => ({ subject: item.subject, section: 'Decisiones', text: 'Todo ejecutado y confirmado.', sources: [item.id] })), excluded: [] }) };
+      validate(response.text);
+      return response;
+    }, async () => {});
+    for (const text of texts) expect(report.text).toContain(text);
+    expect(report.text).not.toContain('Todo ejecutado');
+    expect(report.synthesis.entries.flatMap((entry) => entry.sources)).toEqual(['G1-F1', 'G1-F2']);
+    expect(report.synthesis.overview).toEqual([]);
+    expect(report.synthesis.recoveries.map((item) => item.mode)).toEqual(['merge', 'merge', 'overview']);
+    expect(report.text).toContain('detalle completo validado');
+  });
+
+  it('un error del proveedor al redactar no se disfraza como recuperación de validación', async () => {
+    await expect(synthesizeGlobalReport([group('Dana', [source.text])], role, asOf, async (prompt, _phase, validate) => {
+      if (evidencePayload(prompt).mode === 'overview') throw new Error('402 créditos agotados');
+      const response = evidenceResponse(prompt);
+      validate(response.text);
+      return response;
+    }, async () => {})).rejects.toThrow('402 créditos agotados');
+  });
+
+  it('reanuda 5656 textos sin repetir extracción ni síntesis aprobada y elimina borradores rechazados', async () => {
+    const cache = new Map();
+    const checkpoints = new Map<string, SynthesisCheckpoint>();
+    const approvedPrompts = new Set<string>();
+    let reject = true;
+    const options = {
+      systemPrompt: role, asOf, cacheScope: 'resume-5656',
+      synthesis: { read: async (key: string) => checkpoints.get(key) || null, write: async (key: string, value: SynthesisCheckpoint) => { checkpoints.set(key, value); } },
+      read: async (key: string) => cache.get(key) || null,
+      write: async (key: string, value: unknown) => { cache.set(key, value); },
+      remove: vi.fn(async (key: string) => { cache.delete(key); }),
+      progress: vi.fn(async () => {}),
+      generate: vi.fn(async (prompt: string) => {
+        const data = evidencePayload(prompt);
+        let response = evidenceResponse(prompt);
+        const problem = data.mode === 'describe' && data.sources.some((item: typeof source) => item.text.includes('MSG05000'));
+        if (reject && problem && data.draft) response = { ...response, text: JSON.stringify({ approved: false, issues: ['Conservar la incertidumbre de la fuente'] }) };
+        if (reject && data.mode === 'describe' && !problem && !data.draft) approvedPrompts.add(prompt);
+        return response;
+      }),
+    };
+    const groups = [{ name: 'Obra Dana', items: Array.from({ length: 5656 }, (_, index) => ({ id: `qa-${index}`, line: `Obra Dana: MSG${String(index).padStart(5, '0')} pendiente de confirmar.` })) }];
+    await expect(generateBatchedGlobalSummary(groups, options)).rejects.toBeInstanceOf(SummarySynthesisError);
+    expect(options.remove).toHaveBeenCalled();
+    expect(approvedPrompts.size).toBeGreaterThan(0);
+    expect([...checkpoints.values()].some((value) => value.kind === 'split')).toBe(true);
+    reject = false;
+    options.generate.mockClear();
+    const result = await generateBatchedGlobalSummary(groups, options);
+    expect(options.generate.mock.calls.some(([prompt]) => /^ETAPA: (EXTRACCION|VERIFICACION)/.test(prompt))).toBe(false);
+    expect(options.generate.mock.calls.some(([prompt]) => approvedPrompts.has(prompt))).toBe(false);
+    expect(new Set(result.evidence.synthesis.entries.flatMap((entry) => entry.sources)).size).toBe(5656);
+    expect(result.skippedMessages).toEqual([]);
+  }, 30000);
 
   it('no impone obras a otro rol ni muestra apartados vacíos cuando no hay hallazgos', async () => {
     const invoke = vi.fn();
