@@ -1050,8 +1050,8 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
-  it('Q-20000: lotes durables, fallo parcial y reanudación sin consumir mensajes nuevos', async () => {
-    const accountId = `qa-20k-${randomUUID()}`;
+  it.each([300, 20000, 50000])('Q-volumen %i: lotes durables, fallo parcial y reanudación sin consumir mensajes nuevos', async (totalMessages) => {
+    const accountId = `qa-volume-${totalMessages}-${randomUUID()}`;
     const chatId = `${accountId}::120363999920000@g.us`;
     const accepted: string[] = [];
     const fetcher = vi.fn().mockRejectedValue(new Error('Esta prueba no permite red'));
@@ -1059,10 +1059,10 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     generation.mockReset();
     try {
       await server.pool.query('INSERT INTO whatsapp_accounts(id,nombre,evolution_instance_name) VALUES($1,$1,$1)', [accountId]);
-      await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count) VALUES($1,$2,'Grupo 20000',20000,20000)", [chatId, accountId]);
+      await server.pool.query("INSERT INTO chats(id,account_id,nombre,unread_count,whatsapp_unread_count) VALUES($1,$2,'Grupo QA volumen',$3,$3)", [chatId, accountId, totalMessages]);
       await server.pool.query(`INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,timestamp,enviado_por_mi)
         SELECT $2 || ':' || sequence,$1,$2,'QA','MSG' || lpad(sequence::text,5,'0') || ' Confirmar planos. ' || repeat('Texto sintético. ',10),
-        NOW()-INTERVAL '1 day'+sequence*INTERVAL '1 second',FALSE FROM generate_series(1,20000) sequence`, [chatId, accountId]);
+        NOW()-INTERVAL '1 day'+sequence*INTERVAL '1 second',FALSE FROM generate_series(1,$3::integer) sequence`, [chatId, accountId, totalMessages]);
       let calls = 0;
       generation.mockImplementation(async (prompt: string) => {
         calls++;
@@ -1076,25 +1076,25 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       await queue.run();
       expect((await server.pool.query('SELECT status FROM summary_jobs WHERE id=$1', [job.id])).rows[0].status).toBe('failed');
       const storedProgress = (await server.pool.query('SELECT result FROM summary_jobs WHERE id=$1', [job.id])).rows[0].result.progress;
-      expect(storedProgress).toMatchObject({ completedMessages: accepted.length, totalMessages: 20000 });
+      expect(storedProgress).toMatchObject({ completedMessages: accepted.length, totalMessages });
       expect(storedProgress.completedMessages).toBeGreaterThan(0);
       expect((await server.pool.query('SELECT COUNT(*)::int AS total FROM summary_job_batches WHERE job_id=$1', [job.id])).rows[0].total).toBe(2);
-      expect((await server.pool.query('SELECT unread_count FROM chats WHERE id=$1', [chatId])).rows[0].unread_count).toBe(20000);
+      expect((await server.pool.query('SELECT unread_count FROM chats WHERE id=$1', [chatId])).rows[0].unread_count).toBe(totalMessages);
       expect((await server.pool.query('SELECT * FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rowCount).toBe(0);
       expect((await server.pool.query('SELECT * FROM resumenes_globales_chat WHERE account_id=$1', [accountId])).rowCount).toBe(0);
       await server.pool.query("INSERT INTO mensajes(id,chat_id,account_id,remitente,texto,enviado_por_mi) VALUES($1,$2,$3,'QA','Mensaje posterior al inicio',FALSE)", [`${accountId}:new`, chatId, accountId]);
-      await server.pool.query('UPDATE chats SET whatsapp_unread_count=20001,unread_count=20001 WHERE id=$1', [chatId]);
+      await server.pool.query('UPDATE chats SET whatsapp_unread_count=$2,unread_count=$2 WHERE id=$1', [chatId, totalMessages + 1]);
       const restarted = createSummaryQueue(server.pool, server.prepareGlobalSummary);
       const submissions = await Promise.all([restarted.enqueue(accountId, 'general'), restarted.enqueue(accountId, 'general')]);
       expect(submissions.map((submitted) => submitted.id)).toEqual([job.id, job.id]);
       await restarted.run();
       const saved = (await server.pool.query('SELECT status,result FROM summary_jobs WHERE id=$1', [job.id])).rows[0];
       expect(saved.status).toBe('completed');
-      expect(saved.result).toMatchObject({ mensajes_analizados: 20000, mensajes_pendientes_restantes: 1 });
-      expect(accepted).toHaveLength(20000);
-      expect(new Set(accepted).size).toBe(20000);
-      expect((await server.pool.query('SELECT COUNT(*)::int AS total FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rows[0].total).toBe(20000);
-      expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0]).toEqual({ unread_count: 1, whatsapp_unread_count: 20001 });
+      expect(saved.result).toMatchObject({ mensajes_analizados: totalMessages, mensajes_pendientes_restantes: 1 });
+      expect(accepted).toHaveLength(totalMessages);
+      expect(new Set(accepted).size).toBe(totalMessages);
+      expect((await server.pool.query('SELECT COUNT(*)::int AS total FROM summary_reviewed_messages WHERE account_id=$1', [accountId])).rows[0].total).toBe(totalMessages);
+      expect((await server.pool.query('SELECT unread_count,whatsapp_unread_count FROM chats WHERE id=$1', [chatId])).rows[0]).toEqual({ unread_count: 1, whatsapp_unread_count: totalMessages + 1 });
       expect((await server.pool.query('SELECT * FROM summary_job_contexts WHERE job_id=$1', [job.id])).rowCount).toBe(0);
       expect((await server.pool.query('SELECT * FROM summary_job_batches WHERE job_id=$1', [job.id])).rowCount).toBe(0);
       expect(fetcher).not.toHaveBeenCalled();
@@ -1106,7 +1106,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       await server.pool.query('DELETE FROM chats WHERE account_id=$1', [accountId]);
       await server.pool.query('DELETE FROM whatsapp_accounts WHERE id=$1', [accountId]);
     }
-  }, 60000);
+  }, 300000);
 
   it('contador, lista e informe coinciden: solo textos disponibles no analizados, incluso con cero no leídos', async () => {
     const accountId = `qa-available-${randomUUID()}`;

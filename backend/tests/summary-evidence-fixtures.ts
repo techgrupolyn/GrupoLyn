@@ -7,9 +7,9 @@ export function evidencePayload(prompt: string) {
 export function evidenceResponse(prompt: string): GeminiExecutionResult {
   const data = evidencePayload(prompt);
   const output = data.sources
-    ? data.draft ? { approved: true, issues: [] } : {
+    ? data.draft ? { approved: true, issues: [], checks: { entities: true, actors: true, quantities: true, chronology: true, coverage: true } } : {
       entries: (data.mode === 'overview' ? data.sources.slice(0, 5) : data.sources).map((source: { id: string; subject?: string; group?: string; text: string }) => ({
-        subject: source.subject || source.group || 'Tema QA', section: 'Pendientes', text: source.text.slice(0, data.mode === 'overview' ? 400 : 1800), sources: [source.id],
+        subject: source.subject || source.group || 'Tema QA', section: 'Pendientes', text: source.text.slice(0, 1800), sources: [source.id],
       })), excluded: [],
     }
     : data.analysis

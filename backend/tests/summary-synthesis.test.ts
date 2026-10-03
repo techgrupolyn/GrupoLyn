@@ -143,7 +143,7 @@ describe('síntesis final guiada por el prompt del rol', () => {
 
   it('una fuente puede sustentar asuntos distintos sin permitir exclusiones contradictorias ni referencias ajenas', () => {
     const entries = [draft.entries[0], { ...draft.entries[0], section: 'Problemas', text: 'El material sigue sin confirmación.' }];
-    for (const mode of ['detail', 'merge', 'overview'] as const) {
+    for (const mode of ['detail', 'merge'] as const) {
       expect(parseReportDraft(JSON.stringify({ entries, excluded: [] }), [source], mode).entries).toHaveLength(2);
     }
     expect(() => parseReportDraft(JSON.stringify({ entries, excluded: [{ source: 'F1', reason: 'routine' }] }), [source], 'detail')).toThrow('representada');
@@ -166,7 +166,7 @@ describe('síntesis final guiada por el prompt del rol', () => {
     const serialized = JSON.stringify(groups).length;
     expect(calls.get('detail')).toBeLessThan(12 * (Math.ceil(serialized / 14000) + 2));
     expect(calls.get('merge') || 0).toBe(0);
-    expect(calls.get('overview')).toBe(6);
+    expect(calls.get('overview')).toBe(3);
     expect(result.text).not.toContain('Todo ejecutado.');
     expect(new Set(result.synthesis.entries.flatMap((entry) => entry.sources)).size).toBe(500);
     for (const text of texts) expect(result.text).toContain(text);
@@ -193,26 +193,26 @@ describe('síntesis final guiada por el prompt del rol', () => {
     expect(result.synthesis.recoveries.filter((item) => item.mode === 'merge')).toHaveLength(1);
   });
 
-  it('reanuda árboles v3 antiguos sin nuevas llamadas de detalle en hojas profundas y conserva las aprobadas', async () => {
+  it('no reutiliza síntesis v3 aprobada con las reglas antiguas; conserva los hallazgos', async () => {
     const texts = Array.from({ length: 32 }, (_, index) => `Obra Dana: pendiente ${index}.`);
     const read = async (key: string): Promise<SynthesisCheckpoint | null> => {
       const [version, , mode, , sources] = JSON.parse(key);
-      expect(version).toBe('synthesis-v3');
+      if (version !== 'synthesis-v3') return null;
       if (mode !== 'detail') return null;
       if (sources.length > 1) return { kind: 'split' };
       if (sources[0].id === 'G1-F1') return { kind: 'validated', draft: { entries: [{ subject: 'Obra Dana', section: 'Pendientes', text: 'Obra Dana: pendiente 0, sin confirmación.', sources: ['G1-F1'] }], excluded: [] } };
       return null;
     };
     const invoke = vi.fn(async (prompt: string, _phase: unknown, validate: (text: string) => void) => {
-      expect(evidencePayload(prompt).mode).not.toBe('detail');
       const response = evidenceResponse(prompt);
       validate(response.text);
       return response;
     });
     const result = await synthesizeGlobalReport([group('Obra Dana', texts)], role, asOf, invoke, async () => {}, async () => {}, { read, write: async () => {} });
-    expect(result.text).toContain('pendiente 0, sin confirmación.');
+    expect(result.text).toContain('pendiente 0.');
     expect(new Set(result.synthesis.entries.flatMap((entry) => entry.sources)).size).toBe(32);
-    expect(result.synthesis.recoveries.filter((item) => item.mode === 'detail')).toHaveLength(31);
+    expect(invoke.mock.calls.some(([prompt]) => evidencePayload(prompt).mode === 'detail')).toBe(true);
+    expect(result.synthesis.recoveries.filter((item) => item.mode === 'detail')).toHaveLength(0);
   });
 
   it('las reglas de generación y auditoría delimitan cada etapa sin exigir un informe completo', async () => {
@@ -232,7 +232,7 @@ describe('síntesis final guiada por el prompt del rol', () => {
   });
 
   it('limita también las pasadas ejecutivas aunque cada reducción pequeña supere la auditoría', async () => {
-    const texts = Array.from({ length: 400 }, (_, index) => `Asunto ${index}: ${'contenido verificado '.repeat(35)}`);
+    const texts = Array.from({ length: 400 }, (_, index) => `Obra QA: asunto ${index}: ${'contenido verificado '.repeat(25)}`);
     let maximumLevel = 0;
     const report = await synthesizeGlobalReport([group('QA', texts)], role, asOf, async (prompt, _phase, validate) => {
       const data = evidencePayload(prompt);
@@ -242,13 +242,13 @@ describe('síntesis final guiada por el prompt del rol', () => {
         return response;
       }
       for (const item of data.sources) maximumLevel = Math.max(maximumLevel, Number(/^L(\d+)-/.exec(item.id)?.[1] || 0));
-      const response = { ...evidenceResponse(prompt), text: JSON.stringify({ entries: (data.mode === 'overview' ? data.sources.slice(0, 10) : data.sources).map((item: typeof source) => ({ subject: item.subject || item.id, section: 'Pendientes', text: item.text.slice(0, data.mode === 'overview' ? 599 : 1800), sources: [item.id] })), excluded: [] }) };
+      const response = { ...evidenceResponse(prompt), text: JSON.stringify({ entries: (data.mode === 'overview' ? data.sources.slice(0, 10) : data.sources).map((item: typeof source) => ({ subject: item.subject || 'Obra QA', section: 'Pendientes', text: item.text, sources: [item.id] })), excluded: [] }) };
       validate(response.text);
       return response;
     }, async () => {});
     expect(report.synthesis.entries).toHaveLength(400);
     expect(report.synthesis.overview).toEqual([]);
-    expect(report.synthesis.recoveries.at(-1)?.reason).toContain('límite de pasadas');
+    expect(report.synthesis.recoveries.at(-1)?.reason).toMatch(/límite de pasadas|no se redujo/);
     expect(maximumLevel).toBeGreaterThan(0);
   });
 

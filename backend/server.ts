@@ -3391,16 +3391,22 @@ app.post('/api/sincronizar', async (req: Request, res: Response) => {
 });
 async function getAvailableAnalysisMessages(accountId: string, database: Pool | PoolClient = pool, variants: string[] | null = null) {
   const { rows } = await database.query<Mensaje & { chat_nombre: string }>(`
+    WITH pending_ids AS (
+      SELECT message.id FROM mensajes message
+      WHERE message.account_id=$1 AND message.chat_id LIKE '%@g.us' AND message.enviado_por_mi=FALSE
+        AND COALESCE(message.source,'')<>'dashboard' AND LOWER(COALESCE(message.tipo,'text'))='text'
+        AND ($2::text[] IS NULL OR message.chat_id=ANY($2::text[]))
+      EXCEPT
+      SELECT reviewed.message_id FROM summary_reviewed_messages reviewed WHERE reviewed.account_id=$1
+      EXCEPT
+      SELECT skipped.message_id FROM summary_skipped_messages skipped WHERE skipped.account_id=$1
+    )
     SELECT message.id,message.chat_id,message.remitente,message.remitente_jid,message.texto,
       message.timestamp,message.tipo,message.raw,message.estado,chat.nombre AS chat_nombre
-    FROM mensajes message JOIN chats chat ON chat.account_id=message.account_id AND chat.id=message.chat_id
-    WHERE message.account_id=$1 AND message.chat_id LIKE '%@g.us' AND message.enviado_por_mi=FALSE
-      AND COALESCE(message.source,'')<>'dashboard' AND LOWER(COALESCE(message.tipo,'text'))='text'
-      AND ($2::text[] IS NULL OR message.chat_id=ANY($2::text[]))
-      AND NOT EXISTS (SELECT 1 FROM summary_reviewed_messages reviewed
-        WHERE reviewed.account_id=message.account_id AND reviewed.message_id=message.id)
-      AND NOT EXISTS (SELECT 1 FROM summary_skipped_messages skipped
-        WHERE skipped.account_id=message.account_id AND skipped.message_id=message.id)
+    FROM pending_ids pending
+    CROSS JOIN LATERAL (SELECT * FROM mensajes WHERE id=pending.id LIMIT 1) message
+    JOIN chats chat ON chat.account_id=message.account_id AND chat.id=message.chat_id
+    WHERE message.account_id=$1
     ORDER BY message.timestamp DESC,message.id DESC`, [accountId, variants]);
   return rows.flatMap((message) => {
     const original = message.raw?.message ?? message.raw;
