@@ -48,6 +48,24 @@ beforeEach(() => {
 });
 
 describe('MeetingManagementView', () => {
+  it('muestra todos los delineantes en un desplegable sin abrir la reunión al expandirlo', async () => {
+    const teamMeeting = { ...meeting, project_name: 'Obra QA', pmc_assignments: [
+      { employee_id: 'first', name: 'Primera persona', in_training: true },
+      { employee_id: 'second', name: 'Segunda persona', in_training: true },
+    ] };
+    vi.mocked(api.meetings.list).mockResolvedValue({ ...emptyList, items: [teamMeeting], total: 1, totalPages: 1 });
+    vi.mocked(api.meetings.get).mockResolvedValue(teamMeeting);
+    render(<MeetingManagementView />);
+    fireEvent.click(await screen.findByText('Equipo del proyecto · 2'));
+    expect(api.meetings.get).not.toHaveBeenCalled();
+    expect(screen.getByText('Primera persona · PMC en prácticas')).toBeVisible();
+    expect(screen.getByText('Segunda persona · PMC en prácticas')).toBeVisible();
+    expect(screen.queryByText('PMC pendiente de vincular')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText(meeting.name));
+    const drawer = await screen.findByRole('dialog');
+    fireEvent.click(within(drawer).getByText('Equipo del proyecto · 2'));
+    expect(within(drawer).getByText('Segunda persona · PMC en prácticas')).toBeVisible();
+  });
   it('identifica al delineante de respaldo como PMC en prácticas en lista y detalle', async () => {
     const traineeMeeting = { ...meeting, pmc: 'Delineante QA', pmc_employee_id: 'trainee-1', pmc_in_training: true };
     vi.mocked(api.meetings.list).mockResolvedValue({ ...emptyList, items: [traineeMeeting], total: 1, totalPages: 1 });
@@ -173,6 +191,6 @@ describe('MeetingManagementView', () => {
 
     fireEvent.click(await screen.findByText(meeting.name));
 
-    expect(await screen.findByRole('dialog', { name: 'Detalle de reunión' })).toHaveTextContent('PMC a cargo: Pendiente');
+    expect(await screen.findByRole('dialog', { name: 'Detalle de reunión' })).toHaveTextContent('PMC pendiente de vincular');
   });
 });

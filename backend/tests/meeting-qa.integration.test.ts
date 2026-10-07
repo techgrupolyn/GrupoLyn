@@ -101,7 +101,9 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
         const response = await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({});
         expect(response.status, JSON.stringify(response.body)).toBe(200);
       }
-      const row = (await server.pool.query('SELECT pmc,pmc_employee_id,pmc_in_training,summary,project_id,manual_revision,updated_at FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0];
+      const row = (await server.pool.query('SELECT pmc,pmc_employee_id,pmc_in_training,pmc_assignments,summary,project_id,manual_revision,updated_at FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0];
+      const teamSize = ['global', 'inactivo'].some((suffix) => mode.endsWith(suffix)) ? 0 : mode.endsWith('ambiguo') || mode === 'pmc-prioritario' ? 2 : 1;
+      expect(row.pmc_assignments).toHaveLength(teamSize);
       const unresolved = ['global', 'ambiguo', 'inactivo'].some((suffix) => mode.endsWith(suffix));
       expect(row).toMatchObject({ project_id: project, pmc: unresolved ? null : mode === 'existente' ? 'Otro PMC' : 'PMC de Club', pmc_employee_id: unresolved ? null : mode === 'existente' ? other : employee, pmc_in_training: trainee && !unresolved });
       expect((await request(server.app).get(`/api/meetings/${meeting}`).set('Authorization', authorization)).body.pmc_in_training).toBe(trainee && !unresolved);
@@ -109,6 +111,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       if (mode === 'con-tarea') expect((await server.pool.query('SELECT project_id,responsible_id,responsible_kind FROM meeting_review_actions WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ project_id: project, responsible_id: null, responsible_kind: null });
       if (isManual) expect(row.manual_revision).toBe(true);
       await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({});
+      expect((await server.pool.query('SELECT pmc_assignments,updated_at FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ pmc_assignments: row.pmc_assignments, updated_at: row.updated_at });
       expect((await server.pool.query('SELECT pmc,pmc_employee_id,pmc_in_training FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ pmc: row.pmc, pmc_employee_id: row.pmc_employee_id, pmc_in_training: row.pmc_in_training });
       if (mode === 'delineante') {
         const original = { project_name: project, pmc: row.pmc, summary: 'Edición conservada' };
@@ -121,6 +124,54 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       await server.pool.query('DELETE FROM organigrama_cargos WHERE id=$1', [position]);
       await server.pool.query('DELETE FROM proyectos WHERE id=$1', [project]);
       await server.pool.query('DELETE FROM empleados WHERE id=ANY($1::varchar[])', [[employee, other]]);
+    }
+  });
+
+  it('vincula el proyecto del título y todos sus delineantes, actualiza filtros y conserva cambios manuales', async () => {
+    const meeting = randomUUID();
+    const project = `qa-team-${meeting}`;
+    const otherProject = `qa-other-${meeting}`;
+    const employees = [`qa-first-${meeting}`, `qa-second-${meeting}`];
+    try {
+      await server.pool.query('INSERT INTO proyectos(id,nombre) VALUES ($1,$1),($2,$2)', [project, otherProject]);
+      await server.pool.query('INSERT INTO empleados(id,nombre) VALUES ($1,$1),($2,$2)', employees);
+      for (const employee of employees) await server.pool.query("INSERT INTO proyecto_asignaciones(id,proyecto_id,empleado_id,rol_en_proyecto,origen) VALUES ($1,$2,$1,'planimetrista','supabase')", [employee, project]);
+      await server.pool.query("INSERT INTO google_drive_artifacts(id,connection_id,folder_id,google_file_id,name,mime_type,artifact_type,content_text) VALUES ($1::uuid,$2,$3,$1::text,$4,'text/plain','transcript',$5)", [meeting, connectionId, folderId, `Revisión ${project}`, `Comparar con ${otherProject}`]);
+      await server.pool.query("INSERT INTO meeting_reviews(artifact_id,summary) VALUES($1,'No reemplazar resumen')", [meeting]);
+      expect((await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({})).status).toBe(200);
+      const detail = (await request(server.app).get(`/api/meetings/${meeting}`).set('Authorization', authorization)).body;
+      expect(detail).toMatchObject({ project_id: project, pmc_employee_id: null, summary: 'No reemplazar resumen' });
+      expect(detail.pmc_assignments.map((person: { employee_id: string }) => person.employee_id).sort()).toEqual([...employees].sort());
+      for (const query of [`pmc_employee_id=${employees[0]}`, `pmc=${employees[1]}`, 'role=planimetrista', `q=${employees[1]}`]) {
+        const response = await request(server.app).get(`/api/meetings?project_id=${project}&${query}`).set('Authorization', authorization);
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        expect(response.body.items.map((item: { id: string }) => item.id)).toContain(meeting);
+      }
+      const options = (await request(server.app).get('/api/meetings/filter-options').set('Authorization', authorization)).body;
+      expect(options.pmcs).toEqual(expect.arrayContaining(employees));
+      expect(options.roles).toContain('planimetrista');
+      const scopedPayload = Buffer.from(JSON.stringify({ id: userId, usuario: employeeId, rol: 'employee:interiorista', exp: Date.now() + 60000 })).toString('base64url');
+      const scopedAuth = `Bearer ${scopedPayload}.${createHmac('sha256', secret).update(scopedPayload).digest('base64url')}`;
+      const scopedList = await request(server.app).get(`/api/meetings?project_id=${project}`).set('Authorization', scopedAuth);
+      expect(scopedList.status).toBe(200);
+      expect(scopedList.body.items).toEqual([]);
+      const scopedOptions = (await request(server.app).get('/api/meetings/filter-options').set('Authorization', scopedAuth)).body;
+      expect(scopedOptions.pmcs).not.toEqual(expect.arrayContaining(employees));
+      const manual = await request(server.app).put(`/api/meetings/${meeting}`).set('Authorization', authorization).send({ project_name: project, pmc: 'Responsable manual', summary: 'Edición del revisor' });
+      expect(manual.status, JSON.stringify(manual.body)).toBe(200);
+      expect(manual.body.pmc_assignments).toHaveLength(2);
+      await server.pool.query('UPDATE meeting_reviews SET manual_revision=TRUE WHERE artifact_id=$1', [meeting]);
+      await server.pool.query('UPDATE empleados SET activo=FALSE WHERE id=$1', [employees[1]]);
+      await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({});
+      const refreshed = (await request(server.app).get(`/api/meetings/${meeting}`).set('Authorization', authorization)).body;
+      expect(refreshed).toMatchObject({ pmc: 'Responsable manual', summary: 'Edición del revisor' });
+      expect(refreshed.pmc_assignments).toEqual([expect.objectContaining({ employee_id: employees[0], in_training: true })]);
+      const moved = await request(server.app).put(`/api/meetings/${meeting}`).set('Authorization', authorization).send({ project_name: otherProject, pmc: 'Responsable manual', summary: 'Edición del revisor' });
+      expect(moved.body.pmc_assignments).toEqual([]);
+    } finally {
+      await server.pool.query('DELETE FROM google_drive_artifacts WHERE id=$1', [meeting]);
+      await server.pool.query('DELETE FROM proyectos WHERE id=ANY($1::varchar[])', [[project, otherProject]]);
+      await server.pool.query('DELETE FROM empleados WHERE id=ANY($1::varchar[])', [employees]);
     }
   });
 

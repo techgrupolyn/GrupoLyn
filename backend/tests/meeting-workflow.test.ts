@@ -243,6 +243,20 @@ describe('Flujo de aprobación de reuniones', () => {
     const analysis = normalizeMeetingAiAnalysis({ meeting_date: '2026-02-30', summary: 'Resumen válido', actions: [] });
     expect(analysis.meetingDate).toBeNull();
   });
+  it('identifica obras desde títulos, fases y nombres compuestos sin mezclar proyectos', () => {
+    const projects = [
+      { project_id: 'north', project_name: 'Nora y Luis' },
+      { project_id: 'south', project_name: 'Edificio Sur 9' },
+      { project_id: 'short', project_name: 'Dana' },
+    ];
+    expect(resolveMeetingDirectoryReferences({ sourceTitle: 'Reunión Luis y Nora - 2026/08/14', source: 'Comparación con Edificio Sur 9' }, projects).projectId).toBe('north');
+    expect(resolveMeetingDirectoryReferences({ projectName: 'Comité de obra · FASE 0/2 PROYECTO Nora y Luis 140826' }, projects).projectId).toBe('north');
+    expect(resolveMeetingDirectoryReferences({ projectName: 'FASE 4 REPASO BIS PROYECTO Nora y Luis' }, projects).projectId).toBe('north');
+    expect(resolveMeetingDirectoryReferences({ sourceTitle: 'Nora y Luis / Edificio Sur 9' }, projects).projectId).toBeNull();
+    expect(resolveMeetingDirectoryReferences({ sourceTitle: 'Edificio Sur 108' }, projects).projectId).toBeNull();
+    expect(resolveMeetingDirectoryReferences({ sourceTitle: 'Luis y otra persona' }, projects).projectId).toBeNull();
+    expect(resolveMeetingDirectoryReferences({ source: 'Ciudadanos y reparaciones' }, projects).projectId).toBeNull();
+  });
   it('identifica el nombre corto de una obra con sufijo y rechaza abreviaturas ambiguas', () => {
     const projects = [{ project_id: 'torre-jose', project_name: 'TORRE DEL CURA - JOSE MOYA  ' }];
     expect(resolveMeetingDirectoryReferences({ projectName: 'Torre del Cura' }, projects).projectId).toBe('torre-jose');

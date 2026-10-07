@@ -685,6 +685,7 @@ async function ensureDatabaseSchema(): Promise<void> {
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS contact_id VARCHAR(255);
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS pmc_employee_id VARCHAR(255);
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS pmc_in_training BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS pmc_assignments JSONB NOT NULL DEFAULT '[]'::jsonb;
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS directory_match_confidence VARCHAR(20);
     CREATE INDEX IF NOT EXISTS idx_meeting_reviews_analysis_queue ON meeting_reviews(analysis_status, updated_at ASC);
     CREATE INDEX IF NOT EXISTS idx_meeting_reviews_project_id ON meeting_reviews(project_id);
@@ -4674,7 +4675,8 @@ function normalizeDirectorySearch(value: unknown): string {
 
 function isDirectoryMentioned(haystack: string, value: string | null): boolean {
   const candidate = normalizeDirectorySearch(value);
-  return candidate.length >= 4 && haystack.includes(candidate);
+  const words = (value: string) => ` ${value.replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  return candidate.length >= 4 && words(haystack).includes(words(candidate));
 }
 
 async function loadMeetingDirectoryCandidates(): Promise<MeetingDirectoryCandidate[]> {
@@ -4758,6 +4760,7 @@ async function meetingDirectoryCandidates(source: string, identity: MeetingIdent
 }
 
 type MeetingDirectoryReferenceInput = {
+  sourceTitle?: string | null;
   projectId?: string | null;
   projectName?: string | null;
   clientName?: string | null;
@@ -4766,7 +4769,15 @@ type MeetingDirectoryReferenceInput = {
   source?: string | null;
 };
 
+type MeetingPmcAssignment = { employee_id: string; name: string; role: string; in_training: boolean };
+
+function pmcAssignmentFingerprint(assignments: MeetingPmcAssignment[]): string {
+  return JSON.stringify(assignments.map(({ employee_id, name, role, in_training }) => ({ employee_id, name, role, in_training }))
+    .sort((left, right) => left.employee_id.localeCompare(right.employee_id)));
+}
+
 export type MeetingDirectoryReference = {
+  pmcAssignments?: MeetingPmcAssignment[];
   pmcInTraining?: boolean;
   projectId: string | null;
   projectName: string | null;
@@ -4800,10 +4811,11 @@ function normalizedProjectReference(value: string | null | undefined): string[] 
   const values = new Set<string>([normalized]);
   let compact = normalized
     .replace(/^(?:comite de obra|reunion cliente|reunion de cliente|reunion)\s*[·:.-]*\s*/i, '')
-    .replace(/^(?:fase\s*\d+(?:\s*bis)?\s*)?(?:proyecto\s*)/i, '')
+    .replace(/^fase\s*\d+(?:\s*\/\s*\d+)*(?:\s*(?:bis|repaso))*\s*/i, '')
+    .replace(/^(?:proyecto|obra)\s+/i, '')
     .trim();
   if (compact) values.add(compact);
-  compact = compact.replace(/\s*-\s*\d{6,8}$/i, '').trim();
+  compact = compact.replace(/\s+(?:-\s*)?\d{6,8}$/i, '').trim();
   if (compact) values.add(compact);
   return Array.from(values);
 }
@@ -4856,14 +4868,27 @@ function employeeAliasCandidates(candidates: MeetingDirectoryCandidate[], value:
   });
 }
 
+function titleProjectCandidates(candidates: MeetingDirectoryCandidate[], title: string | null | undefined): MeetingDirectoryCandidate[] {
+  const titleTokens = new Set(normalizeDirectorySearch(title).replace(/[^a-z0-9]+/g, ' ').split(' ').filter(Boolean));
+  const fullTitle = ` ${normalizeDirectorySearch(title).replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  return candidates.filter((candidate) => projectSearchValues(candidate).some((name) => {
+    const normalized = normalizeDirectorySearch(name).replace(/[^a-z0-9]+/g, ' ').trim();
+    if (!normalized) return false;
+    if (normalized.length >= 4 && fullTitle.includes(` ${normalized} `)) return true;
+    const tokens = normalized.split(' ').filter((token) => !['obra', 'proyecto', 'y', 'e', 'de', 'del', 'la', 'el', 'los', 'las'].includes(token));
+    return tokens.filter((token) => token.length >= 3).length >= 2 && tokens.every((token) => titleTokens.has(token));
+  }));
+}
+
 export function resolveMeetingDirectoryReferences(input: MeetingDirectoryReferenceInput, candidates: MeetingDirectoryCandidate[]): MeetingDirectoryReference {
+  const titleMatches = titleProjectCandidates(candidates, input.sourceTitle);
   const explicitProject = input.projectId
     ? uniqueDirectoryCandidate(candidates.filter((candidate) => candidate.project_id === input.projectId), 'project_id')
     : uniqueDirectoryCandidate(exactDirectoryCandidates(candidates, 'project_name', input.projectName), 'project_id')
-      || mentionedDirectoryCandidate(candidates, 'project_name', 'project_id', input.source);
+      || (titleMatches.length ? uniqueDirectoryCandidate(titleMatches, 'project_id') : mentionedDirectoryCandidate(candidates, 'project_name', 'project_id', input.source));
   const client = uniqueDirectoryCandidate(exactDirectoryCandidates(candidates, 'client_name', input.clientName), 'client_id')
     || mentionedDirectoryCandidate(candidates, 'client_name', 'client_id', input.source);
-  const project = explicitProject || (!input.projectId && client?.client_id
+  const project = explicitProject || (!input.projectId && new Set(titleMatches.map((candidate) => candidate.project_id)).size <= 1 && client?.client_id
     ? uniqueDirectoryCandidate(candidates.filter((candidate) => candidate.client_id === client.client_id), 'project_id')
     : null);
   const exactEmployeeMatches = exactDirectoryCandidates(candidates, 'employee_name', input.employeeName);
@@ -4889,12 +4914,20 @@ export function resolveMeetingDirectoryReferences(input: MeetingDirectoryReferen
 
 export function resolveMeetingPmcReferences(input: MeetingDirectoryReferenceInput, candidates: MeetingDirectoryCandidate[]): MeetingDirectoryReference {
   const reference = resolveMeetingDirectoryReferences(input, candidates);
-  if (String(input.employeeName || '').trim() || !reference.projectId) return reference;
+  reference.pmcAssignments = [];
+  if (!reference.projectId) return reference;
   const assigned = candidates.filter((candidate) =>
     candidate.project_id === reference.projectId && candidate.project_assignment === true
     && Boolean(candidate.employee_id));
   const pmcs = assigned.filter((candidate) => meetingEditorRoleRank(candidate.role_in_project || candidate.employee_role) === 2);
   const trainees = assigned.filter((candidate) => /^(?:delineante|planimetrista)s?$/i.test(String(candidate.role_in_project || '').trim()));
+  const team = new Map<string, MeetingPmcAssignment>();
+  for (const candidate of [...trainees, ...pmcs]) {
+    team.set(candidate.employee_id!, { employee_id: candidate.employee_id!, name: candidate.employee_name || '',
+      role: candidate.role_in_project || candidate.employee_role || '', in_training: !pmcs.some((pmc) => pmc.employee_id === candidate.employee_id) });
+  }
+  reference.pmcAssignments = [...team.values()].sort((left, right) => left.employee_id.localeCompare(right.employee_id));
+  if (String(input.employeeName || '').trim()) return reference;
   const pmc = uniqueDirectoryCandidate(pmcs.length ? pmcs : trainees, 'employee_id');
   if (!pmc) return reference;
   return { ...reference, employeeId: pmc.employee_id, employeeName: pmc.employee_name,
@@ -4991,18 +5024,17 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
     const reviewsResult = await client.query<{
       artifact_id: string; project_name: string | null; contact_name: string | null; pmc: string | null;
       project_id: string | null; contact_id: string | null; pmc_employee_id: string | null; directory_match_confidence: string | null;
-      source_name: string | null; content_text: string | null; manual_revision: boolean; pmc_in_training: boolean;
+      source_name: string | null; content_text: string | null; metadata: Record<string, unknown>; manual_revision: boolean; pmc_in_training: boolean; pmc_assignments: MeetingPmcAssignment[];
     }>(
-      `SELECT r.artifact_id, r.project_name, r.contact_name, r.pmc, r.project_id, r.contact_id, r.pmc_employee_id, r.directory_match_confidence, r.manual_revision, r.pmc_in_training,
-              a.name AS source_name, LEFT(COALESCE(a.content_text, ''), 20000) AS content_text
+      `SELECT r.artifact_id, r.project_name, r.contact_name, r.pmc, r.project_id, r.contact_id, r.pmc_employee_id, r.directory_match_confidence, r.manual_revision, r.pmc_in_training, r.pmc_assignments,
+              a.name AS source_name, a.metadata, LEFT(COALESCE(a.content_text, ''), 20000) AS content_text
        FROM meeting_reviews r
        INNER JOIN google_drive_artifacts a ON a.id = r.artifact_id
-       WHERE r.manual_revision = FALSE OR (NULLIF(TRIM(r.pmc), '') IS NULL AND r.pmc_employee_id IS NULL)
        ORDER BY r.artifact_id FOR UPDATE OF r`,
     );
     for (const review of reviewsResult.rows) {
       result.reviewsScanned += 1;
-      const detected = deriveMeetingIdentity({ name: review.source_name, content_text: review.content_text });
+      const detected = deriveMeetingIdentity({ name: review.source_name, metadata: review.metadata, content_text: review.content_text });
       const source = [review.project_name, review.source_name, review.content_text].filter(Boolean).join('\n');
       const reference = resolveMeetingPmcReferences({
         projectId: review.project_id,
@@ -5010,14 +5042,18 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
         clientName: review.contact_name || (review.manual_revision ? null : detected.contactName),
         employeeName: review.pmc || (review.pmc_employee_id ? candidates.find((candidate) => candidate.employee_id === review.pmc_employee_id)?.employee_name : null) || (review.manual_revision ? null : detected.pmc),
         source: review.manual_revision ? null : source,
+        sourceTitle: review.manual_revision && review.project_name ? null : review.source_name,
       }, candidates);
+      const pmcAssignments = pmcAssignmentFingerprint(reference.pmcAssignments || []);
       if (review.manual_revision) {
-        if (!reference.employeeId) continue;
-        await client.query('UPDATE meeting_reviews SET pmc = $2, pmc_employee_id = $3, pmc_in_training = $4, updated_at = NOW() WHERE artifact_id = $1', [review.artifact_id, reference.employeeName, reference.employeeId, Boolean(reference.pmcInTraining)]);
+        const fillPmc = !review.pmc && !review.pmc_employee_id && Boolean(reference.employeeId);
+        const projectId = review.project_id || reference.projectId;
+        if (!fillPmc && projectId === review.project_id && pmcAssignments === pmcAssignmentFingerprint(review.pmc_assignments)) continue;
+        await client.query('UPDATE meeting_reviews SET pmc = $2, pmc_employee_id = $3, pmc_in_training = $4, project_id = $5, project_name = COALESCE(project_name, $6), pmc_assignments = $7::jsonb, updated_at = NOW() WHERE artifact_id = $1', [review.artifact_id, fillPmc ? reference.employeeName : review.pmc, fillPmc ? reference.employeeId : review.pmc_employee_id, fillPmc ? Boolean(reference.pmcInTraining) : review.pmc_in_training, projectId, reference.projectName, pmcAssignments]);
         result.reviewsTagged += 1;
         continue;
       }
-      const projectName = review.project_name || reference.projectName;
+      const projectName = reference.projectName || review.project_name;
       const contactName = review.contact_name || reference.clientName;
       const pmc = review.pmc || reference.employeeName;
       const projectId = review.project_id || reference.projectId;
@@ -5025,13 +5061,13 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
       const pmcEmployeeId = review.pmc_employee_id || reference.employeeId;
       const pmcInTraining = review.pmc_employee_id ? review.pmc_in_training : Boolean(reference.pmcInTraining);
       const nextConfidence = reference.matchConfidence;
-      if (review.project_id === projectId && review.contact_id === contactId && review.pmc_employee_id === pmcEmployeeId && review.project_name === projectName && review.contact_name === contactName && review.pmc === pmc && (review.directory_match_confidence || null) === nextConfidence) continue;
+      if (review.project_id === projectId && review.contact_id === contactId && review.pmc_employee_id === pmcEmployeeId && review.project_name === projectName && review.contact_name === contactName && review.pmc === pmc && (review.directory_match_confidence || null) === nextConfidence && pmcAssignments === pmcAssignmentFingerprint(review.pmc_assignments)) continue;
       await client.query(
         `UPDATE meeting_reviews
          SET project_name = $2, project_id = $3, contact_name = $4, contact_id = $5, pmc = $6, pmc_employee_id = $7,
-             directory_match_confidence = $8, pmc_in_training = $9, updated_at = NOW()
+             directory_match_confidence = $8, pmc_in_training = $9, pmc_assignments = $10::jsonb, updated_at = NOW()
          WHERE artifact_id = $1`,
-        [review.artifact_id, projectName, projectId, contactName, contactId, pmc, pmcEmployeeId, nextConfidence, pmcInTraining],
+        [review.artifact_id, projectName, projectId, contactName, contactId, pmc, pmcEmployeeId, nextConfidence, pmcInTraining, pmcAssignments],
       );
       if (reference.projectId || reference.clientId || reference.employeeId) result.reviewsTagged += 1;
     }
@@ -5435,7 +5471,7 @@ app.get('/api/meetings', requireCeoMeetingAccess, async (req: Request, res: Resp
     if (search) {
       parameters.push('%' + search + '%');
       const placeholder = '$' + parameters.length;
-      where.push("(COALESCE(a.name, '') ILIKE " + placeholder + " OR COALESCE(r.project_name, '') ILIKE " + placeholder + " OR COALESCE(r.contact_name, '') ILIKE " + placeholder + " OR COALESCE(r.pmc, '') ILIKE " + placeholder + ")");
+      where.push("(COALESCE(a.name, '') ILIKE " + placeholder + " OR COALESCE(r.project_name, '') ILIKE " + placeholder + " OR COALESCE(r.contact_name, '') ILIKE " + placeholder + " OR COALESCE(r.pmc, '') ILIKE " + placeholder + " OR EXISTS (SELECT 1 FROM jsonb_array_elements(r.pmc_assignments) person WHERE person->>'name' ILIKE " + placeholder + "))");
     }
     if (filter === 'mine') {
       where.push("r.status IN ('draft', 'pending', 'returned')");
@@ -5456,14 +5492,15 @@ app.get('/api/meetings', requireCeoMeetingAccess, async (req: Request, res: Resp
     if (filter === 'pending') where.push("r.status = 'pending'");
     if (filter === 'approved') where.push("r.status = 'approved'");
     if (projectId) { parameters.push(projectId); where.push('r.project_id = $' + parameters.length); }
-    if (pmcEmployeeId) { parameters.push(pmcEmployeeId); where.push('r.pmc_employee_id = $' + parameters.length); }
-    if (pmc) { parameters.push(pmc); where.push('LOWER(TRIM(COALESCE(r.pmc, \'\'))) = LOWER(TRIM($' + parameters.length + '))'); }
+    if (pmcEmployeeId) { parameters.push(pmcEmployeeId); where.push(`(r.pmc_employee_id = $${parameters.length} OR EXISTS (SELECT 1 FROM jsonb_array_elements(r.pmc_assignments) person WHERE person->>'employee_id' = $${parameters.length}))`); }
+    if (pmc) { parameters.push(pmc); where.push(`(LOWER(TRIM(COALESCE(r.pmc, ''))) = LOWER(TRIM($${parameters.length})) OR EXISTS (SELECT 1 FROM jsonb_array_elements(r.pmc_assignments) person WHERE LOWER(TRIM(person->>'name')) = LOWER(TRIM($${parameters.length}))))`); }
     if (contactId) { parameters.push(contactId); where.push('r.contact_id = $' + parameters.length); }
     if (role) {
       parameters.push(role);
       const placeholder = '$' + parameters.length;
       where.push(`(
         EXISTS (SELECT 1 FROM usuario_rol pmc_link INNER JOIN roles pmc_role ON pmc_role.id = pmc_link.rol_id WHERE pmc_link.empleado_id = r.pmc_employee_id AND LOWER(TRIM(pmc_role.nombre)) = LOWER(TRIM(${placeholder})))
+        OR EXISTS (SELECT 1 FROM jsonb_array_elements(r.pmc_assignments) person WHERE LOWER(TRIM(person->>'role')) = LOWER(TRIM(${placeholder})))
         OR EXISTS (SELECT 1 FROM meeting_review_actions role_action WHERE role_action.artifact_id = r.artifact_id AND LOWER(TRIM(COALESCE(role_action.responsible_role, ''))) = LOWER(TRIM(${placeholder})))
         OR EXISTS (SELECT 1 FROM meeting_review_action_responsibles action_responsible WHERE action_responsible.action_id IN (SELECT id FROM meeting_review_actions WHERE artifact_id = r.artifact_id) AND LOWER(TRIM(COALESCE(action_responsible.responsible_role, ''))) = LOWER(TRIM(${placeholder})))
       )`);
@@ -5478,7 +5515,7 @@ app.get('/api/meetings', requireCeoMeetingAccess, async (req: Request, res: Resp
       pool.query(
         `SELECT a.id, a.name, LEFT(COALESCE(a.content_text, ''), 20000) AS content_text, a.metadata, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_truncated,
                 f.label AS folder_label, c.google_email, r.summary, r.decisions, r.project_name, r.project_id, r.contact_name, r.contact_id,
-                r.meeting_kind, r.pmc, r.pmc_employee_id, r.pmc_in_training, (SELECT role_lookup.nombre FROM usuario_rol role_link INNER JOIN roles role_lookup ON role_lookup.id = role_link.rol_id WHERE role_link.empleado_id = r.pmc_employee_id ORDER BY role_lookup.nombre ASC LIMIT 1) AS pmc_role, r.directory_match_confidence, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.updated_at,
+                r.meeting_kind, r.pmc, r.pmc_employee_id, r.pmc_in_training, r.pmc_assignments, (SELECT role_lookup.nombre FROM usuario_rol role_link INNER JOIN roles role_lookup ON role_lookup.id = role_link.rol_id WHERE role_link.empleado_id = r.pmc_employee_id ORDER BY role_lookup.nombre ASC LIMIT 1) AS pmc_role, r.directory_match_confidence, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.updated_at,
                 COUNT(ma.id)::int AS actions_count,
                 FALSE AS recording_notice_required,
                 COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND ma.responsible_id IS NULL AND NOT EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id))::int AS actions_without_responsible,
@@ -5526,7 +5563,7 @@ async function requeueMeetingsMissingPmc(): Promise<number> {
        AND EXISTS (SELECT 1 FROM google_drive_folders f INNER JOIN google_drive_connections c ON c.id = f.connection_id WHERE f.id = a.folder_id AND f.enabled = TRUE AND c.revoked_at IS NULL)
        AND a.content_text IS NOT NULL
        AND length(TRIM(a.content_text)) > 0
-       AND NULLIF(TRIM(COALESCE(r.pmc, '')), '') IS NULL
+       AND NULLIF(TRIM(COALESCE(r.pmc, '')), '') IS NULL AND r.pmc_assignments = '[]'::jsonb
        AND r.analysis_status <> 'processing'
      RETURNING r.artifact_id`,
   );
@@ -5552,11 +5589,12 @@ app.get('/api/meetings/filter-options', requireCeoMeetingAccess, async (_req: Re
     const parameters = scope.employeeId ? [scope.employeeId] : [];
     const [pmcsResult, projectsResult, contactsResult, rolesResult] = await Promise.all([
       pool.query<{ pmc: string }>(
-        `SELECT TRIM(r.pmc) AS pmc
-         FROM meeting_reviews r
+        `SELECT TRIM(r.pmc) AS pmc FROM meeting_reviews r
          WHERE NULLIF(TRIM(r.pmc), '') IS NOT NULL AND (${visibility})
-         GROUP BY TRIM(r.pmc)
-         ORDER BY TRIM(r.pmc) ASC`, parameters,
+         UNION
+         SELECT TRIM(person->>'name') AS pmc FROM meeting_reviews r CROSS JOIN LATERAL jsonb_array_elements(r.pmc_assignments) person
+         WHERE NULLIF(TRIM(person->>'name'), '') IS NOT NULL AND (${visibility})
+         ORDER BY pmc ASC`, parameters,
       ),
       pool.query<{ id: string; nombre: string }>(
         `SELECT DISTINCT p.id, p.nombre
@@ -5577,6 +5615,9 @@ app.get('/api/meetings/filter-options', requireCeoMeetingAccess, async (_req: Re
            FROM meeting_reviews r
            INNER JOIN usuario_rol role_link ON role_link.empleado_id = r.pmc_employee_id
            INNER JOIN roles role_lookup ON role_lookup.id = role_link.rol_id
+           WHERE (${visibility})
+           UNION
+           SELECT person->>'role' AS nombre FROM meeting_reviews r CROSS JOIN LATERAL jsonb_array_elements(r.pmc_assignments) person
            WHERE (${visibility})
            UNION
            SELECT action.responsible_role AS nombre
@@ -5672,13 +5713,14 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIden
     contactName: analysis.contactName || current.contact_name,
   };
   const fullDirectory = await loadMeetingDirectoryCandidates();
-  const identityTags = resolveMeetingPmcReferences({ projectName: identity.projectName, clientName: identity.contactName, employeeName: identity.pmc }, fullDirectory);
+  const identityTags = resolveMeetingPmcReferences({ projectName: identity.projectName, clientName: identity.contactName, employeeName: identity.pmc, sourceTitle: artifact.name, source: artifact.content_text }, fullDirectory);
   if (identityTags.employeeId && !identityTags.pmcInTraining && !fullDirectory.some((candidate) => candidate.employee_id === identityTags.employeeId && meetingEditorRoleRank(candidate.role_in_project || candidate.employee_role) === 2)) {
     identityTags.employeeId = null;
     identityTags.employeeName = null;
     identityTags.employeeRole = null;
   }
   identity.pmc = identity.pmc || identityTags.employeeName;
+  identity.projectName = identityTags.projectName || identity.projectName;
   const taggedActions = resolveMeetingActionTags(retainExplicitIncompleteActions(source, analysis.actions), fullDirectory, { projectName: identityTags.projectName || identity.projectName, pmcEmployeeId: identityTags.employeeId });
   const decisions = analysis.decisions.map((decision) => '- ' + decision).join('\n');
   const client = await pool.connect();
@@ -5692,8 +5734,8 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIden
     const currentSource = await client.query('SELECT content_text, source_modified_at FROM google_drive_artifacts WHERE id = $1', [artifactId]);
     if (currentSource.rows[0]?.content_text !== artifact.content_text) throw new MeetingAnalysisPausedError('La fuente cambió durante el análisis. Vuelve a intentarlo con la versión actual.');
     await client.query(
-      'UPDATE meeting_reviews SET summary = $2, decisions = $3, relevant_information = $4, project_name = $5, contact_name = $6, meeting_kind = $7, pmc = $8, analysis_status = $9, analysis_source_modified_at = $10, meeting_date = $11, analysis_version = $12, project_id = $13, contact_id = $14, pmc_employee_id = $15, directory_match_confidence = $16, pmc_in_training = $17, analysis_completed_at = NOW(), analysis_error = NULL, updated_at = NOW() WHERE artifact_id = $1',
-      [artifactId, analysis.summary, decisions, analysis.relevantInformation.map((item) => '- ' + item).join('\n'), identity.projectName, identity.contactName, identity.meetingKind, identity.pmc, 'completed', artifact.source_modified_at, analysis.meetingDate || meetingAnalysisDate(artifact.meeting_date) || deriveMeetingDate(artifact), MEETING_AI_ANALYSIS_VERSION, identityTags.projectId, identityTags.clientId, identityTags.employeeId, identityTags.matchConfidence, Boolean(identityTags.pmcInTraining)],
+      'UPDATE meeting_reviews SET summary = $2, decisions = $3, relevant_information = $4, project_name = $5, contact_name = $6, meeting_kind = $7, pmc = $8, analysis_status = $9, analysis_source_modified_at = $10, meeting_date = $11, analysis_version = $12, project_id = $13, contact_id = $14, pmc_employee_id = $15, directory_match_confidence = $16, pmc_in_training = $17, pmc_assignments = $18::jsonb, analysis_completed_at = NOW(), analysis_error = NULL, updated_at = NOW() WHERE artifact_id = $1',
+      [artifactId, analysis.summary, decisions, analysis.relevantInformation.map((item) => '- ' + item).join('\n'), identity.projectName, identity.contactName, identity.meetingKind, identity.pmc, 'completed', artifact.source_modified_at, analysis.meetingDate || meetingAnalysisDate(artifact.meeting_date) || deriveMeetingDate(artifact), MEETING_AI_ANALYSIS_VERSION, identityTags.projectId, identityTags.clientId, identityTags.employeeId, identityTags.matchConfidence, Boolean(identityTags.pmcInTraining), JSON.stringify(identityTags.pmcAssignments || [])],
     );
     await client.query("DELETE FROM meeting_review_actions WHERE artifact_id = $1 AND origin = 'ai'", [artifactId]);
     await client.query('DELETE FROM meeting_review_blockers WHERE artifact_id = $1', [artifactId]);
@@ -5863,7 +5905,7 @@ app.get('/api/meetings/:artifactId', requireCeoMeetingAccess, async (req: Reques
     const artifactResult = await pool.query(
       `SELECT a.id, a.name, a.metadata, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_text, a.content_truncated,
               f.label AS folder_label, c.google_email, r.summary, r.decisions, r.relevant_information, r.project_name, r.project_id, r.contact_name, r.contact_id,
-              r.meeting_kind, r.pmc, r.pmc_employee_id, r.pmc_in_training, r.directory_match_confidence, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.approved_at, r.approved_by, r.returned_reason, r.updated_at
+              r.meeting_kind, r.pmc, r.pmc_employee_id, r.pmc_in_training, r.pmc_assignments, r.directory_match_confidence, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.approved_at, r.approved_by, r.returned_reason, r.updated_at
        FROM google_drive_artifacts a
        INNER JOIN meeting_reviews r ON r.artifact_id = a.id
        LEFT JOIN google_drive_folders f ON f.id = a.folder_id
@@ -5907,21 +5949,23 @@ app.put('/api/meetings/:artifactId', requireMeetingEditor, async (req: Request, 
     if (meetingDateInput && !requestedMeetingDate) return res.status(400).json({ error: 'La fecha de reunión debe usar YYYY-MM-DD' });
     const requestedMeetingKind = String(body.meeting_kind || 'MEET').trim();
     const meetingKind = ['MEET', 'COMITE_OBRA', 'REUNION_CLIENTE'].includes(requestedMeetingKind) ? requestedMeetingKind : 'MEET';
+    const directory = await loadMeetingDirectoryCandidates();
     const references = resolveMeetingDirectoryReferences({
       projectName: String(body.project_name || '').trim(),
       clientName: String(body.contact_name || '').trim(),
       employeeName: String(body.pmc || '').trim(),
-    }, await loadMeetingDirectoryCandidates());
+    }, directory);
+    const pmcTeam = resolveMeetingPmcReferences({ projectId: references.projectId }, directory).pmcAssignments || [];
     const { rows } = await client.query(
       `UPDATE meeting_reviews SET summary = $2, decisions = $3, relevant_information = $4, project_name = $5, contact_name = $6, pmc = $7,
         meeting_kind = $8, meeting_date = $9, project_id = $10, contact_id = $11, pmc_employee_id = $12,
-        directory_match_confidence = $13,
+        directory_match_confidence = $13, pmc_assignments = $14::jsonb,
         pmc_in_training = pmc_in_training AND pmc IS NOT DISTINCT FROM $7::varchar AND project_id IS NOT DISTINCT FROM $10::varchar AND pmc_employee_id IS NOT DISTINCT FROM $12::varchar,
         updated_at = NOW() WHERE artifact_id = $1 RETURNING *`,
       [artifactId, String(body.summary || '').slice(0, 20_000), String(body.decisions || '').slice(0, 20_000), String(body.relevant_information || '').slice(0, 20_000),
         String(body.project_name || '').trim().slice(0, 255) || null, String(body.contact_name || '').trim().slice(0, 255) || null,
         String(body.pmc || '').trim().slice(0, 255) || null, meetingKind, requestedMeetingDate,
-        references.projectId, references.clientId, references.employeeId, references.matchConfidence],
+        references.projectId, references.clientId, references.employeeId, references.matchConfidence, JSON.stringify(pmcTeam)],
     );
     if (!rows.length) return res.status(404).json({ error: 'Reunión no encontrada' });
     const detail = describeMeetingChanges(previous, {

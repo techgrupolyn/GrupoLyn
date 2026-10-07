@@ -48,14 +48,25 @@ describe('PMC de la reunión desde el proyecto de Club LYN', () => {
     expect(resolveMeetingPmcReferences({ projectName: 'Obra Uno' }, [trainee, assignment, { ...assignment, employee_id: 'otro-pmc' }]).employeeId).toBeNull();
   });
 
-  it('rechaza múltiples delineantes, cargos globales y pertenencia a otra obra', () => {
+  it('vincula todos los delineantes sin elegir un principal arbitrario', () => {
+    const trainee = { ...assignment, role_in_project: 'planimetrista' };
+    const resolved = resolveMeetingPmcReferences({ projectName: 'Obra Uno' }, [trainee, trainee, { ...trainee, employee_id: 'otro', employee_name: 'Otra persona' }]);
+    expect(resolved.employeeId).toBeNull();
+    expect(resolved.pmcAssignments).toHaveLength(2);
+    expect(resolved.pmcAssignments?.every((person) => person.in_training)).toBe(true);
+    expect(resolveMeetingPmcReferences({ projectName: 'Obra Uno', employeeName: 'PMC manual' }, [trainee]).pmcAssignments).toHaveLength(1);
+    const withPmc = resolveMeetingPmcReferences({ projectName: 'Obra Uno' }, [assignment, { ...trainee, employee_id: 'otro' }]);
+    expect(withPmc.employeeId).toBe('pmc-1');
+    expect(withPmc.pmcAssignments).toEqual(expect.arrayContaining([expect.objectContaining({ employee_id: 'otro', in_training: true }), expect.objectContaining({ employee_id: 'pmc-1', in_training: false })]));
+  });
+
+  it('rechaza cargos globales y pertenencia a otra obra', () => {
     const trainee = { ...assignment, role_in_project: 'planimetrista' };
     for (const candidates of [
-      [trainee, { ...trainee, employee_id: 'otro' }],
       [{ ...trainee, project_assignment: false }],
       [{ ...trainee, project_id: 'otra-obra', project_name: 'Obra Dos' }],
       [{ ...trainee, role_in_project: 'interiorista', employee_role: 'Delineante' }],
-    ]) expect(resolveMeetingPmcReferences({ projectName: 'Obra Uno' }, candidates).employeeId).toBeNull();
+    ]) expect(resolveMeetingPmcReferences({ projectName: 'Obra Uno' }, candidates)).toMatchObject({ employeeId: null, pmcAssignments: [] });
     expect(resolveMeetingPmcReferences({ projectName: 'Obra Uno', employeeName: 'PMC manual' }, [trainee]).employeeId).toBeNull();
   });
 
