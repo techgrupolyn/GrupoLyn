@@ -4673,10 +4673,13 @@ function normalizeDirectorySearch(value: unknown): string {
   return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function directoryMentionText(value: unknown): string {
+  return ` ${normalizeDirectorySearch(value).replace(/[^a-z0-9]+/g, ' ').trim()} `;
+}
+
 function isDirectoryMentioned(haystack: string, value: string | null): boolean {
-  const candidate = normalizeDirectorySearch(value);
-  const words = (value: string) => ` ${value.replace(/[^a-z0-9]+/g, ' ').trim()} `;
-  return candidate.length >= 4 && words(haystack).includes(words(candidate));
+  const candidate = directoryMentionText(value);
+  return candidate.trim().length >= 4 && haystack.includes(candidate);
 }
 
 async function loadMeetingDirectoryCandidates(): Promise<MeetingDirectoryCandidate[]> {
@@ -4748,7 +4751,7 @@ async function loadMeetingDirectoryCandidates(): Promise<MeetingDirectoryCandida
 
 async function meetingDirectoryCandidates(source: string, identity: MeetingIdentity): Promise<MeetingDirectoryCandidate[]> {
   const rows = await loadMeetingDirectoryCandidates();
-  const haystack = normalizeDirectorySearch([source, identity.projectName, identity.contactName, identity.pmc].filter(Boolean).join('\n'));
+  const haystack = directoryMentionText([source, identity.projectName, identity.contactName, identity.pmc].filter(Boolean).join('\n'));
   const seen = new Set<string>();
   return rows.filter((row) => {
     const matched = projectSearchValues(row).some((name) => isDirectoryMentioned(haystack, name)) || isDirectoryMentioned(haystack, row.client_name) || isDirectoryMentioned(haystack, row.employee_name);
@@ -4832,8 +4835,8 @@ function exactDirectoryCandidates(candidates: MeetingDirectoryCandidate[], field
 }
 
 function mentionedDirectoryCandidate(candidates: MeetingDirectoryCandidate[], field: keyof Pick<MeetingDirectoryCandidate, 'project_name' | 'client_name'>, id: keyof Pick<MeetingDirectoryCandidate, 'project_id' | 'client_id'>, source: string | null | undefined): MeetingDirectoryCandidate | null {
-  const haystack = normalizeDirectorySearch(source);
-  if (!haystack) return null;
+  if (!String(source || '').trim()) return null;
+  const haystack = directoryMentionText(source);
   return uniqueDirectoryCandidate(candidates.filter((candidate) => {
     const values = field === 'project_name' ? projectSearchValues(candidate) : [candidate[field] || ''];
     return values.some((value) => isDirectoryMentioned(haystack, value));
@@ -4869,6 +4872,7 @@ function employeeAliasCandidates(candidates: MeetingDirectoryCandidate[], value:
 }
 
 function titleProjectCandidates(candidates: MeetingDirectoryCandidate[], title: string | null | undefined): MeetingDirectoryCandidate[] {
+  if (!String(title || '').trim()) return [];
   const titleTokens = new Set(normalizeDirectorySearch(title).replace(/[^a-z0-9]+/g, ' ').split(' ').filter(Boolean));
   const fullTitle = ` ${normalizeDirectorySearch(title).replace(/[^a-z0-9]+/g, ' ').trim()} `;
   return candidates.filter((candidate) => projectSearchValues(candidate).some((name) => {
