@@ -71,6 +71,21 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
+  it('abre el detalle existente sin esperar al bloqueo de una sincronización', async () => {
+    const connection = await server.pool.connect();
+    try {
+      await connection.query('BEGIN');
+      await connection.query('UPDATE meeting_reviews SET updated_at = NOW() WHERE artifact_id = $1', [artifactId]);
+      await connection.query('UPDATE google_drive_artifacts SET updated_at = NOW() WHERE id = $1', [artifactId]);
+      const response = await request(server.app).get(endpoint).set('Authorization', authorization).timeout({ deadline: 1500 });
+      expect(response.status).toBe(200);
+      expect(response.body.id).toBe(artifactId);
+    } finally {
+      await connection.query('ROLLBACK');
+      connection.release();
+    }
+  });
+
   it.each(['miembro', 'organigrama', 'global', 'ambiguo', 'inactivo', 'manual', 'existente', 'analisis', 'con-tarea', 'delineante', 'delineante-organigrama', 'delineante-global', 'delineante-ambiguo', 'delineante-inactivo', 'delineante-manual', 'delineante-analisis', 'pmc-prioritario'])('completa PMC desde Club LYN de forma segura: %s', async (mode) => {
     const meeting = randomUUID();
     const project = `qa-pmc-project-${meeting}`;

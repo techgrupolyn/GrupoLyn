@@ -5901,7 +5901,10 @@ app.get('/api/meetings/:artifactId', requireCeoMeetingAccess, async (req: Reques
   try {
     const artifactId = String(req.params.artifactId || '').trim();
     const scope = res.locals.meetingAccessScope as MeetingAccessScope;
-    if (!scope.employeeId) await ensureMeetingReview(artifactId, String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema'));
+    if (!scope.employeeId) {
+      const existingReview = await pool.query('SELECT artifact_id FROM meeting_reviews WHERE artifact_id = $1', [artifactId]);
+      if (!existingReview.rows.length) await ensureMeetingReview(artifactId, String((res.locals.ceoSession as CeoSession)?.usuario || 'sistema'));
+    }
     const artifactParameters: unknown[] = [artifactId];
     const visibilityWhere = scope.employeeId
       ? (() => { artifactParameters.push(scope.employeeId); return ` AND ${meetingVisibilityCondition('r', '$' + artifactParameters.length)}`; })()
