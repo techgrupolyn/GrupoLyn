@@ -684,6 +684,7 @@ async function ensureDatabaseSchema(): Promise<void> {
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS project_id VARCHAR(255);
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS contact_id VARCHAR(255);
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS pmc_employee_id VARCHAR(255);
+    ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS pmc_in_training BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS directory_match_confidence VARCHAR(20);
     CREATE INDEX IF NOT EXISTS idx_meeting_reviews_analysis_queue ON meeting_reviews(analysis_status, updated_at ASC);
     CREATE INDEX IF NOT EXISTS idx_meeting_reviews_project_id ON meeting_reviews(project_id);
@@ -4766,6 +4767,7 @@ type MeetingDirectoryReferenceInput = {
 };
 
 export type MeetingDirectoryReference = {
+  pmcInTraining?: boolean;
   projectId: string | null;
   projectName: string | null;
   clientId: string | null;
@@ -4888,13 +4890,15 @@ export function resolveMeetingDirectoryReferences(input: MeetingDirectoryReferen
 export function resolveMeetingPmcReferences(input: MeetingDirectoryReferenceInput, candidates: MeetingDirectoryCandidate[]): MeetingDirectoryReference {
   const reference = resolveMeetingDirectoryReferences(input, candidates);
   if (String(input.employeeName || '').trim() || !reference.projectId) return reference;
-  const pmc = uniqueDirectoryCandidate(candidates.filter((candidate) =>
+  const assigned = candidates.filter((candidate) =>
     candidate.project_id === reference.projectId && candidate.project_assignment === true
-    && meetingEditorRoleRank(candidate.role_in_project || candidate.employee_role) === 2,
-  ), 'employee_id');
+    && Boolean(candidate.employee_id));
+  const pmcs = assigned.filter((candidate) => meetingEditorRoleRank(candidate.role_in_project || candidate.employee_role) === 2);
+  const trainees = assigned.filter((candidate) => /^(?:delineante|planimetrista)s?$/i.test(String(candidate.role_in_project || '').trim()));
+  const pmc = uniqueDirectoryCandidate(pmcs.length ? pmcs : trainees, 'employee_id');
   if (!pmc) return reference;
   return { ...reference, employeeId: pmc.employee_id, employeeName: pmc.employee_name,
-    employeeRole: pmc.role_in_project || pmc.employee_role, matchConfidence: 'high' };
+    employeeRole: pmc.role_in_project || pmc.employee_role, matchConfidence: 'high', pmcInTraining: pmcs.length === 0 };
 }
 
 type MeetingActionTagDefaults = {
@@ -4987,9 +4991,9 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
     const reviewsResult = await client.query<{
       artifact_id: string; project_name: string | null; contact_name: string | null; pmc: string | null;
       project_id: string | null; contact_id: string | null; pmc_employee_id: string | null; directory_match_confidence: string | null;
-      source_name: string | null; content_text: string | null; manual_revision: boolean;
+      source_name: string | null; content_text: string | null; manual_revision: boolean; pmc_in_training: boolean;
     }>(
-      `SELECT r.artifact_id, r.project_name, r.contact_name, r.pmc, r.project_id, r.contact_id, r.pmc_employee_id, r.directory_match_confidence, r.manual_revision,
+      `SELECT r.artifact_id, r.project_name, r.contact_name, r.pmc, r.project_id, r.contact_id, r.pmc_employee_id, r.directory_match_confidence, r.manual_revision, r.pmc_in_training,
               a.name AS source_name, LEFT(COALESCE(a.content_text, ''), 20000) AS content_text
        FROM meeting_reviews r
        INNER JOIN google_drive_artifacts a ON a.id = r.artifact_id
@@ -5009,7 +5013,7 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
       }, candidates);
       if (review.manual_revision) {
         if (!reference.employeeId) continue;
-        await client.query('UPDATE meeting_reviews SET pmc = $2, pmc_employee_id = $3, updated_at = NOW() WHERE artifact_id = $1', [review.artifact_id, reference.employeeName, reference.employeeId]);
+        await client.query('UPDATE meeting_reviews SET pmc = $2, pmc_employee_id = $3, pmc_in_training = $4, updated_at = NOW() WHERE artifact_id = $1', [review.artifact_id, reference.employeeName, reference.employeeId, Boolean(reference.pmcInTraining)]);
         result.reviewsTagged += 1;
         continue;
       }
@@ -5019,14 +5023,15 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
       const projectId = review.project_id || reference.projectId;
       const contactId = review.contact_id || reference.clientId;
       const pmcEmployeeId = review.pmc_employee_id || reference.employeeId;
+      const pmcInTraining = review.pmc_employee_id ? review.pmc_in_training : Boolean(reference.pmcInTraining);
       const nextConfidence = reference.matchConfidence;
       if (review.project_id === projectId && review.contact_id === contactId && review.pmc_employee_id === pmcEmployeeId && review.project_name === projectName && review.contact_name === contactName && review.pmc === pmc && (review.directory_match_confidence || null) === nextConfidence) continue;
       await client.query(
         `UPDATE meeting_reviews
          SET project_name = $2, project_id = $3, contact_name = $4, contact_id = $5, pmc = $6, pmc_employee_id = $7,
-             directory_match_confidence = $8, updated_at = NOW()
+             directory_match_confidence = $8, pmc_in_training = $9, updated_at = NOW()
          WHERE artifact_id = $1`,
-        [review.artifact_id, projectName, projectId, contactName, contactId, pmc, pmcEmployeeId, nextConfidence],
+        [review.artifact_id, projectName, projectId, contactName, contactId, pmc, pmcEmployeeId, nextConfidence, pmcInTraining],
       );
       if (reference.projectId || reference.clientId || reference.employeeId) result.reviewsTagged += 1;
     }
@@ -5473,7 +5478,7 @@ app.get('/api/meetings', requireCeoMeetingAccess, async (req: Request, res: Resp
       pool.query(
         `SELECT a.id, a.name, LEFT(COALESCE(a.content_text, ''), 20000) AS content_text, a.metadata, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_truncated,
                 f.label AS folder_label, c.google_email, r.summary, r.decisions, r.project_name, r.project_id, r.contact_name, r.contact_id,
-                r.meeting_kind, r.pmc, r.pmc_employee_id, (SELECT role_lookup.nombre FROM usuario_rol role_link INNER JOIN roles role_lookup ON role_lookup.id = role_link.rol_id WHERE role_link.empleado_id = r.pmc_employee_id ORDER BY role_lookup.nombre ASC LIMIT 1) AS pmc_role, r.directory_match_confidence, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.updated_at,
+                r.meeting_kind, r.pmc, r.pmc_employee_id, r.pmc_in_training, (SELECT role_lookup.nombre FROM usuario_rol role_link INNER JOIN roles role_lookup ON role_lookup.id = role_link.rol_id WHERE role_link.empleado_id = r.pmc_employee_id ORDER BY role_lookup.nombre ASC LIMIT 1) AS pmc_role, r.directory_match_confidence, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.updated_at,
                 COUNT(ma.id)::int AS actions_count,
                 FALSE AS recording_notice_required,
                 COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND ma.responsible_id IS NULL AND NOT EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id))::int AS actions_without_responsible,
@@ -5668,7 +5673,7 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIden
   };
   const fullDirectory = await loadMeetingDirectoryCandidates();
   const identityTags = resolveMeetingPmcReferences({ projectName: identity.projectName, clientName: identity.contactName, employeeName: identity.pmc }, fullDirectory);
-  if (identityTags.employeeId && !fullDirectory.some((candidate) => candidate.employee_id === identityTags.employeeId && meetingEditorRoleRank(candidate.role_in_project || candidate.employee_role) === 2)) {
+  if (identityTags.employeeId && !identityTags.pmcInTraining && !fullDirectory.some((candidate) => candidate.employee_id === identityTags.employeeId && meetingEditorRoleRank(candidate.role_in_project || candidate.employee_role) === 2)) {
     identityTags.employeeId = null;
     identityTags.employeeName = null;
     identityTags.employeeRole = null;
@@ -5687,8 +5692,8 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIden
     const currentSource = await client.query('SELECT content_text, source_modified_at FROM google_drive_artifacts WHERE id = $1', [artifactId]);
     if (currentSource.rows[0]?.content_text !== artifact.content_text) throw new MeetingAnalysisPausedError('La fuente cambió durante el análisis. Vuelve a intentarlo con la versión actual.');
     await client.query(
-      'UPDATE meeting_reviews SET summary = $2, decisions = $3, relevant_information = $4, project_name = $5, contact_name = $6, meeting_kind = $7, pmc = $8, analysis_status = $9, analysis_source_modified_at = $10, meeting_date = $11, analysis_version = $12, project_id = $13, contact_id = $14, pmc_employee_id = $15, directory_match_confidence = $16, analysis_completed_at = NOW(), analysis_error = NULL, updated_at = NOW() WHERE artifact_id = $1',
-      [artifactId, analysis.summary, decisions, analysis.relevantInformation.map((item) => '- ' + item).join('\n'), identity.projectName, identity.contactName, identity.meetingKind, identity.pmc, 'completed', artifact.source_modified_at, analysis.meetingDate || meetingAnalysisDate(artifact.meeting_date) || deriveMeetingDate(artifact), MEETING_AI_ANALYSIS_VERSION, identityTags.projectId, identityTags.clientId, identityTags.employeeId, identityTags.matchConfidence],
+      'UPDATE meeting_reviews SET summary = $2, decisions = $3, relevant_information = $4, project_name = $5, contact_name = $6, meeting_kind = $7, pmc = $8, analysis_status = $9, analysis_source_modified_at = $10, meeting_date = $11, analysis_version = $12, project_id = $13, contact_id = $14, pmc_employee_id = $15, directory_match_confidence = $16, pmc_in_training = $17, analysis_completed_at = NOW(), analysis_error = NULL, updated_at = NOW() WHERE artifact_id = $1',
+      [artifactId, analysis.summary, decisions, analysis.relevantInformation.map((item) => '- ' + item).join('\n'), identity.projectName, identity.contactName, identity.meetingKind, identity.pmc, 'completed', artifact.source_modified_at, analysis.meetingDate || meetingAnalysisDate(artifact.meeting_date) || deriveMeetingDate(artifact), MEETING_AI_ANALYSIS_VERSION, identityTags.projectId, identityTags.clientId, identityTags.employeeId, identityTags.matchConfidence, Boolean(identityTags.pmcInTraining)],
     );
     await client.query("DELETE FROM meeting_review_actions WHERE artifact_id = $1 AND origin = 'ai'", [artifactId]);
     await client.query('DELETE FROM meeting_review_blockers WHERE artifact_id = $1', [artifactId]);
@@ -5858,7 +5863,7 @@ app.get('/api/meetings/:artifactId', requireCeoMeetingAccess, async (req: Reques
     const artifactResult = await pool.query(
       `SELECT a.id, a.name, a.metadata, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_text, a.content_truncated,
               f.label AS folder_label, c.google_email, r.summary, r.decisions, r.relevant_information, r.project_name, r.project_id, r.contact_name, r.contact_id,
-              r.meeting_kind, r.pmc, r.pmc_employee_id, r.directory_match_confidence, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.approved_at, r.approved_by, r.returned_reason, r.updated_at
+              r.meeting_kind, r.pmc, r.pmc_employee_id, r.pmc_in_training, r.directory_match_confidence, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.approved_at, r.approved_by, r.returned_reason, r.updated_at
        FROM google_drive_artifacts a
        INNER JOIN meeting_reviews r ON r.artifact_id = a.id
        LEFT JOIN google_drive_folders f ON f.id = a.folder_id
@@ -5910,7 +5915,9 @@ app.put('/api/meetings/:artifactId', requireMeetingEditor, async (req: Request, 
     const { rows } = await client.query(
       `UPDATE meeting_reviews SET summary = $2, decisions = $3, relevant_information = $4, project_name = $5, contact_name = $6, pmc = $7,
         meeting_kind = $8, meeting_date = $9, project_id = $10, contact_id = $11, pmc_employee_id = $12,
-        directory_match_confidence = $13, updated_at = NOW() WHERE artifact_id = $1 RETURNING *`,
+        directory_match_confidence = $13,
+        pmc_in_training = pmc_in_training AND pmc IS NOT DISTINCT FROM $7::varchar AND project_id IS NOT DISTINCT FROM $10::varchar AND pmc_employee_id IS NOT DISTINCT FROM $12::varchar,
+        updated_at = NOW() WHERE artifact_id = $1 RETURNING *`,
       [artifactId, String(body.summary || '').slice(0, 20_000), String(body.decisions || '').slice(0, 20_000), String(body.relevant_information || '').slice(0, 20_000),
         String(body.project_name || '').trim().slice(0, 255) || null, String(body.contact_name || '').trim().slice(0, 255) || null,
         String(body.pmc || '').trim().slice(0, 255) || null, meetingKind, requestedMeetingDate,

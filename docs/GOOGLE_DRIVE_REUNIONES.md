@@ -69,6 +69,8 @@ Los valores detectados se muestran en la bandeja y permanecen editables en el pa
 
 Si falta el PMC, el gestor utiliza las asignaciones del proyecto importadas desde Club LYN (miembros del proyecto y cargos del organigrama vinculados a ese proyecto). Solo completa nombre e identificador cuando existe un único empleado activo con rol PMC/Jefe de Proyectos. Los cargos globales, proyectos ambiguos y proyectos con varios PMC distintos no generan una asignación automática.
 
+Si el proyecto no tiene ningún PMC activo asignado, se utiliza su único delineante/planimetrista activo como **PMC en prácticas**. Se guarda `pmc_in_training` y se muestra esa identificación en la lista y el detalle, sin cambiar su cargo en Club LYN ni sus permisos globales. Si hay varios delineantes o varios PMC, no se elige arbitrariamente. Las asignaciones manuales y los responsables de tareas se conservan. Esta regla también se aplica a reuniones existentes al sincronizar el directorio.
+
 Se aplica durante el análisis de nuevas reuniones y tras cada sincronización del directorio a las existentes. Las reuniones editadas manualmente solo reciben el PMC si tanto el nombre como el identificador están vacíos; los demás campos y los responsables de tareas no se sustituyen por el PMC. No modifica datos de Club LYN ni necesita volver a enviar transcripciones a la IA para completar reuniones existentes.
 
 ## Análisis IA de reuniones

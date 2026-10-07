@@ -48,6 +48,16 @@ beforeEach(() => {
 });
 
 describe('MeetingManagementView', () => {
+  it('identifica al delineante de respaldo como PMC en prácticas en lista y detalle', async () => {
+    const traineeMeeting = { ...meeting, pmc: 'Delineante QA', pmc_employee_id: 'trainee-1', pmc_in_training: true };
+    vi.mocked(api.meetings.list).mockResolvedValue({ ...emptyList, items: [traineeMeeting], total: 1, totalPages: 1 });
+    vi.mocked(api.meetings.get).mockResolvedValue(traineeMeeting);
+    render(<MeetingManagementView />);
+    expect(await screen.findByText('PMC en prácticas: Delineante QA')).toBeInTheDocument();
+    fireEvent.click(screen.getByText(meeting.name));
+    await waitFor(() => expect(screen.getAllByText('PMC en prácticas: Delineante QA')).toHaveLength(2));
+  });
+
   it.each([false, true])('muestra reuniones nuevas automáticamente sin pulsar sincronizar (acceso limitado: %s)', async (limitedAccess) => {
     let refresh;
     const interval = vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {

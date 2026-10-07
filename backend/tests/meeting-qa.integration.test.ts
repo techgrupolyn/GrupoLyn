@@ -71,26 +71,29 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
-  it.each(['miembro', 'organigrama', 'global', 'ambiguo', 'inactivo', 'manual', 'existente', 'analisis', 'con-tarea'])('completa PMC desde Club LYN de forma segura: %s', async (mode) => {
+  it.each(['miembro', 'organigrama', 'global', 'ambiguo', 'inactivo', 'manual', 'existente', 'analisis', 'con-tarea', 'delineante', 'delineante-organigrama', 'delineante-global', 'delineante-ambiguo', 'delineante-inactivo', 'delineante-manual', 'delineante-analisis', 'pmc-prioritario'])('completa PMC desde Club LYN de forma segura: %s', async (mode) => {
     const meeting = randomUUID();
     const project = `qa-pmc-project-${meeting}`;
     const employee = `qa-pmc-${meeting}`;
     const other = `qa-other-${meeting}`;
     const position = `qa-position-${meeting}`;
+    const trainee = mode.startsWith('delineante');
+    const isManual = mode === 'manual' || mode === 'existente' || mode === 'delineante-manual';
+    const isAnalysis = mode === 'analisis' || mode === 'delineante-analisis';
     try {
       await server.pool.query('INSERT INTO proyectos (id,nombre) VALUES ($1,$1)', [project]);
-      await server.pool.query("INSERT INTO empleados (id,nombre,activo) VALUES ($1,'PMC de Club', $3),($2,'Otro PMC',TRUE)", [employee, other, mode !== 'inactivo']);
-      if (mode === 'organigrama' || mode === 'global') {
-        await server.pool.query("INSERT INTO organigrama_cargos (id,nombre) VALUES ($1,'PMC')", [position]);
-        await server.pool.query('INSERT INTO organigrama_cargo_asignaciones (id,cargo_id,empleado_id,proyecto_id) VALUES ($1,$1,$2,$3)', [position, employee, mode === 'global' ? null : project]);
+      await server.pool.query("INSERT INTO empleados (id,nombre,activo) VALUES ($1,'PMC de Club', $3),($2,'Otro PMC',TRUE)", [employee, other, !mode.endsWith('inactivo')]);
+      if (mode.endsWith('organigrama') || mode.endsWith('global')) {
+        await server.pool.query('INSERT INTO organigrama_cargos (id,nombre) VALUES ($1,$2)', [position, trainee ? 'Delineante' : 'PMC']);
+        await server.pool.query('INSERT INTO organigrama_cargo_asignaciones (id,cargo_id,empleado_id,proyecto_id) VALUES ($1,$1,$2,$3)', [position, employee, mode.endsWith('global') ? null : project]);
       } else {
-        await server.pool.query("INSERT INTO proyecto_asignaciones (id,proyecto_id,empleado_id,rol_en_proyecto,origen) VALUES ($1,$2,$1,'pmc','supabase')", [employee, project]);
-        if (mode === 'ambiguo') await server.pool.query("INSERT INTO proyecto_asignaciones (id,proyecto_id,empleado_id,rol_en_proyecto,origen) VALUES ($1,$2,$1,'pmc','supabase')", [other, project]);
+        await server.pool.query("INSERT INTO proyecto_asignaciones (id,proyecto_id,empleado_id,rol_en_proyecto,origen) VALUES ($1,$2,$1,$3,'supabase')", [employee, project, trainee ? 'planimetrista' : 'pmc']);
+        if (mode.endsWith('ambiguo') || mode === 'pmc-prioritario') await server.pool.query("INSERT INTO proyecto_asignaciones (id,proyecto_id,empleado_id,rol_en_proyecto,origen) VALUES ($1,$2,$1,$3,'supabase')", [other, project, trainee || mode === 'pmc-prioritario' ? 'planimetrista' : 'pmc']);
       }
       await server.pool.query("INSERT INTO google_drive_artifacts (id,connection_id,folder_id,google_file_id,name,mime_type,artifact_type,content_text) VALUES ($1::uuid,$2,$3,$1::text,'Reunión cliente','text/plain','transcript',$4)", [meeting, connectionId, folderId, `Obra: ${project}. Revisar planos.`]);
-      await server.pool.query("INSERT INTO meeting_reviews (artifact_id,project_id,project_name,summary,manual_revision,pmc,pmc_employee_id) VALUES ($1,$2,$2,'Resumen conservado',$3,$4,$5)", [meeting, project, mode === 'manual' || mode === 'existente', mode === 'existente' ? 'Otro PMC' : null, mode === 'existente' ? other : null]);
+      await server.pool.query("INSERT INTO meeting_reviews (artifact_id,project_id,project_name,summary,manual_revision,pmc,pmc_employee_id) VALUES ($1,$2,$2,'Resumen conservado',$3,$4,$5)", [meeting, project, isManual, mode === 'existente' ? 'Otro PMC' : null, mode === 'existente' ? other : null]);
       if (mode === 'con-tarea') await server.pool.query("INSERT INTO meeting_review_actions (id,artifact_id,title,responsible) VALUES ($1,$2,'Revisar planos','Sin identificar')", [randomUUID(), meeting]);
-      if (mode === 'analisis') {
+      if (isAnalysis) {
         generation.mockResolvedValueOnce({ text: JSON.stringify({ summary: 'Resumen IA', identity: { project_name: project }, actions: [] }), fallback: false, provider: 'qa', model: 'stub' });
         const response = await request(server.app).post(`/api/meetings/${meeting}/analyze`).set('Authorization', authorization).send({});
         expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -98,14 +101,20 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
         const response = await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({});
         expect(response.status, JSON.stringify(response.body)).toBe(200);
       }
-      const row = (await server.pool.query('SELECT pmc,pmc_employee_id,summary,project_id,manual_revision,updated_at FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0];
-      const unresolved = ['global', 'ambiguo', 'inactivo'].includes(mode);
-      expect(row).toMatchObject({ project_id: project, pmc: unresolved ? null : mode === 'existente' ? 'Otro PMC' : 'PMC de Club', pmc_employee_id: unresolved ? null : mode === 'existente' ? other : employee });
-      if (mode !== 'analisis') expect(row.summary).toBe('Resumen conservado');
+      const row = (await server.pool.query('SELECT pmc,pmc_employee_id,pmc_in_training,summary,project_id,manual_revision,updated_at FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0];
+      const unresolved = ['global', 'ambiguo', 'inactivo'].some((suffix) => mode.endsWith(suffix));
+      expect(row).toMatchObject({ project_id: project, pmc: unresolved ? null : mode === 'existente' ? 'Otro PMC' : 'PMC de Club', pmc_employee_id: unresolved ? null : mode === 'existente' ? other : employee, pmc_in_training: trainee && !unresolved });
+      expect((await request(server.app).get(`/api/meetings/${meeting}`).set('Authorization', authorization)).body.pmc_in_training).toBe(trainee && !unresolved);
+      if (!isAnalysis) expect(row.summary).toBe('Resumen conservado');
       if (mode === 'con-tarea') expect((await server.pool.query('SELECT project_id,responsible_id,responsible_kind FROM meeting_review_actions WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ project_id: project, responsible_id: null, responsible_kind: null });
-      if (mode === 'manual' || mode === 'existente') expect(row.manual_revision).toBe(true);
+      if (isManual) expect(row.manual_revision).toBe(true);
       await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({});
-      expect((await server.pool.query('SELECT pmc,pmc_employee_id FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ pmc: row.pmc, pmc_employee_id: row.pmc_employee_id });
+      expect((await server.pool.query('SELECT pmc,pmc_employee_id,pmc_in_training FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ pmc: row.pmc, pmc_employee_id: row.pmc_employee_id, pmc_in_training: row.pmc_in_training });
+      if (mode === 'delineante') {
+        const original = { project_name: project, pmc: row.pmc, summary: 'Edición conservada' };
+        expect((await request(server.app).put(`/api/meetings/${meeting}`).set('Authorization', authorization).send(original)).body.pmc_in_training).toBe(true);
+        expect((await request(server.app).put(`/api/meetings/${meeting}`).set('Authorization', authorization).send({ ...original, pmc: 'Otro PMC' })).body.pmc_in_training).toBe(false);
+      }
     } finally {
       generation.mockReset();
       await server.pool.query('DELETE FROM google_drive_artifacts WHERE id=$1', [meeting]);
