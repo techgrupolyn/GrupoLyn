@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
 import { Readable } from 'node:stream';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
@@ -9,17 +10,22 @@ import test from 'node:test';
 const require = createRequire(new URL('../../evolution-api/package.json', import.meta.url));
 
 for (const component of ['backend', 'evolution-api']) {
-  test(`${component}: HTTP usa compression y proxy-addr corregidos`, () => {
-    const runtime = createRequire(new URL(`../../${component}/package.json`, import.meta.url));
-    assert.equal(runtime('compression/package.json').version, '1.8.2');
-    assert.equal(runtime('proxy-addr/package.json').version, '2.0.8');
-    assert.equal(typeof runtime('compression')(), 'function');
-    const trust = runtime('proxy-addr').compile(['127.0.0.1/8', '::1/128']);
-    assert.equal(trust('127.0.0.1'), true);
-    assert.equal(trust('::ffff:127.0.0.1'), true);
-    assert.equal(trust('203.0.113.10'), false);
+  test(`${component}: lock fija compression y proxy-addr corregidos`, () => {
+    const lock = JSON.parse(readFileSync(new URL(`../../${component}/package-lock.json`, import.meta.url), 'utf8'));
+    assert.equal(lock.packages['node_modules/compression'].version, '1.8.2');
+    assert.equal(lock.packages['node_modules/proxy-addr'].version, '2.0.8');
   });
 }
+
+test('Evolution carga los paquetes HTTP corregidos y valida confianza IPv4/IPv6', () => {
+  assert.equal(require('compression/package.json').version, '1.8.2');
+  assert.equal(require('proxy-addr/package.json').version, '2.0.8');
+  assert.equal(typeof require('compression')(), 'function');
+  const trust = require('proxy-addr').compile(['127.0.0.1/8', '::1/128']);
+  assert.equal(trust('127.0.0.1'), true);
+  assert.equal(trust('::ffff:127.0.0.1'), true);
+  assert.equal(trust('203.0.113.10'), false);
+});
 
 test('Baileys actualizado carga desde CommonJS y conserva generación de mensajes', async () => {
   const baileys = require('baileys');
