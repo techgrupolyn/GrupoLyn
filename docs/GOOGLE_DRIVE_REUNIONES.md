@@ -65,6 +65,12 @@ Al importar una transcripción, nota o documento, el Dashboard identifica el tip
 Los valores detectados se muestran en la bandeja y permanecen editables en el panel lateral. Las correcciones manuales se conservan y siempre prevalecen sobre una detección posterior. Para obtener la mayor precisión, usa encabezados independientes en la transcripción, por ejemplo: `PMC: Laura M.`, `Obra: Villajoyosa 12` y `Contacto: Marta S.`.
 
 
+## PMC vinculado en Club LYN
+
+Si falta el PMC, el gestor utiliza las asignaciones del proyecto importadas desde Club LYN (miembros del proyecto y cargos del organigrama vinculados a ese proyecto). Solo completa nombre e identificador cuando existe un único empleado activo con rol PMC/Jefe de Proyectos. Los cargos globales, proyectos ambiguos y proyectos con varios PMC distintos no generan una asignación automática.
+
+Se aplica durante el análisis de nuevas reuniones y tras cada sincronización del directorio a las existentes. Las reuniones editadas manualmente solo reciben el PMC si tanto el nombre como el identificador están vacíos; los demás campos y los responsables de tareas no se sustituyen por el PMC. No modifica datos de Club LYN ni necesita volver a enviar transcripciones a la IA para completar reuniones existentes.
+
 ## Análisis IA de reuniones
 
 Al importar una transcripción nueva o modificada, el servidor la encola automáticamente y la analiza una única vez por versión del documento y del analizador. La bandeja actualiza su estado periódicamente y la reunión se abre con el resultado ya guardado. El servidor envía como máximo `MEETING_AI_TEXT_MAX_CHARS` caracteres al modelo y exige una respuesta JSON estructurada. Guarda el resumen, decisiones, fecha real de la reunión, identidad, acciones y bloqueos en la base de datos central. Cuando la transcripción contiene marcas temporales, las referencias se conservan como minutos verificables. El botón del panel lateral se reserva para una regeneración explícita.

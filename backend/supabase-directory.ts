@@ -301,6 +301,7 @@ export type MeetingDirectoryCandidate = {
   employee_role: string | null;
   role_in_project: string | null;
   project_aliases?: string[];
+  project_assignment?: boolean;
 };
 
 export function meetingDirectoryContext(rows: MeetingDirectoryCandidate[]): string {

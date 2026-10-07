@@ -71,6 +71,48 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
+  it.each(['miembro', 'organigrama', 'global', 'ambiguo', 'inactivo', 'manual', 'existente', 'analisis'])('completa PMC desde Club LYN de forma segura: %s', async (mode) => {
+    const meeting = randomUUID();
+    const project = `qa-pmc-project-${meeting}`;
+    const employee = `qa-pmc-${meeting}`;
+    const other = `qa-other-${meeting}`;
+    const position = `qa-position-${meeting}`;
+    try {
+      await server.pool.query('INSERT INTO proyectos (id,nombre) VALUES ($1,$1)', [project]);
+      await server.pool.query("INSERT INTO empleados (id,nombre,activo) VALUES ($1,'PMC de Club', $3),($2,'Otro PMC',TRUE)", [employee, other, mode !== 'inactivo']);
+      if (mode === 'organigrama' || mode === 'global') {
+        await server.pool.query("INSERT INTO organigrama_cargos (id,nombre) VALUES ($1,'PMC')", [position]);
+        await server.pool.query('INSERT INTO organigrama_cargo_asignaciones (id,cargo_id,empleado_id,proyecto_id) VALUES ($1,$1,$2,$3)', [position, employee, mode === 'global' ? null : project]);
+      } else {
+        await server.pool.query("INSERT INTO proyecto_asignaciones (id,proyecto_id,empleado_id,rol_en_proyecto,origen) VALUES ($1,$2,$1,'pmc','supabase')", [employee, project]);
+        if (mode === 'ambiguo') await server.pool.query("INSERT INTO proyecto_asignaciones (id,proyecto_id,empleado_id,rol_en_proyecto,origen) VALUES ($1,$2,$1,'pmc','supabase')", [other, project]);
+      }
+      await server.pool.query("INSERT INTO google_drive_artifacts (id,connection_id,folder_id,google_file_id,name,mime_type,artifact_type,content_text) VALUES ($1::uuid,$2,$3,$1::text,'Reunión cliente','text/plain','transcript',$4)", [meeting, connectionId, folderId, `Obra: ${project}. Revisar planos.`]);
+      await server.pool.query("INSERT INTO meeting_reviews (artifact_id,project_id,project_name,summary,manual_revision,pmc,pmc_employee_id) VALUES ($1,$2,$2,'Resumen conservado',$3,$4,$5)", [meeting, project, mode === 'manual' || mode === 'existente', mode === 'existente' ? 'Otro PMC' : null, mode === 'existente' ? other : null]);
+      if (mode === 'analisis') {
+        generation.mockResolvedValueOnce({ text: JSON.stringify({ summary: 'Resumen IA', identity: { project_name: project }, actions: [] }), fallback: false, provider: 'qa', model: 'stub' });
+        const response = await request(server.app).post(`/api/meetings/${meeting}/analyze`).set('Authorization', authorization).send({});
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+      } else {
+        const response = await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({});
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+      }
+      const row = (await server.pool.query('SELECT pmc,pmc_employee_id,summary,project_id,manual_revision,updated_at FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0];
+      const unresolved = ['global', 'ambiguo', 'inactivo'].includes(mode);
+      expect(row).toMatchObject({ project_id: project, pmc: unresolved ? null : mode === 'existente' ? 'Otro PMC' : 'PMC de Club', pmc_employee_id: unresolved ? null : mode === 'existente' ? other : employee });
+      if (mode !== 'analisis') expect(row.summary).toBe('Resumen conservado');
+      if (mode === 'manual' || mode === 'existente') expect(row.manual_revision).toBe(true);
+      await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({});
+      expect((await server.pool.query('SELECT pmc,pmc_employee_id FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ pmc: row.pmc, pmc_employee_id: row.pmc_employee_id });
+    } finally {
+      generation.mockReset();
+      await server.pool.query('DELETE FROM google_drive_artifacts WHERE id=$1', [meeting]);
+      await server.pool.query('DELETE FROM organigrama_cargos WHERE id=$1', [position]);
+      await server.pool.query('DELETE FROM proyectos WHERE id=$1', [project]);
+      await server.pool.query('DELETE FROM empleados WHERE id=ANY($1::varchar[])', [[employee, other]]);
+    }
+  });
+
   it('lista cuentas con historial voluminoso, sin historial e inactivas con conteos independientes', async () => {
     const accountIds = [`qa-list-${randomUUID()}`, `qa-list-${randomUUID()}`];
     try {

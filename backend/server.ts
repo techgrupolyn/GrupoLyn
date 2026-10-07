@@ -4682,7 +4682,7 @@ async function loadMeetingDirectoryCandidates(): Promise<MeetingDirectoryCandida
       `SELECT p.id AS project_id, p.nombre AS project_name, c.id AS client_id,
               CONCAT_WS(' ', c.nombre, c.apellido) AS client_name, e.id AS employee_id,
               CONCAT_WS(' ', e.nombre, e.apellido) AS employee_name, COALESCE(org_cargo.nombre, r.nombre) AS employee_role,
-              pa.rol_en_proyecto AS role_in_project,
+              pa.rol_en_proyecto AS role_in_project, TRUE AS project_assignment,
               COALESCE((SELECT array_agg(alias ORDER BY alias) FROM proyecto_aliases WHERE proyecto_id = p.id), ARRAY[]::varchar[]) AS project_aliases
        FROM proyectos p
        LEFT JOIN clientes c ON c.id = p.cliente_id
@@ -4706,7 +4706,7 @@ async function loadMeetingDirectoryCandidates(): Promise<MeetingDirectoryCandida
        SELECT p.id AS project_id, p.nombre AS project_name, c.id AS client_id,
               CONCAT_WS(' ', c.nombre, c.apellido) AS client_name, e.id AS employee_id,
               CONCAT_WS(' ', e.nombre, e.apellido) AS employee_name, oc.nombre AS employee_role,
-              oc.nombre AS role_in_project,
+              oc.nombre AS role_in_project, TRUE AS project_assignment,
               COALESCE((SELECT array_agg(alias ORDER BY alias) FROM proyecto_aliases WHERE proyecto_id = p.id), ARRAY[]::varchar[]) AS project_aliases
        FROM organigrama_cargo_asignaciones oca
        INNER JOIN organigrama_cargos oc ON oc.id = oca.cargo_id AND oc.activo = TRUE
@@ -4718,7 +4718,7 @@ async function loadMeetingDirectoryCandidates(): Promise<MeetingDirectoryCandida
        SELECT p.id AS project_id, p.nombre AS project_name, c.id AS client_id,
               CONCAT_WS(' ', c.nombre, c.apellido) AS client_name, e.id AS employee_id,
               CONCAT_WS(' ', e.nombre, e.apellido) AS employee_name, oc.nombre AS employee_role,
-              oc.nombre AS role_in_project,
+              oc.nombre AS role_in_project, FALSE AS project_assignment,
               COALESCE((SELECT array_agg(alias ORDER BY alias) FROM proyecto_aliases WHERE proyecto_id = p.id), ARRAY[]::varchar[]) AS project_aliases
        FROM organigrama_cargo_asignaciones oca
        INNER JOIN organigrama_cargos oc ON oc.id = oca.cargo_id AND oc.activo = TRUE
@@ -4729,13 +4729,12 @@ async function loadMeetingDirectoryCandidates(): Promise<MeetingDirectoryCandida
        UNION ALL
        SELECT NULL::varchar AS project_id, NULL::varchar AS project_name, NULL::varchar AS client_id,
               NULL::varchar AS client_name, e.id AS employee_id, CONCAT_WS(' ', e.nombre, e.apellido) AS employee_name,
-              r.nombre AS employee_role, NULL::varchar AS role_in_project, ARRAY[]::varchar[] AS project_aliases
+              r.nombre AS employee_role, NULL::varchar AS role_in_project, FALSE AS project_assignment, ARRAY[]::varchar[] AS project_aliases
        FROM empleados e
        LEFT JOIN usuario_rol ur ON ur.empleado_id = e.id
        LEFT JOIN roles r ON r.id = ur.rol_id
        WHERE e.activo = TRUE
-       ORDER BY project_name ASC NULLS LAST, employee_name ASC NULLS LAST
-       LIMIT 3000`,
+       ORDER BY project_name ASC NULLS LAST, employee_name ASC NULLS LAST`,
     );
     return rows;
   } catch (error) {
@@ -4758,6 +4757,7 @@ async function meetingDirectoryCandidates(source: string, identity: MeetingIdent
 }
 
 type MeetingDirectoryReferenceInput = {
+  projectId?: string | null;
   projectName?: string | null;
   clientName?: string | null;
   employeeName?: string | null;
@@ -4855,11 +4855,13 @@ function employeeAliasCandidates(candidates: MeetingDirectoryCandidate[], value:
 }
 
 export function resolveMeetingDirectoryReferences(input: MeetingDirectoryReferenceInput, candidates: MeetingDirectoryCandidate[]): MeetingDirectoryReference {
-  const explicitProject = uniqueDirectoryCandidate(exactDirectoryCandidates(candidates, 'project_name', input.projectName), 'project_id')
-    || mentionedDirectoryCandidate(candidates, 'project_name', 'project_id', input.source);
+  const explicitProject = input.projectId
+    ? uniqueDirectoryCandidate(candidates.filter((candidate) => candidate.project_id === input.projectId), 'project_id')
+    : uniqueDirectoryCandidate(exactDirectoryCandidates(candidates, 'project_name', input.projectName), 'project_id')
+      || mentionedDirectoryCandidate(candidates, 'project_name', 'project_id', input.source);
   const client = uniqueDirectoryCandidate(exactDirectoryCandidates(candidates, 'client_name', input.clientName), 'client_id')
     || mentionedDirectoryCandidate(candidates, 'client_name', 'client_id', input.source);
-  const project = explicitProject || (client?.client_id
+  const project = explicitProject || (!input.projectId && client?.client_id
     ? uniqueDirectoryCandidate(candidates.filter((candidate) => candidate.client_id === client.client_id), 'project_id')
     : null);
   const exactEmployeeMatches = exactDirectoryCandidates(candidates, 'employee_name', input.employeeName);
@@ -4881,6 +4883,18 @@ export function resolveMeetingDirectoryReferences(input: MeetingDirectoryReferen
     employeeRole: employeeCandidate?.role_in_project || employeeCandidate?.employee_role || null,
     matchConfidence: !hasReference ? null : project && employee && !assignedEmployee ? 'medium' : 'high',
   };
+}
+
+export function resolveMeetingPmcReferences(input: MeetingDirectoryReferenceInput, candidates: MeetingDirectoryCandidate[]): MeetingDirectoryReference {
+  const reference = resolveMeetingDirectoryReferences(input, candidates);
+  if (String(input.employeeName || '').trim() || !reference.projectId) return reference;
+  const pmc = uniqueDirectoryCandidate(candidates.filter((candidate) =>
+    candidate.project_id === reference.projectId && candidate.project_assignment === true
+    && meetingEditorRoleRank(candidate.role_in_project || candidate.employee_role) === 2,
+  ), 'employee_id');
+  if (!pmc) return reference;
+  return { ...reference, employeeId: pmc.employee_id, employeeName: pmc.employee_name,
+    employeeRole: pmc.role_in_project || pmc.employee_role, matchConfidence: 'high' };
 }
 
 type MeetingActionTagDefaults = {
@@ -4973,36 +4987,46 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
     const reviewsResult = await client.query<{
       artifact_id: string; project_name: string | null; contact_name: string | null; pmc: string | null;
       project_id: string | null; contact_id: string | null; pmc_employee_id: string | null; directory_match_confidence: string | null;
-      source_name: string | null; content_text: string | null;
+      source_name: string | null; content_text: string | null; manual_revision: boolean;
     }>(
-      `SELECT r.artifact_id, r.project_name, r.contact_name, r.pmc, r.project_id, r.contact_id, r.pmc_employee_id, r.directory_match_confidence,
+      `SELECT r.artifact_id, r.project_name, r.contact_name, r.pmc, r.project_id, r.contact_id, r.pmc_employee_id, r.directory_match_confidence, r.manual_revision,
               a.name AS source_name, LEFT(COALESCE(a.content_text, ''), 20000) AS content_text
        FROM meeting_reviews r
        INNER JOIN google_drive_artifacts a ON a.id = r.artifact_id
-       WHERE r.manual_revision = FALSE
+       WHERE r.manual_revision = FALSE OR (NULLIF(TRIM(r.pmc), '') IS NULL AND r.pmc_employee_id IS NULL)
        ORDER BY r.artifact_id FOR UPDATE OF r`,
     );
     for (const review of reviewsResult.rows) {
       result.reviewsScanned += 1;
       const detected = deriveMeetingIdentity({ name: review.source_name, content_text: review.content_text });
       const source = [review.project_name, review.source_name, review.content_text].filter(Boolean).join('\n');
-      const reference = resolveMeetingDirectoryReferences({
-        projectName: review.project_name || detected.projectName,
-        clientName: review.contact_name || detected.contactName,
-        employeeName: review.pmc || detected.pmc,
-        source,
+      const reference = resolveMeetingPmcReferences({
+        projectId: review.project_id,
+        projectName: review.project_name || (review.manual_revision ? null : detected.projectName),
+        clientName: review.contact_name || (review.manual_revision ? null : detected.contactName),
+        employeeName: review.pmc || (review.pmc_employee_id ? candidates.find((candidate) => candidate.employee_id === review.pmc_employee_id)?.employee_name : null) || (review.manual_revision ? null : detected.pmc),
+        source: review.manual_revision ? null : source,
       }, candidates);
+      if (review.manual_revision) {
+        if (!reference.employeeId) continue;
+        await client.query('UPDATE meeting_reviews SET pmc = $2, pmc_employee_id = $3, updated_at = NOW() WHERE artifact_id = $1', [review.artifact_id, reference.employeeName, reference.employeeId]);
+        result.reviewsTagged += 1;
+        continue;
+      }
       const projectName = review.project_name || reference.projectName;
       const contactName = review.contact_name || reference.clientName;
       const pmc = review.pmc || reference.employeeName;
+      const projectId = review.project_id || reference.projectId;
+      const contactId = review.contact_id || reference.clientId;
+      const pmcEmployeeId = review.pmc_employee_id || reference.employeeId;
       const nextConfidence = reference.matchConfidence;
-      if (review.project_id === reference.projectId && review.contact_id === reference.clientId && review.pmc_employee_id === reference.employeeId && review.project_name === projectName && review.contact_name === contactName && review.pmc === pmc && (review.directory_match_confidence || null) === nextConfidence) continue;
+      if (review.project_id === projectId && review.contact_id === contactId && review.pmc_employee_id === pmcEmployeeId && review.project_name === projectName && review.contact_name === contactName && review.pmc === pmc && (review.directory_match_confidence || null) === nextConfidence) continue;
       await client.query(
         `UPDATE meeting_reviews
          SET project_name = $2, project_id = $3, contact_name = $4, contact_id = $5, pmc = $6, pmc_employee_id = $7,
              directory_match_confidence = $8, updated_at = NOW()
          WHERE artifact_id = $1`,
-        [review.artifact_id, projectName, reference.projectId, contactName, reference.clientId, pmc, reference.employeeId, nextConfidence],
+        [review.artifact_id, projectName, projectId, contactName, contactId, pmc, pmcEmployeeId, nextConfidence],
       );
       if (reference.projectId || reference.clientId || reference.employeeId) result.reviewsTagged += 1;
     }
@@ -5643,12 +5667,13 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIden
     contactName: analysis.contactName || current.contact_name,
   };
   const fullDirectory = await loadMeetingDirectoryCandidates();
-  const identityTags = resolveMeetingDirectoryReferences({ projectName: identity.projectName, clientName: identity.contactName, employeeName: identity.pmc }, fullDirectory);
+  const identityTags = resolveMeetingPmcReferences({ projectName: identity.projectName, clientName: identity.contactName, employeeName: identity.pmc }, fullDirectory);
   if (identityTags.employeeId && !fullDirectory.some((candidate) => candidate.employee_id === identityTags.employeeId && meetingEditorRoleRank(candidate.role_in_project || candidate.employee_role) === 2)) {
     identityTags.employeeId = null;
     identityTags.employeeName = null;
     identityTags.employeeRole = null;
   }
+  identity.pmc = identity.pmc || identityTags.employeeName;
   const taggedActions = resolveMeetingActionTags(retainExplicitIncompleteActions(source, analysis.actions), fullDirectory, { projectName: identityTags.projectName || identity.projectName, pmcEmployeeId: identityTags.employeeId });
   const decisions = analysis.decisions.map((decision) => '- ' + decision).join('\n');
   const client = await pool.connect();
