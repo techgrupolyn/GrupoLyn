@@ -7,6 +7,21 @@ const source = await readFile(new URL('../../deploy/scripts/deploy.sh', import.m
 const workflow = await readFile(new URL('../../.github/workflows/quality.yml', import.meta.url), 'utf8');
 const historyDeploy = await readFile(new URL('../../deploy/scripts/deploy-global-summary.sh', import.meta.url), 'utf8');
 const historyResume = await readFile(new URL('../../deploy/scripts/resume-phone-history-2490cca.sh', import.meta.url), 'utf8');
+const securityDeploy = await readFile(new URL('../../deploy/scripts/deploy-pmc-security.sh', import.meta.url), 'utf8');
+
+test('despliegue PMC respalda, verifica integridad y limita el reemplazo a dos dependencias', () => {
+  assert.match(securityDeploy, /gitlyn diff --quiet HEAD/);
+  assert.match(securityDeploy, /createHash\('sha512'\)/);
+  assert.match(securityDeploy, /new Set\(\['', 'node_modules\/compression', 'node_modules\/proxy-addr'\]\)/);
+  assert.match(securityDeploy, /mv "\$ROOT\/\$component\/node_modules\/\$package" "\$backup\/\$component\/\$package"/);
+  assert.ok(securityDeploy.indexOf('sha256sum -c SHA256SUMS') < securityDeploy.indexOf('swapping=true'));
+  assert.match(securityDeploy, /systemctl stop lyn-backend lyn-evolution\nidle\ngitlyn merge/);
+  assert.match(securityDeploy, /gitlyn switch --detach "\$before"/);
+  assert.doesNotMatch(securityDeploy, /npm (install|ci|update)|reset --hard|rm -rf|pg_restore(?! --list)/);
+  const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash';
+  const checked = spawnSync(bash, ['-n', 'deploy/scripts/deploy-pmc-security.sh'], { encoding: 'utf8' });
+  assert.equal(checked.status, 0, checked.stderr);
+});
 
 test('reanudación OOM fija versión y respaldo, empaqueta antes de detener y no restaura datos', () => {
   assert.match(historyResume, /expected=2490ccac84936e1d86e99f639e90edb596a11079/);

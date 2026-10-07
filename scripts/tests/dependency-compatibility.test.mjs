@@ -8,6 +8,19 @@ import test from 'node:test';
 
 const require = createRequire(new URL('../../evolution-api/package.json', import.meta.url));
 
+for (const component of ['backend', 'evolution-api']) {
+  test(`${component}: HTTP usa compression y proxy-addr corregidos`, () => {
+    const runtime = createRequire(new URL(`../../${component}/package.json`, import.meta.url));
+    assert.equal(runtime('compression/package.json').version, '1.8.2');
+    assert.equal(runtime('proxy-addr/package.json').version, '2.0.8');
+    assert.equal(typeof runtime('compression')(), 'function');
+    const trust = runtime('proxy-addr').compile(['127.0.0.1/8', '::1/128']);
+    assert.equal(trust('127.0.0.1'), true);
+    assert.equal(trust('::ffff:127.0.0.1'), true);
+    assert.equal(trust('203.0.113.10'), false);
+  });
+}
+
 test('Baileys actualizado carga desde CommonJS y conserva generación de mensajes', async () => {
   const baileys = require('baileys');
   assert.equal(typeof baileys.default, 'function');

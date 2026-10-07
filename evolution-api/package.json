@@ -80,7 +80,7 @@
     "axios": "^1.7.9",
     "baileys": "7.0.0-rc14",
     "class-validator": "^0.14.1",
-    "compression": "^1.7.5",
+    "compression": "^1.8.2",
     "cors": "^2.8.5",
     "dayjs": "^1.11.13",
     "dotenv": "^16.4.7",
