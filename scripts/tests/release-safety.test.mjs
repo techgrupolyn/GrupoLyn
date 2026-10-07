@@ -12,6 +12,7 @@ const securityDeploy = await readFile(new URL('../../deploy/scripts/deploy-pmc-s
 test('despliegue PMC respalda, verifica integridad y limita el reemplazo a dos dependencias', () => {
   assert.match(securityDeploy, /gitlyn diff --quiet HEAD/);
   assert.match(securityDeploy, /createHash\('sha512'\)/);
+  assert.match(securityDeploy, /chown -R lyn:lyn "\$stage\/\$component\/\$package"/);
   assert.match(securityDeploy, /new Set\(\['', 'node_modules\/compression', 'node_modules\/proxy-addr'\]\)/);
   assert.match(securityDeploy, /mv "\$ROOT\/\$component\/node_modules\/\$package" "\$backup\/\$component\/\$package"/);
   assert.ok(securityDeploy.indexOf('sha256sum -c SHA256SUMS') < securityDeploy.indexOf('swapping=true'));

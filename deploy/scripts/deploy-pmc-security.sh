@@ -100,6 +100,7 @@ NODE
       cp -a "$ROOT/$component/node_modules/$package/node_modules" "$stage/$component/$package/node_modules"
     fi
     chmod 0755 "$stage/$component/$package"
+    chown -R lyn:lyn "$stage/$component/$package"
     NODE_PATH="$ROOT/$component/node_modules" node -e "if(typeof require('$stage/$component/$package') !== 'function') throw Error('Carga inválida')"
   done
 done
