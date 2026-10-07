@@ -71,7 +71,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
-  it.each(['miembro', 'organigrama', 'global', 'ambiguo', 'inactivo', 'manual', 'existente', 'analisis'])('completa PMC desde Club LYN de forma segura: %s', async (mode) => {
+  it.each(['miembro', 'organigrama', 'global', 'ambiguo', 'inactivo', 'manual', 'existente', 'analisis', 'con-tarea'])('completa PMC desde Club LYN de forma segura: %s', async (mode) => {
     const meeting = randomUUID();
     const project = `qa-pmc-project-${meeting}`;
     const employee = `qa-pmc-${meeting}`;
@@ -89,6 +89,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       }
       await server.pool.query("INSERT INTO google_drive_artifacts (id,connection_id,folder_id,google_file_id,name,mime_type,artifact_type,content_text) VALUES ($1::uuid,$2,$3,$1::text,'Reunión cliente','text/plain','transcript',$4)", [meeting, connectionId, folderId, `Obra: ${project}. Revisar planos.`]);
       await server.pool.query("INSERT INTO meeting_reviews (artifact_id,project_id,project_name,summary,manual_revision,pmc,pmc_employee_id) VALUES ($1,$2,$2,'Resumen conservado',$3,$4,$5)", [meeting, project, mode === 'manual' || mode === 'existente', mode === 'existente' ? 'Otro PMC' : null, mode === 'existente' ? other : null]);
+      if (mode === 'con-tarea') await server.pool.query("INSERT INTO meeting_review_actions (id,artifact_id,title,responsible) VALUES ($1,$2,'Revisar planos','Sin identificar')", [randomUUID(), meeting]);
       if (mode === 'analisis') {
         generation.mockResolvedValueOnce({ text: JSON.stringify({ summary: 'Resumen IA', identity: { project_name: project }, actions: [] }), fallback: false, provider: 'qa', model: 'stub' });
         const response = await request(server.app).post(`/api/meetings/${meeting}/analyze`).set('Authorization', authorization).send({});
@@ -101,6 +102,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       const unresolved = ['global', 'ambiguo', 'inactivo'].includes(mode);
       expect(row).toMatchObject({ project_id: project, pmc: unresolved ? null : mode === 'existente' ? 'Otro PMC' : 'PMC de Club', pmc_employee_id: unresolved ? null : mode === 'existente' ? other : employee });
       if (mode !== 'analisis') expect(row.summary).toBe('Resumen conservado');
+      if (mode === 'con-tarea') expect((await server.pool.query('SELECT project_id,responsible_id,responsible_kind FROM meeting_review_actions WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ project_id: project, responsible_id: null, responsible_kind: null });
       if (mode === 'manual' || mode === 'existente') expect(row.manual_revision).toBe(true);
       await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({});
       expect((await server.pool.query('SELECT pmc,pmc_employee_id FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ pmc: row.pmc, pmc_employee_id: row.pmc_employee_id });

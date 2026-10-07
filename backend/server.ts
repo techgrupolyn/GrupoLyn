@@ -5062,7 +5062,7 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
       await client.query(
         `UPDATE meeting_review_actions
          SET project_name = $2, project_id = $3, responsible = $4, responsible_id = $5,
-             responsible_kind = CASE WHEN $5 IS NULL THEN NULL ELSE 'employee' END,
+             responsible_kind = CASE WHEN $5::varchar IS NULL THEN NULL ELSE 'employee' END,
              responsible_role = $6, responsible_source = 'automatic', match_confidence = $7, updated_at = NOW()
          WHERE id = $1`,
         [action.id, projectName, projectId, responsible, effectiveReference.employeeId, effectiveReference.employeeRole, nextConfidence],
