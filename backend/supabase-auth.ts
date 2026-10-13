@@ -1,3 +1,5 @@
+import { requestWithDeadline } from './request-deadline.ts';
+
 export type SupabaseAuthConfig = {
   url: string;
   key: string;
@@ -19,6 +21,30 @@ type FetchResponse = {
 type FetchImplementation = (input: string | URL, init?: RequestInit) => Promise<FetchResponse>;
 
 export class SupabaseAuthServiceError extends Error {}
+
+export async function authenticateWithSupabaseAccessToken(
+  token: string,
+  config: SupabaseAuthConfig = supabaseAuthConfigFromEnv(),
+  fetchImplementation: FetchImplementation = fetch,
+): Promise<SupabaseAuthenticatedUser | null> {
+  if (!isSupabaseAuthConfigured(config) || !token || token.length > 16384) return null;
+  try {
+    return await requestWithDeadline(async (signal) => {
+      const response = await fetchImplementation(new URL('/auth/v1/user', `${config.url}/`), {
+        method: 'GET',
+        headers: { apikey: config.key, Authorization: `Bearer ${token}` },
+        signal,
+      });
+      if ([400, 401, 403].includes(response.status)) return null;
+      if (!response.ok) throw new SupabaseAuthServiceError('Supabase no está disponible');
+      const user = await response.json();
+      if (!(user as { email_confirmed_at?: string } | null)?.email_confirmed_at) return null;
+      return readUser({ user });
+    }, 10000);
+  } catch {
+    throw new SupabaseAuthServiceError('No se pudo verificar la sesión de Club LYN');
+  }
+}
 
 export function supabaseAuthConfigFromEnv(env = process.env): SupabaseAuthConfig {
   return {

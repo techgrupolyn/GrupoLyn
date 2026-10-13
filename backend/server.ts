@@ -12,7 +12,8 @@ import { callGeminiWithPrompt, callGeminiWithPromptResult, resolveSpecialist, se
 import { canExtractGoogleDriveText, classifyGoogleDriveArtifact, decryptGoogleDriveSecret, encryptGoogleDriveSecret, parseGoogleDriveFolderId } from './google-drive.ts';
 import { iterateGoogleDriveFolderFiles, type GoogleDriveFile } from './google-drive-sync.ts';
 import { meetingDirectoryContext, syncSupabaseDirectory, supabaseDirectoryConfigFromEnv, type MeetingDirectoryCandidate } from './supabase-directory.ts';
-import { authenticateWithSupabasePassword, isSupabaseAuthConfigured, supabaseAuthConfigFromEnv, SupabaseAuthServiceError } from './supabase-auth.ts';
+import { authenticateWithSupabasePassword, authenticateWithSupabaseAccessToken, isSupabaseAuthConfigured, supabaseAuthConfigFromEnv, SupabaseAuthServiceError, type SupabaseAuthenticatedUser } from './supabase-auth.ts';
+import { createClubSsoRouter } from './club-sso.ts';
 import { Readable } from 'stream';
 import { unwrapWhatsAppContent, nonTextWhatsAppKind } from './whatsapp-content.ts';
 import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from './meeting-organizer.ts';
@@ -153,6 +154,17 @@ function isAllowedOrigin(origin?: string): boolean {
   return allowedOrigins.has(origin) || isAllowedExtensionOrigin(origin);
 }
 app.set('trust proxy', 1);
+app.use('/api/auth/club-sso', express.json({ limit: '20kb' }), createClubSsoRouter({
+  clubOrigin: process.env.CLUB_LYN_SSO_ORIGIN || '',
+  dashboardOrigin: process.env.DASHBOARD_SSO_ORIGIN || '',
+  authenticate: (token) => authenticateWithSupabaseAccessToken(token, SUPABASE_AUTH_CONFIG),
+  resolveUser: async (remoteUser) => {
+    const user = await resolveSupabaseIdentity(remoteUser);
+    if (!user || !isCeoMeetingAccessRole(user.rol)) return null;
+    return { id: user.id, usuario: user.usuario, nombre: user.nombre, rol: user.rol };
+  },
+  createToken: createCeoToken,
+}));
 app.use(cors({
   origin(origin, callback) {
     callback(null, isAllowedOrigin(origin));
@@ -7357,6 +7369,11 @@ async function resolveSupabaseDashboardUser(identifier: string, password: string
   const remoteUser = await authenticateWithSupabasePassword(email, password, SUPABASE_AUTH_CONFIG);
   if (!remoteUser) return null;
 
+  return resolveSupabaseIdentity(remoteUser);
+}
+
+async function resolveSupabaseIdentity(remoteUser: SupabaseAuthenticatedUser): Promise<CeoUserRow | null> {
+
   const employee = await pool.query<DirectoryLoginProfile>(
     `SELECT e.id, CONCAT_WS(' ', e.nombre, e.apellido) AS nombre, COALESCE(org_cargo.nombre, MIN(r.id)) AS role_id
      FROM empleados e
@@ -7387,13 +7404,14 @@ async function resolveSupabaseDashboardUser(identifier: string, password: string
 
   const role = employee.rows[0] ? dashboardRoleFromOrgPosition(profile.role_id) : 'consulta_publica';
   const displayName = remoteUser.name || profile.nombre || remoteUser.email;
-  const existing = await pool.query<CeoUserRow>(
-    `SELECT id, usuario, nombre, rol, password_hash FROM usuarios
-     WHERE auth_provider = 'supabase' AND external_auth_user_id = $1 AND activo = TRUE`,
+  const existing = await pool.query<CeoUserRow & { activo: boolean }>(
+    `SELECT id, usuario, nombre, rol, password_hash, activo FROM usuarios
+     WHERE auth_provider = 'supabase' AND external_auth_user_id = $1`,
     [remoteUser.id],
   );
   if (existing.rows[0]) {
     const current = existing.rows[0];
+    if (!current.activo) return null;
     const updated = await pool.query<CeoUserRow>(
       `UPDATE usuarios SET nombre = $2, email = $3, rol = $4, activo = TRUE WHERE id = $1
        RETURNING id, usuario, nombre, rol, password_hash`,
