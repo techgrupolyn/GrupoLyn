@@ -48,3 +48,25 @@ describe('Mis pendientes para usuarios limitados', () => {
     expect(new URLSearchParams(window.location.search).get('view')).toBe('work');
   });
 });
+
+describe('Netelip · visibilidad en la barra lateral', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: vi.fn() });
+    api.meetings.workItems.mockResolvedValue({ items: [], unread: 0, total: 0, actions: 0, reviews: 0 });
+  });
+
+  it.each(['superadmin', 'admin', 'employee:director'])('muestra Historial de llamadas a %s', async (rol) => {
+    window.history.replaceState({}, '', '/?view=work');
+    render(<CEOApp user={{ usuario: 'qa', rol }} />);
+    expect(await screen.findByRole('button', { name: 'Historial de llamadas' })).toBeInTheDocument();
+  });
+
+  it.each(['employee:direccion_de_operaciones', 'ceo'])('lo oculta a %s y no abre la vista desde la URL', async (rol) => {
+    window.history.replaceState({}, '', '/?view=netelip');
+    render(<CEOApp user={{ usuario: 'qa', rol }} />);
+    await waitFor(() => expect(window.location.search).not.toContain('view=netelip'));
+    expect(screen.queryByRole('button', { name: 'Historial de llamadas' })).not.toBeInTheDocument();
+    expect(screen.queryByText('NETELIP', { exact: false })).not.toBeInTheDocument();
+  });
+});

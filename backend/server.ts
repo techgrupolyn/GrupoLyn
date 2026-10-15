@@ -18,6 +18,7 @@ import { Readable } from 'stream';
 import { unwrapWhatsAppContent, nonTextWhatsAppKind } from './whatsapp-content.ts';
 import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from './meeting-organizer.ts';
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
+import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
 import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryMessagesReviewed, createSummaryQueue, publicSummaryJob, summaryJobStorage, SummaryJobError, type SummaryJob } from './summary-jobs.ts';
 import { generateBatchedGlobalSummary } from './global-summary-batches.ts';
 import { evolutionHistoryPages } from './evolution-history.ts';
@@ -121,6 +122,7 @@ async function runSupabaseDirectorySync(): Promise<unknown> {
   supabaseDirectorySyncPromise = syncSupabaseDirectory(pool, supabaseDirectoryConfigFromEnv())
     .then(async (result) => {
       const tagged = await backfillMeetingDirectoryTags();
+      netelipWorkers.relink();
       console.log(`[supabase-directory] Sincronizados ${result.profiles} perfiles, ${result.projects} proyectos y ${result.assignments} asignaciones`);
       publish('directory-sync', { ...result, tagged });
       return { ...result, tagged };
@@ -980,6 +982,7 @@ async function ensureDatabaseSchema(): Promise<void> {
   const defaultPasswordHash = hashPassword(process.env.CEO_INITIAL_PASSWORD || 'superadmin');
   await ensureDashboardOperations(pool);
   await ensureSummaryJobs(pool);
+  await ensureNetelipCalls(pool);
   await ensureWhatsAppReliability(pool);
   await pool.query(
     `INSERT INTO usuarios (usuario, contraseña, password_hash, nombre, rol)
@@ -8743,13 +8746,19 @@ async function bootstrap() {
   setInterval(() => void retryReceipts(), 5_000).unref();
   void runSummaryQueue();
   setInterval(() => void runSummaryQueue(), 5_000).unref();
+  if (process.env.NETELIP_WORKERS_ENABLED !== 'false') netelipWorkers.start();
   if (EVOLUTION_BACKGROUND_SYNC_ENABLED) await bootEvolution();
 }
 
 const isTestEnv = process.env.NODE_ENV === 'test';
+const netelipWorkers = createNetelipWorkers(pool);
+registerNetelipCalls(app, {
+  pool, admin: requireCeoAuth, kick: netelipWorkers.kick,
+  role: (res) => String((res.locals.ceoSession as CeoSession | undefined)?.rol || ''),
+});
 registerDashboardOperations(app, {
   pool, admin: requireCeoAuth, actor: meetingAuditActor, identity: meetingAuditIdentity,
-  audit: setMeetingAuditContext, publish,
+  audit: setMeetingAuditContext, publish, onLeadSaved: netelipWorkers.relink,
   nextStage: async (artifactId, currentStage) => {
     const order = await meetingWorkflowOrder(artifactId);
     const index = order.findIndex(([stage]) => stage === currentStage);

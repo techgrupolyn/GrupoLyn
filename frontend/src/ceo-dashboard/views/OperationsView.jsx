@@ -10,11 +10,13 @@ const stages = { delineante: 'Delineante', pmc: 'PMC / Jefe de proyectos', opera
 const leadStates = { new: 'Nuevo', contacted: 'Contactado', qualified: 'Cualificado', won: 'Ganado', lost: 'Descartado' };
 const fullName = (person) => [person.nombre, person.apellido].filter(Boolean).join(' ');
 
-export default function OperationsView({ mode = 'organigrama', onOpenMeeting = () => {} }) {
+export default function OperationsView({ mode = 'organigrama', initialQuery = '', onInitialQueryUsed = () => {}, onOpenMeeting = () => {} }) {
   const [data, setData] = useState([]);
   const [organization, setOrganization] = useState({ positions: [], assignments: [] });
   const [directory, setDirectory] = useState({ employees: [], clients: [], projects: [] });
-  const [query, setQuery] = useState('');
+  // Al llegar desde otra vista (p. ej. el enlace a la ficha de Historial de llamadas) se filtra por ese nombre.
+  const [query, setQuery] = useState(initialQuery);
+  useEffect(() => { if (initialQuery) onInitialQueryUsed(); }, []);
   const [project, setProject] = useState('all');
   const [page, setPage] = useState(1);
   const [error, setError] = useState('');

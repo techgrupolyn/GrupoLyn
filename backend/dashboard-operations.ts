@@ -33,6 +33,8 @@ type Dependencies = {
   audit: (client: PoolClient, identity: { id: string; role: string }, artifactId?: string) => Promise<void>;
   nextStage: (artifactId: string, currentStage: string) => Promise<{ stage: string; label: string } | null>;
   publish: (name: string, payload: Record<string, unknown>) => void;
+  /** Re-vincula las llamadas de Netelip con el teléfono del lead guardado. */
+  onLeadSaved?: () => void;
 };
 
 export function registerDashboardOperations(app: Express, deps: Dependencies): void {
@@ -173,7 +175,7 @@ export function registerDashboardOperations(app: Express, deps: Dependencies): v
       const result=await client.query(`INSERT INTO crm_leads(id,name,email,phone,status,client_id,notes) VALUES($1,$2,$3,$4,$5,$6,$7)
         ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,status=EXCLUDED.status,client_id=EXCLUDED.client_id,notes=EXCLUDED.notes,updated_at=NOW() RETURNING *`,[id,name,email || null,String(body.phone || '').trim().slice(0,80),body.status,body.client_id || null,String(body.notes || '').slice(0,5000)]);
       await record(client,res,'lead',id,previous.rows[0] || null,result.rows[0]);
-      await client.query('COMMIT');res.json(result.rows[0]);
+      await client.query('COMMIT');deps.onLeadSaved?.();res.json(result.rows[0]);
     } catch(error){fail(res,error);}finally{await client.query('ROLLBACK').catch(()=>undefined);client.release();}
   });
   app.get('/api/crm/identities',admin,async(_req,res)=>{
