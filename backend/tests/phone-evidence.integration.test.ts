@@ -9,7 +9,8 @@ describe.skipIf(!databaseUrl)('Evidencia WhatsApp en PostgreSQL QA local', () =>
   let lookup: ReturnType<typeof createPhoneEvidenceLookup>;
   beforeAll(async () => {
     const url = new URL(databaseUrl!);
-    if (url.hostname !== '127.0.0.1' || url.port !== '15439' || url.pathname !== '/lyn_qa_retest') throw new Error('Solo QA local');
+    const localPort = url.port === '15439' || (process.env.CI === 'true' && url.port === '5432');
+    if (url.hostname !== '127.0.0.1' || !localPort || url.pathname !== '/lyn_qa_retest') throw new Error('Solo QA local');
     pool = new Pool({ connectionString: databaseUrl, max: 1 });
     await pool.query(`CREATE TEMP TABLE whatsapp_accounts(id varchar PRIMARY KEY, activo boolean);
       CREATE TEMP TABLE chats(id varchar PRIMARY KEY, account_id varchar, nombre varchar);
