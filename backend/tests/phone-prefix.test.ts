@@ -22,7 +22,8 @@ describe('Prefijo inferido de remitentes verificados', () => {
   });
   it('reutiliza durante un minuto la lista leída en transacción de solo lectura', async () => {
     const query = vi.fn().mockImplementation(async (sql: string) =>
-      sql === phonePrefixCandidatesQuery ? { rows: [{ sender: '34600123456' }] } : { rows: [] });
+      sql === phonePrefixCandidatesQuery ? { rows: [{ sender: '34600123456' }] } :
+        sql.includes('AS fresh') ? { rows: [{ fresh: true }] } : { rows: [] });
     const release = vi.fn();
     const connect = vi.fn().mockResolvedValue({ query, release });
     let now = 1000;
@@ -33,7 +34,7 @@ describe('Prefijo inferido de remitentes verificados', () => {
     now += 60001;
     expect(await infer('600123456', ['allowed'])).toBe('+34600123456');
     expect(connect).toHaveBeenCalledTimes(2);
-    expect(query.mock.calls[2][1]).toEqual([['allowed']]);
+    expect(query.mock.calls[3][1]).toEqual([['allowed']]);
     expect(release).toHaveBeenCalledTimes(2);
   });
 });

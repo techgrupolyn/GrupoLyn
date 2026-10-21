@@ -13,6 +13,16 @@ export type PhoneEvidence = { project: string; last_message_at: string };
 type EvidenceRow = { project: string; last_message_at: Date | string };
 type EvidenceDatabase = Pick<Pool, 'connect'>;
 
+export const phoneDirectoryFreshnessQuery = `SELECT EXISTS (
+  SELECT 1 FROM directory_sync_runs
+  WHERE source='supabase' AND status='success' AND finished_at>=NOW()-INTERVAL '2 hours'
+) AS fresh`;
+
+export async function assertPhoneDirectoryFresh(client: { query: (sql: string) => Promise<{ rows: { fresh: boolean }[] }> }): Promise<void> {
+  const { rows } = await client.query(phoneDirectoryFreshnessQuery);
+  if (!rows[0]?.fresh) throw new Error('Employee directory unavailable');
+}
+
 export function phoneEvidenceConfigFromEnv(env: NodeJS.ProcessEnv = process.env): PhoneEvidenceConfig {
   return {
     enabled: env.CLUB_PHONE_EVIDENCE_ENABLED === 'true',
@@ -25,6 +35,20 @@ export const phoneEvidenceSenderPrefilter = `
     AND CASE WHEN message.remitente_jid ~ '^[1-9][0-9]{7,14}(:[0-9]+)?@(s[.]whatsapp[.]net|c[.]us)$'
       THEN regexp_replace(split_part(message.remitente_jid, '@', 1), ':[0-9]+$', '')=$1
       ELSE TRUE END`;
+
+export const phoneEvidenceDirectoryGuard = `
+    AND EXISTS (
+      SELECT 1 FROM directory_sync_runs sync
+      WHERE sync.source='supabase' AND sync.status='success'
+        AND sync.finished_at>=NOW()-INTERVAL '2 hours'
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM empleados employee
+      WHERE employee.numero IS NOT NULL AND employee.synced_at>=NOW()-INTERVAL '2 hours'
+        AND length(regexp_replace(employee.numero,'[^0-9]','','g')) BETWEEN 8 AND 15
+        AND right($1, length(regexp_replace(employee.numero,'[^0-9]','','g')))
+          =regexp_replace(employee.numero,'[^0-9]','','g')
+    )`;
 
 export const phoneEvidenceReferenceQuery = `
   SELECT regexp_replace(chat.nombre, '^Proyecto[[:space:]]+', '') AS project,
@@ -52,6 +76,7 @@ export const phoneEvidenceReferenceQuery = `
     AND COALESCE(message.raw#>>'{key,fromMe}', 'false')='false'
     AND chat.id LIKE '%@g.us'
     AND chat.nombre ~ '^Proyecto[[:space:]]+[^[:space:]]'
+    ${phoneEvidenceDirectoryGuard}
     ${phoneEvidenceSenderPrefilter}
     AND cardinality(sender.phones)=1 AND sender.phones[1]=$1
     AND message.timestamp>to_timestamp(0) AND message.timestamp<=NOW()
@@ -74,6 +99,7 @@ export const phoneEvidenceQuery = `
     AND message.source='evolution'
     AND chat.id LIKE '%@g.us'
     AND chat.nombre ~ '^Proyecto[[:space:]]+[^[:space:]]'
+    ${phoneEvidenceDirectoryGuard}
     AND public.lyn_phone_evidence_sender_v1(message.remitente_jid, message.raw)=$1
     AND message.timestamp>to_timestamp(0) AND message.timestamp<=NOW()
     AND (
@@ -90,6 +116,7 @@ export function createPhoneEvidenceLookup(pool: EvidenceDatabase) {
     try {
       await client.query('BEGIN READ ONLY');
       await client.query("SET LOCAL statement_timeout='5s'");
+      await assertPhoneDirectoryFresh(client);
       const { rows } = await client.query<EvidenceRow>(phoneEvidenceQuery, [phone.slice(1), accountIds]);
       await client.query('COMMIT');
       const row = rows[0];

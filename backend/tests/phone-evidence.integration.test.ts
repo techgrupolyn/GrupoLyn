@@ -15,14 +15,17 @@ describe.skipIf(!databaseUrl)('Evidencia WhatsApp en PostgreSQL QA local', () =>
     await pool.query(`CREATE TEMP TABLE whatsapp_accounts(id varchar PRIMARY KEY, activo boolean);
       CREATE TEMP TABLE chats(id varchar PRIMARY KEY, account_id varchar, nombre varchar);
       CREATE TEMP TABLE mensajes(id varchar PRIMARY KEY,chat_id varchar,account_id varchar,remitente_jid varchar,
-        raw jsonb,enviado_por_mi boolean,source varchar,tipo varchar,texto text,timestamp timestamptz);`);
+        raw jsonb,enviado_por_mi boolean,source varchar,tipo varchar,texto text,timestamp timestamptz);
+      CREATE TEMP TABLE empleados(id varchar PRIMARY KEY,numero varchar,synced_at timestamptz);
+      CREATE TEMP TABLE directory_sync_runs(source varchar,status varchar,finished_at timestamptz);`);
     await pool.query(await readFile(new URL('../migrations/20261020_phone_evidence_sender.sql', import.meta.url), 'utf8'));
     await pool.query((await readFile(new URL('../migrations/20261020_phone_evidence_index.sql', import.meta.url), 'utf8'))
       .replace(' CONCURRENTLY', '').replace('ON public.mensajes', 'ON mensajes'));
     lookup = createPhoneEvidenceLookup(pool);
   });
   beforeEach(async () => {
-    await pool.query(`TRUNCATE mensajes,chats,whatsapp_accounts;
+    await pool.query(`TRUNCATE mensajes,chats,whatsapp_accounts,empleados,directory_sync_runs;
+      INSERT INTO directory_sync_runs VALUES('supabase','success',NOW());
       INSERT INTO whatsapp_accounts VALUES ('allowed',TRUE),('foreign',TRUE),('inactive',FALSE);
       INSERT INTO chats VALUES ('allowed::1@g.us','allowed','Proyecto Dana'),
         ('foreign::1@g.us','foreign','Proyecto Privado'),('inactive::1@g.us','inactive','Proyecto Inactivo'),
@@ -33,6 +36,14 @@ describe.skipIf(!databaseUrl)('Evidencia WhatsApp en PostgreSQL QA local', () =>
   afterAll(async () => { if (pool) await pool.end(); });
   it('verifica un mensaje antiguo y devuelve solo proyecto y fecha', async () => {
     expect(await lookup('+34600123456', ['allowed'])).toEqual({ project: 'Dana', last_message_at: '2025-01-01T10:00:00.000Z' });
+  });
+  it('no verifica teléfonos de empleados, aunque escriban en un grupo Proyecto', async () => {
+    await pool.query("INSERT INTO empleados VALUES('employee','600123456',NOW())");
+    expect(await lookup('+34600123456', ['allowed'])).toBeNull();
+  });
+  it('suspende la verificación si el directorio de roles está desactualizado', async () => {
+    await pool.query("UPDATE directory_sync_runs SET finished_at=NOW()-INTERVAL '3 hours'");
+    await expect(lookup('+34600123456', ['allowed'])).rejects.toThrow('Employee directory unavailable');
   });
   it('elige el último mensaje y su proyecto, no el primer grupo', async () => {
     await pool.query(`INSERT INTO chats VALUES('allowed::3@g.us','allowed','Proyecto Otro');

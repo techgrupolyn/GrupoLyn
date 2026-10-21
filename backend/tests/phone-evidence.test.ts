@@ -141,19 +141,19 @@ describe('API privada de evidencia telefónica', () => {
     expect(test.lookup).toHaveBeenCalledTimes(60);
   });
   it('acota la consulta, usa parámetros y revierte/libera ante error', async () => {
-    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const query = vi.fn().mockImplementation(async (sql: string) => ({ rows: sql.includes('AS fresh') ? [{ fresh: true }] : [] }));
     const release = vi.fn();
     const connect = vi.fn().mockResolvedValue({ query, release });
     const lookup = createPhoneEvidenceLookup({ connect } as unknown as Parameters<typeof createPhoneEvidenceLookup>[0]);
     await lookup('+34600123456', ['allowed']);
     expect(query.mock.calls[0][0]).toBe('BEGIN READ ONLY');
     expect(query.mock.calls[1][0]).toContain("statement_timeout='5s'");
-    expect(query.mock.calls[2][1]).toEqual(['34600123456', ['allowed']]);
-    expect(query.mock.calls[3][0]).toBe('COMMIT');
+    expect(query.mock.calls[3][1]).toEqual(['34600123456', ['allowed']]);
+    expect(query.mock.calls[4][0]).toBe('COMMIT');
     query.mockClear();
-    query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] }).mockRejectedValueOnce(new Error('query failed'));
+    query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ fresh: true }] }).mockRejectedValueOnce(new Error('query failed'));
     await expect(lookup('+34600123456', ['allowed'])).rejects.toThrow('query failed');
-    expect(query.mock.calls[3][0]).toBe('ROLLBACK');
+    expect(query.mock.calls[4][0]).toBe('ROLLBACK');
     expect(release).toHaveBeenCalledTimes(2);
     await expect(lookup('+34600123456', [])).rejects.toThrow('Invalid evidence scope');
     expect(connect).toHaveBeenCalledTimes(2);
