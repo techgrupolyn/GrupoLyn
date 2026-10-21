@@ -14,6 +14,7 @@ import { iterateGoogleDriveFolderFiles, type GoogleDriveFile } from './google-dr
 import { meetingDirectoryContext, syncSupabaseDirectory, supabaseDirectoryConfigFromEnv, type MeetingDirectoryCandidate } from './supabase-directory.ts';
 import { authenticateWithSupabasePassword, authenticateWithSupabaseAccessToken, isSupabaseAuthConfigured, supabaseAuthConfigFromEnv, SupabaseAuthServiceError, type SupabaseAuthenticatedUser } from './supabase-auth.ts';
 import { createClubSsoRouter } from './club-sso.ts';
+import { createPhoneEvidenceLookup, createPhoneEvidenceRouter, phoneEvidenceConfigFromEnv } from './phone-evidence.ts';
 import { Readable } from 'stream';
 import { unwrapWhatsAppContent, nonTextWhatsAppKind } from './whatsapp-content.ts';
 import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from './meeting-organizer.ts';
@@ -175,6 +176,7 @@ app.use(cors({
 }));
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(compression());
+app.use('/api/integrations/club-lyn/phone-evidence', createPhoneEvidenceRouter(phoneEvidenceConfigFromEnv(), createPhoneEvidenceLookup(pool)));
 app.use(express.json({ limit: '10mb' }));
 
 const limiter = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false,
