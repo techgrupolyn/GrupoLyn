@@ -15,6 +15,7 @@ import { meetingDirectoryContext, syncSupabaseDirectory, supabaseDirectoryConfig
 import { authenticateWithSupabasePassword, authenticateWithSupabaseAccessToken, isSupabaseAuthConfigured, supabaseAuthConfigFromEnv, SupabaseAuthServiceError, type SupabaseAuthenticatedUser } from './supabase-auth.ts';
 import { createClubSsoRouter } from './club-sso.ts';
 import { createPhoneEvidenceLookup, createPhoneEvidenceRouter, phoneEvidenceConfigFromEnv } from './phone-evidence.ts';
+import { createPhonePrefixInference } from './phone-prefix.ts';
 import { Readable } from 'stream';
 import { unwrapWhatsAppContent, nonTextWhatsAppKind } from './whatsapp-content.ts';
 import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from './meeting-organizer.ts';
@@ -176,7 +177,7 @@ app.use(cors({
 }));
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(compression());
-app.use('/api/integrations/club-lyn/phone-evidence', createPhoneEvidenceRouter(phoneEvidenceConfigFromEnv(), createPhoneEvidenceLookup(pool)));
+app.use('/api/integrations/club-lyn/phone-evidence', createPhoneEvidenceRouter(phoneEvidenceConfigFromEnv(), createPhoneEvidenceLookup(pool), createPhonePrefixInference(pool)));
 app.use(express.json({ limit: '10mb' }));
 
 const limiter = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false,

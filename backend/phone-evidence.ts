@@ -103,7 +103,8 @@ export function createPhoneEvidenceLookup(pool: EvidenceDatabase) {
   };
 }
 
-export function createPhoneEvidenceRouter(config: PhoneEvidenceConfig, lookup: (phone: string, accountIds: string[]) => Promise<PhoneEvidence | null>) {
+export function createPhoneEvidenceRouter(config: PhoneEvidenceConfig, lookup: (phone: string, accountIds: string[]) => Promise<PhoneEvidence | null>,
+  inferPrefix: (phone: string, accountIds: string[]) => Promise<string | null> = async () => null) {
   const router = express.Router();
   const accountIds = [...config.accountIds];
   const tokenHash = createHash('sha256').update(config.token).digest();
@@ -132,13 +133,31 @@ export function createPhoneEvidenceRouter(config: PhoneEvidenceConfig, lookup: (
       res.status(400).json({ code: 'invalid_request' }); return;
     }
     let normalized: ReturnType<typeof normalizePhone>;
+    let inferred = false;
     try {
       normalized = normalizePhone(req.body.phone, req.body.country);
     } catch (error) {
-      res.status(422).json({ code: error instanceof PhoneNormalizationError ? error.code : 'invalid_phone' }); return;
+      if (!(error instanceof PhoneNormalizationError) || error.code !== 'country_required') {
+        res.status(422).json({ code: error instanceof PhoneNormalizationError ? error.code : 'invalid_phone' }); return;
+      }
+      try {
+        const candidate = await inferPrefix(req.body.phone, accountIds);
+        if (candidate) {
+          normalized = normalizePhone(candidate);
+          inferred = true;
+        } else {
+          const digits = req.body.phone.replace(/[\s().-]/g, '');
+          normalized = normalizePhone(digits.startsWith('34') && digits.length === 11 ? `+${digits}` : req.body.phone, 'ES');
+        }
+      } catch (error) {
+        if (error instanceof PhoneNormalizationError) { res.status(422).json({ code: 'country_required' }); return; }
+        res.setHeader('Retry-After', '60');
+        res.status(503).json({ code: 'evidence_unavailable' }); return;
+      }
     }
     try {
       const evidence = await lookup(normalized.phone, accountIds);
+      if (inferred && !evidence) { res.setHeader('Retry-After', '60'); res.status(503).json({ code: 'evidence_unavailable' }); return; }
       res.json({
         ...normalized,
         verified: Boolean(evidence),

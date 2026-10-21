@@ -6,12 +6,13 @@ import { normalizePhone } from '../phone-normalization.ts';
 
 const token = 'local-test-only-'.repeat(4);
 const path = '/api/integrations/club-lyn/phone-evidence';
-function setup(overrides: Partial<PhoneEvidenceConfig> = {}) {
+function setup(overrides: Partial<PhoneEvidenceConfig> = {}, inferredPhone: string | null = null) {
   const lookup = vi.fn().mockResolvedValue({ project: 'Dana', last_message_at: '2026-01-15T10:00:00.000Z', texto: 'must never leave the server' });
+  const infer = vi.fn().mockResolvedValue(inferredPhone);
   const app = express();
-  app.use(path, createPhoneEvidenceRouter({ enabled: true, token, accountIds: ['authorized'], ...overrides }, lookup));
+  app.use(path, createPhoneEvidenceRouter({ enabled: true, token, accountIds: ['authorized'], ...overrides }, lookup, infer));
   const client = request(app);
-  return { lookup, client, send: (body: unknown) => client.post(path).set('Authorization', `Bearer ${token}`).send(body) };
+  return { lookup, infer, client, send: (body: unknown) => client.post(path).set('Authorization', `Bearer ${token}`).send(body) };
 }
 
 describe('Normalización sin adivinar el país', () => {
@@ -89,7 +90,31 @@ describe('API privada de evidencia telefónica', () => {
     expect(failed.body).toEqual({ code: 'evidence_unavailable' });
     expect(failed.headers['retry-after']).toBe('60');
   });
-  it.each([{ phone: '600123456' }, { phone: '+34 12' }, { phone: '+584121234567', country: 'ES' }])('no busca entradas que requieren corrección %j', async body => {
+  it('infiere un prefijo únicamente con un remitente único y evidencia vigente', async () => {
+    const test = setup({}, '+34600123456');
+    const result = await test.send({ phone: '600 123 456' });
+    expect(test.infer).toHaveBeenCalledWith('600 123 456', ['authorized']);
+    expect(test.lookup).toHaveBeenCalledWith('+34600123456', ['authorized']);
+    expect(result.body).toMatchObject({ phone: '+34600123456', verified: true, reason: 'message_found', project: 'Dana' });
+    test.lookup.mockResolvedValueOnce(null);
+    expect((await test.send({ phone: '600 123 456' })).status).toBe(503);
+  });
+  it('usa España sin verificar cuando no hay remitente y no lo hace si falla la consulta', async () => {
+    const test = setup();
+    test.lookup.mockResolvedValueOnce(null);
+    const absent = await test.send({ phone: '600 123 456' });
+    expect(absent.status).toBe(200);
+    expect(absent.body).toMatchObject({ phone: '+34600123456', country: 'ES', verified: false, reason: 'no_evidence' });
+    expect(test.lookup).toHaveBeenCalledWith('+34600123456', ['authorized']);
+    test.lookup.mockResolvedValueOnce(null);
+    const prefixed = await test.send({ phone: '34600123456' });
+    expect(prefixed.body).toMatchObject({ phone: '+34600123456', verified: false, reason: 'no_evidence' });
+    test.infer.mockRejectedValueOnce(new Error('private database details'));
+    const failed = await test.send({ phone: '600 123 456' });
+    expect(failed.status).toBe(503);
+    expect(failed.body).toEqual({ code: 'evidence_unavailable' });
+  });
+  it.each([{ phone: '04121234567' }, { phone: '+34 12' }, { phone: '+584121234567', country: 'ES' }])('no busca entradas que requieren corrección %j', async body => {
     const test = setup();
     expect((await test.send(body)).status).toBe(422);
     expect(test.lookup).not.toHaveBeenCalled();
