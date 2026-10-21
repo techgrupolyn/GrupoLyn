@@ -174,7 +174,14 @@ export function createPhoneEvidenceRouter(config: PhoneEvidenceConfig, lookup: (
           inferred = true;
         } else {
           const digits = req.body.phone.replace(/[\s().-]/g, '');
-          normalized = normalizePhone(digits.startsWith('34') && digits.length === 11 ? `+${digits}` : req.body.phone, 'ES');
+          const fallback = digits.startsWith('34') && digits.length === 11 ? `+${digits}` : `+34${digits}`;
+          if (!/^\+[1-9][0-9]{7,14}$/.test(fallback)) throw new PhoneNormalizationError('invalid_phone');
+          try {
+            normalized = normalizePhone(fallback);
+          } catch (normalizationError) {
+            if (!(normalizationError instanceof PhoneNormalizationError) || normalizationError.code !== 'invalid_phone') throw normalizationError;
+            normalized = { phone: fallback, country: 'ES', calling_code: '+34' };
+          }
         }
       } catch (error) {
         if (error instanceof PhoneNormalizationError) { res.status(422).json({ code: 'country_required' }); return; }

@@ -114,7 +114,16 @@ describe('API privada de evidencia telefónica', () => {
     expect(failed.status).toBe(503);
     expect(failed.body).toEqual({ code: 'evidence_unavailable' });
   });
-  it.each([{ phone: '04121234567' }, { phone: '+34 12' }, { phone: '+584121234567', country: 'ES' }])('no busca entradas que requieren corrección %j', async body => {
+  it('antepone +34 solo cuando no hay prefijo detectable, aunque el nacional no sea válido en España', async () => {
+    const test = setup();
+    test.lookup.mockResolvedValueOnce(null);
+    const result = await test.send({ phone: '0412 1234567' });
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ phone: '+3404121234567', country: 'ES', verified: false, reason: 'no_evidence' });
+    expect(test.lookup).toHaveBeenCalledWith('+3404121234567', ['authorized']);
+    expect((await test.send({ phone: '+584121234567' })).body.phone).toBe('+584121234567');
+  });
+  it.each([{ phone: '123456789012345' }, { phone: '+34 12' }, { phone: '+584121234567', country: 'ES' }])('no busca entradas que requieren corrección %j', async body => {
     const test = setup();
     expect((await test.send(body)).status).toBe(422);
     expect(test.lookup).not.toHaveBeenCalled();
