@@ -2,6 +2,8 @@
 
 Ticket ClickUp **869fcamvx** y subtareas. Código en `backend/netelip/` y vista **Netelip › Historial de llamadas** en `frontend/src/ceo-dashboard/views/NetelipCallsView.jsx`.
 
+Pruebas en local con Linphone (QA): [NETELIP_PRUEBAS_LOCALES_LINPHONE.md](NETELIP_PRUEBAS_LOCALES_LINPHONE.md).
+
 ## Cómo funciona
 
 ```text
