@@ -6,6 +6,7 @@ import api from '../src/ceo-dashboard/api';
 
 vi.mock('../src/ceo-dashboard/api', () => ({ default: {
   meetings: { workItems: vi.fn(), markWorkItemsRead: vi.fn() },
+  netelip: { calls: vi.fn(), filterOptions: vi.fn() },
 } }));
 vi.mock('../src/ceo-dashboard/views/MeetingManagementView', () => ({ default: ({ openMeetingId }) => <div data-testid="meetings">Reuniones {openMeetingId}</div> }));
 
@@ -46,5 +47,27 @@ describe('Mis pendientes para usuarios limitados', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Ver todo' }));
     expect(await screen.findByText('Revisar reunión QA')).toBeInTheDocument();
     expect(new URLSearchParams(window.location.search).get('view')).toBe('work');
+  });
+});
+
+describe('Netelip · visibilidad en la barra lateral', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: vi.fn() });
+    api.meetings.workItems.mockResolvedValue({ items: [], unread: 0, total: 0, actions: 0, reviews: 0 });
+  });
+
+  it.each(['superadmin', 'admin', 'employee:director'])('muestra Historial de llamadas a %s', async (rol) => {
+    window.history.replaceState({}, '', '/?view=work');
+    render(<CEOApp user={{ usuario: 'qa', rol }} />);
+    expect(await screen.findByRole('button', { name: 'Historial de llamadas' })).toBeInTheDocument();
+  });
+
+  it.each(['employee:direccion_de_operaciones', 'ceo', 'employee:delineante'])('lo oculta a %s y por URL directa avisa de que no tiene permisos', async (rol) => {
+    window.history.replaceState({}, '', '/?view=netelip');
+    render(<CEOApp user={{ usuario: 'qa', rol }} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('No tienes permisos para ver el historial de llamadas');
+    expect(screen.queryByRole('button', { name: 'Historial de llamadas' })).not.toBeInTheDocument();
+    expect(api.netelip.calls).not.toHaveBeenCalled();
   });
 });
