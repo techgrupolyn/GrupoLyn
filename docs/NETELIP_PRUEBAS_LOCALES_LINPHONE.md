@@ -188,7 +188,7 @@ Casos a cubrir:
 ## 7. Hacer una llamada (saliente)
 
 1. En Linphone, marcar el número del móvil de prueba y llamar.
-2. **Esperado en el móvil:** sale el número de `NETELIP_OUTBOUND_CALLERID`. Al contestar se oye la locución del aviso (`aviso-pruebas.mp3`) y después la conversación conecta.
+2. **Esperado en el móvil:** sale un número de Grupo LYN, normalmente sin el nombre (las redes móviles no suelen transmitirlo). Hoy Netelip presenta +34 910 05 92 15 aunque `NETELIP_OUTBOUND_CALLERID` lleve otro número: está pendiente de confirmar con Netelip. Al contestar se oye la locución del aviso (`aviso-pruebas.mp3`) y después la conversación conecta.
 3. Hablar 20–30 s y colgar.
 4. Comprobar el resultado (paso 8).
 
@@ -196,7 +196,8 @@ Casos a cubrir:
 
 | Caso | Resultado esperado |
 |---|---|
-| Contestada | Llamada `Saliente`, extensión del agente = la de Linphone, audio y transcripción. La transcripción no incluye el aviso |
+| Contestada | Llamada `Saliente`, extensión del agente = la de Linphone, audio y transcripción. La transcripción no incluye el aviso y, si las voces se distinguen, sale separada en GRUPO LYN y CLIENTE; si no, el panel avisa de que no se pudo separar |
+| Contestada sin hablar después del aviso | Transcripción completada con «La grabación no contiene conversación: solo el aviso de grabación o silencio» |
 | El móvil rechaza o no contesta | No hay grabación |
 | Llamada entre dos extensiones (p. ej. a otra extensión interna) | No aparece en el historial (fuera de alcance) |
 

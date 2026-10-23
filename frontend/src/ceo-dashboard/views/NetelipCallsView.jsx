@@ -59,11 +59,14 @@ function TranscriptionPanel({ detail }) {
   if (transcription.status === 'failed') return <p role="alert" className="rounded border border-red-900/70 bg-red-950/30 p-3 text-xs leading-5 text-red-200">No se pudo transcribir esta llamada tras varios intentos. El equipo de tecnología ya está avisado.</p>;
   const segments = Array.isArray(transcription.segments) ? transcription.segments : [];
   if (!String(transcription.text || '').trim() && !segments.length) return <p className="rounded border border-[#2E2E2E] bg-[#141414] p-3 text-xs text-[#737373]">La grabación no contiene conversación: solo el aviso de grabación o silencio.</p>;
-  if (!segments.length) return <p className="whitespace-pre-wrap rounded border border-[#2E2E2E] bg-[#141414] p-3 text-xs leading-6 text-[#D4D4D4]">{transcription.text}</p>;
-  return <ol className="space-y-2">{segments.map((segment, index) => {
+  // Sin hablantes: la grabación (mono) no permitió distinguir las dos voces. Se dice, para no hacer creer que habla uno solo.
+  const unlabelled = !segments.some((segment) => speakerLabel(segment.speaker));
+  const note = unlabelled && <p className="mb-2 text-[10px] leading-4 text-[#737373]">No se pudo separar lo que dice GRUPO LYN de lo que dice el cliente en esta grabación.</p>;
+  if (!segments.length) return <>{note}<p className="whitespace-pre-wrap rounded border border-[#2E2E2E] bg-[#141414] p-3 text-xs leading-6 text-[#D4D4D4]">{transcription.text}</p></>;
+  return <>{note}<ol className="space-y-2">{segments.map((segment, index) => {
     const label = speakerLabel(segment.speaker);
     return <li key={`${segment.start}-${index}`} className="grid grid-cols-[52px_1fr] gap-2 rounded border border-[#2E2E2E] bg-[#141414] p-2.5"><span className="font-mono text-[10px] text-[#737373]">{formatOffset(segment.start)}</span><p className="text-xs leading-5 text-[#D4D4D4]">{label && <span className={`mr-1.5 font-mono text-[10px] font-semibold tracking-[.08em] ${label === 'GRUPO LYN' ? 'text-amber-200' : 'text-emerald-200'}`}>{label}:</span>}{segment.text}</p></li>;
-  })}</ol>;
+  })}</ol></>;
 }
 
 function CallDrawer({ detail, loading, error, onClose, onOpenContact }) {

@@ -85,10 +85,13 @@ export class WhisperCommandEngine implements TranscriptionEngine {
         ...(avisoInRecording ? { WHISPER_SKIP_QUIET_LEADIN: '1' } : {}),
         ...(channelSpeakers ? { WHISPER_CHANNEL_SPEAKERS: channelSpeakers.join(',') } : {}),
         ...(process.env.NETELIP_AVISO_TEXT ? { WHISPER_AVISO_TEXT: process.env.NETELIP_AVISO_TEXT } : {}),
+        // Su duración limita lo que se salta al principio: así no se pierde el saludo tras el aviso.
+        ...(avisoInRecording && process.env.NETELIP_AVISO_FILE ? { WHISPER_AVISO_FILE: process.env.NETELIP_AVISO_FILE } : {}),
       });
       let parsed: { language?: string; text?: string; segments?: Array<{ start: number; end: number; text: string; speaker?: string | null }> };
       try { parsed = JSON.parse(output); } catch { throw new TranscriptionError('salida de Whisper no es JSON'); }
       // Texto vacío no es un fallo: la grabación puede contener solo el aviso o silencio (nadie habló).
+      // El script no transcribe los tramos sin voz («no_speech»): en silencio Whisper inventa texto.
       const text = String(parsed.text || '').trim();
       const segments = (parsed.segments || []).map((s) => ({ speaker: s.speaker ?? null, start: Number(s.start), end: Number(s.end), text: String(s.text).trim() }));
       return { engine: this.name, language: parsed.language || 'es', text, segments: segments.length ? segments : null };

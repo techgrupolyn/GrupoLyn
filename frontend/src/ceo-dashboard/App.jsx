@@ -91,6 +91,10 @@ function formatDashboardRole(role) {
   return label.replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function NetelipAccessDenied() {
+  return <section className="ceo-page p-4 sm:p-6 xl:p-8"><p role="alert" className="max-w-xl rounded border border-amber-300/30 bg-amber-300/[.06] p-4 text-xs leading-5 text-amber-100">No tienes permisos para ver el historial de llamadas de Netelip. Solo pueden verlo los roles autorizados por Producto; si lo necesitas, pídeselo a un administrador.</p></section>;
+}
+
 function Sidebar({ view, setView, consultationOnly, meetingLimited, onLogout, mobileOpen, onClose, user, pendingCount = 0 }) {
   const sections = consultationOnly ? [{ label: 'General', items: [{ key: 'ai', label: 'Consultas IA', icon: Sparkles, accent: 'violet' }] }] : meetingLimited ? LIMITED_NAV_SECTIONS : NAV_SECTIONS.filter((section) => section.label !== 'Netelip' || canAccessNetelipCalls(user));
   const selectView = (nextView) => { setView(nextView); onClose(); };
@@ -149,9 +153,9 @@ export default function CEOApp({ user, onLogout }) {
 
   useEffect(() => {
     if (consultationOnly && view !== 'ai') setView('ai');
-    if (meetingLimited && !['ai', 'meetings', 'work'].includes(view)) setView('meetings');
-    if (view === 'netelip' && !canAccessNetelipCalls(user)) setView('dashboard');
-  }, [consultationOnly, meetingLimited, view, user]);
+    // Netelip sin permiso no redirige: la vista muestra el aviso de que no tiene permisos (Q09).
+    if (meetingLimited && !['ai', 'meetings', 'work', 'netelip'].includes(view)) setView('meetings');
+  }, [consultationOnly, meetingLimited, view]);
   useEffect(() => {
     const handlePopState = () => {
       const route = readDashboardRoute(window.location.search, consultationOnly);
@@ -205,7 +209,7 @@ export default function CEOApp({ user, onLogout }) {
       case 'labels': return <LabelsView />;
       case 'business': return <BusinessView />;
       case 'settings': return <SettingsView activeTab={settingsTab} onTabChange={setSettingsTab} onOpenMeeting={(id) => { setOpenMeetingId(id); setView('meetings'); }} />;
-      case 'netelip': if (!canAccessNetelipCalls(user)) return null; return <NetelipCallsView onOpenContact={(contact) => { setContactQuery(contact.name); setView(contact.type === 'client' ? 'clients' : 'leads'); }} />;
+      case 'netelip': if (!canAccessNetelipCalls(user)) return <NetelipAccessDenied />; return <NetelipCallsView onOpenContact={(contact) => { setContactQuery(contact.name); setView(contact.type === 'client' ? 'clients' : 'leads'); }} />;
       case 'organigrama': case 'leads': case 'clients': case 'identities': case 'incidents': return <OperationsView key={view} mode={view} initialQuery={contactQuery} onInitialQueryUsed={() => setContactQuery('')} onOpenMeeting={(id) => { setOpenMeetingId(id); setView('meetings'); }} />;
       case 'templates': return <TemplatesView />;
       case 'specialists': return <SpecialistsView />;

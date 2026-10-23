@@ -49,7 +49,7 @@ Llamada ─► Netelip API Voice ─► /webhook/netelip/<token>/control   (avis
 | `NETELIP_AVISO_TEXT` / `NETELIP_AVISO_VOICE` | Texto aprobado por Legal (subtarea 869fg5z4k) / `Silvia` |
 | `NETELIP_AVISO_FILE` | `/etc/lyn/netelip/aviso.mp3` (locución definitiva, 0640 root:lyn) |
 | `NETELIP_AVISO_ANNOUNCE` | `remote\|https://<dominio>/webhook/netelip/<token>/aviso.mp3` |
-| `NETELIP_OUTBOUND_CALLERID` | `Grupo LYN;34XXXXXXXXX` (número asignado a la cuenta) |
+| `NETELIP_OUTBOUND_CALLERID` | `Grupo LYN;34XXXXXXXXX` (número asignado a la cuenta). El nombre no suele llegar a los móviles, solo el número. En el QA del 22/10/2026, con `34910054498` el móvil mostró +34 910 05 92 15: falta que Netelip confirme qué número presenta (pregunta 16 a soporte) |
 | `NETELIP_CONTROL_ROUTES` / `NETELIP_CONTROL_DEFAULT_EXTENSION` | Número entrante → extensión, según el inventario del runbook |
 | `NETELIP_TRANSCRIPTION_ENGINE` | Motor aprobado en P3 (ver «Transcripción») |
 | `NETELIP_ALERT_WEBHOOK_URL` | Canal de tecnología (Slack/Teams) para fallos y conciliación |
@@ -65,6 +65,9 @@ Llamada ─► Netelip API Voice ─► /webhook/netelip/<token>/control   (avis
 | `medium` con filtro de silencios | 57 % |
 | `large-v3-turbo`, saltando el aviso, sin repeticiones | 72–76 % |
 
+- **Sin conversación.** Si después del aviso solo hay silencio o ruido de línea (por debajo de −45 dBFS), el script no llama a Whisper y devuelve texto vacío: el panel muestra «La grabación no contiene conversación». También descarta los segmentos sin voz y los que solo repiten `WHISPER_HOTWORDS`. En el QA del 22/10/2026 Whisper rellenaba el silencio con «Grupo LYN».
+- **Inicio de la conversación.** En las salientes se salta el aviso, pero nunca más que lo que dura `NETELIP_AVISO_FILE`: así no se pierde un saludo en voz baja justo después del aviso.
+- **GRUPO LYN y CLIENTE.** La grabación es mono. El script parte cada segmento por las pausas y los finales de frase, y reparte los tramos entre las dos voces por su energía grave: la red móvil la recorta y la voz por VoIP la conserva. Si las dos voces no se distinguen (una sola voz, o dos por la misma red), no etiqueta y el panel avisa de que no se pudo separar. Las frases muy cortas al final pueden quedar en el turno equivocado. La separación exacta necesita la grabación estéreo, pendiente de Netelip (pregunta 17).
 - **Whisper no cabe en el servidor actual** (≈1 GB de RAM). En producción hace falta un servidor de transcripción aparte o un motor gestionado. Es la decisión P3, que pasa por Legal.
 - **Precisión objetivo de Producto: 95 %.** Depende sobre todo de la calidad del audio: mono, 8 kHz, línea móvil. Ver el estado en la subtarea del spike.
 
@@ -76,7 +79,7 @@ Requisitos previos, todos con evidencia en ClickUp:
 - motor de transcripción con la precisión exigida;
 - matriz de pruebas del spike ejecutada con el número de prueba.
 
-1. **PR.** Rama `feat/netelip-llamadas` → `main`, con el Quality Gate en verde (Backend y Dashboard) y la aprobación de Alejandro Yepez.
+1. **PR.** Rama `GLYN-feature/netelip-calls` → `main`, con el Quality Gate en verde (Backend y Dashboard) y la aprobación de Alejandro Yepez.
 2. **Copia de seguridad.** El script de despliegue guarda el bundle de git, `/etc/lyn` y los volcados de las dos bases antes de tocar nada.
 3. **Variables.** Añadir las de la tabla anterior a `/etc/lyn/backend.env` y copiar la locución definitiva a `/etc/lyn/netelip/aviso.mp3`.
 4. **Nginx.** Añadir una ubicación propia para el receptor, que limite el origen a las redes de Netelip:

@@ -101,6 +101,21 @@ describe('NetelipCallsView', () => {
     expect(screen.queryByText('Buenos días.')).not.toBeInTheDocument();
   });
 
+  it('sin hablantes separados, avisa de que no se pudieron distinguir', async () => {
+    vi.mocked(api.netelip.call).mockResolvedValue({ call: calls[0], transcription_access: 'granted', transcription: { status: 'completed', text: 'Probando, probando.', segments: [{ speaker: null, start: 4, end: 9, text: 'Probando, probando.' }] } });
+    window.history.replaceState({}, '', '/?view=netelip&call=1');
+    render(<NetelipCallsView />);
+    expect(await screen.findByText('Probando, probando.')).toBeInTheDocument();
+    expect(screen.getByText(/No se pudo separar lo que dice GRUPO LYN/)).toBeInTheDocument();
+  });
+
+  it('sin conversación (solo aviso o silencio), lo dice en lugar de mostrar texto', async () => {
+    vi.mocked(api.netelip.call).mockResolvedValue({ call: calls[0], transcription_access: 'granted', transcription: { status: 'completed', text: '', segments: null } });
+    window.history.replaceState({}, '', '/?view=netelip&call=1');
+    render(<NetelipCallsView />);
+    expect(await screen.findByText(/La grabación no contiene conversación/)).toBeInTheDocument();
+  });
+
   it.each([
     ['pending', /la llamada está en cola/],
     ['failed', /No se pudo transcribir esta llamada/],
