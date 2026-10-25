@@ -77,7 +77,7 @@ Llamada ─► Netelip API Voice ─► /webhook/netelip/<token>/control   (avis
 
 Todo con evidencia en ClickUp o en el PR:
 
-- [ ] QA de NET-02 y NET-03 repetido con una llamada real y aprobado.
+- [x] QA de NET-02 y NET-03 repetido con una llamada real y aprobado (24/10/2026).
 - [ ] Motor de transcripción (P3) decidido por Producto y Legal, con su precisión medida.
 - [ ] Texto del aviso aprobado por Legal (BLOQ-01). Sin esa aprobación se puede desplegar el código, pero **no se activa ninguna ruta**.
 - [ ] Rama al día con `main` y Quality Gate en verde (Backend, Dashboard, Evolution y Extension).
