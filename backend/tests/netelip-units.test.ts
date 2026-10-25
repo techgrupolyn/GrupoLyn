@@ -6,7 +6,7 @@ import {
   NETELIP_TRUSTED_NETWORKS, parseWhatsAppCall, startedAt, tokenMatches,
 } from '../netelip/events.ts';
 import { maskPhone, toE164 } from '../netelip/phone.ts';
-import { parseReportDate, reportKey } from '../netelip/processing.ts';
+import { parseReportDate, reconcile, reportKey } from '../netelip/processing.ts';
 import { madridDay, partiesFromRecording, parsePropfind, pickRecording } from '../netelip/vdrive.ts';
 import { canAccessNetelipCalls, canReadTranscripts } from '../netelip/routes.ts';
 
@@ -261,5 +261,25 @@ describe('Netelip · permisos y WhatsApp', () => {
     expect(event).toMatchObject({ status: 'ANSWERED', aviso: 'played', customer_wa_user_id: null });
     expect(() => parseWhatsAppCall({ wacid: 'w', direction: 'sideways', customer_phone: '1', started_at: 1 })).toThrow(/direction/);
     expect(() => parseWhatsAppCall({ wacid: 'w', direction: 'inbound', started_at: 1 })).toThrow(/customer_phone/);
+  });
+});
+
+describe('Netelip · conciliación sin motor de transcripción', () => {
+  // Pool falso: sin informes pendientes; registra las consultas para saber si se buscaron transcripciones atascadas.
+  const fakePool = () => {
+    const queries: string[] = [];
+    return { queries, pool: { query: async (sql: string) => { queries.push(sql); return { rows: [], rowCount: sql.includes('netelip_call_transcriptions') ? 3 : 0 }; } } as never };
+  };
+
+  it('no avisa de las pendientes cuando el motor está apagado', async () => {
+    const { pool, queries } = fakePool();
+    const summary = await reconcile(pool, new Date(), false);
+    expect(summary.stale_transcriptions).toBe(0);
+    expect(queries.some((sql) => sql.includes('netelip_call_transcriptions'))).toBe(false);
+  });
+
+  it('con motor, sigue buscando transcripciones atascadas', async () => {
+    const { pool } = fakePool();
+    expect((await reconcile(pool, new Date(), true)).stale_transcriptions).toBe(3);
   });
 });

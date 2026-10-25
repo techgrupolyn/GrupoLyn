@@ -312,7 +312,8 @@ async function reconcileWithoutUniqueid(pool: Pool, raw: Record<string, unknown>
  * recupera (si el informe trae datos suficientes) o se reporta a tecnología. Netelip no firma ni
  * documenta reintentos del webhook: no se asume entrega garantizada.
  */
-export async function reconcile(pool: Pool, now = new Date()): Promise<Record<string, number>> {
+/** Sin motor de transcripción, las pendientes esperan a propósito (se transcriben al activarlo): no se avisa de ellas. */
+export async function reconcile(pool: Pool, now = new Date(), transcriptionEnabled = true): Promise<Record<string, number>> {
   const summary: Record<string, number> = { present: 0, recovered: 0, reported: 0, skipped: 0 };
   const missing: string[] = [];
   const { rows } = await pool.query<{ report_key: string; raw: Record<string, unknown> }>(
@@ -344,11 +345,11 @@ export async function reconcile(pool: Pool, now = new Date()): Promise<Record<st
     await pool.query('UPDATE netelip_call_reports SET reconciled_at = NOW(), reconcile_result = $2 WHERE report_key = $1', [key, result]);
     summary[result] += 1;
   }
-  const stale = await pool.query<{ call_id: string; external_id: string }>(
+  const stale = transcriptionEnabled ? await pool.query<{ call_id: string; external_id: string }>(
     `SELECT t.call_id, c.external_id FROM netelip_call_transcriptions t JOIN netelip_calls c ON c.id = t.call_id
      WHERE t.status IN ('pending','processing') AND t.created_at < $1 LIMIT 200`,
     [new Date(now.getTime() - STALE_TRANSCRIPTION_MS)],
-  );
+  ) : { rowCount: 0, rows: [] };
   if (missing.length || stale.rowCount || summary.recovered) {
     await notifyTech('Conciliación de llamadas de Netelip', { ...summary, missing: missing.slice(0, 200), stale_transcriptions: stale.rows });
   }
