@@ -68,56 +68,141 @@ Llamada ─► Netelip API Voice ─► /webhook/netelip/<token>/control   (avis
 - **Sin conversación.** Si después del aviso solo hay silencio o ruido de línea (por debajo de −45 dBFS), el script no llama a Whisper y devuelve texto vacío: el panel muestra «La grabación no contiene conversación». También descarta los segmentos sin voz y los que solo repiten `WHISPER_HOTWORDS`. En el QA del 22/10/2026 Whisper rellenaba el silencio con «Grupo LYN».
 - **Inicio de la conversación.** En las salientes se salta el aviso, pero nunca más que lo que dura `NETELIP_AVISO_FILE`: así no se pierde un saludo en voz baja justo después del aviso.
 - **GRUPO LYN y CLIENTE.** La grabación es mono. El script parte cada segmento por las pausas y los finales de frase, y reparte los tramos entre las dos voces por su energía grave: la red móvil la recorta y la voz por VoIP la conserva. Si las dos voces no se distinguen (una sola voz, o dos por la misma red), no etiqueta y el panel avisa de que no se pudo separar. Las frases muy cortas al final pueden quedar en el turno equivocado. La separación exacta necesita la grabación estéreo, pendiente de Netelip (pregunta 17).
-- **Whisper no cabe en el servidor actual** (≈1 GB de RAM). En producción hace falta un servidor de transcripción aparte o un motor gestionado. Es la decisión P3, que pasa por Legal.
+- **Motor pendiente de decidir (P3).** Que el servidor tenga 4 GB de RAM no demuestra que Whisper funcione con la calidad requerida (lo medido es 72–76 % frente al 95 % objetivo) ni sin quitar memoria al backend y a Evolution. Mientras Producto y Legal no aprueben un motor con evidencia de precisión, `NETELIP_TRANSCRIPTION_ENGINE` queda en `none`: las llamadas se guardan y la transcripción queda pendiente.
 - **Precisión objetivo de Producto: 95 %.** Depende sobre todo de la calidad del audio: mono, 8 kHz, línea móvil. Ver el estado en la subtarea del spike.
 
 ## Paso a paso hasta producción
 
-Requisitos previos, todos con evidencia en ClickUp:
-- texto del aviso aprobado por Legal;
-- P2 y P3 decididos;
-- motor de transcripción con la precisión exigida;
-- matriz de pruebas del spike ejecutada con el número de prueba.
+### Antes de fusionar el PR
 
-1. **PR.** Rama `GLYN-feature/netelip-calls` → `main`, con el Quality Gate en verde (Backend y Dashboard) y la aprobación de Alejandro Yepez.
-2. **Copia de seguridad.** El script de despliegue guarda el bundle de git, `/etc/lyn` y los volcados de las dos bases antes de tocar nada.
-3. **Variables.** Añadir las de la tabla anterior a `/etc/lyn/backend.env` y copiar la locución definitiva a `/etc/lyn/netelip/aviso.mp3`.
-4. **Nginx.** Añadir una ubicación propia para el receptor, que limite el origen a las redes de Netelip:
+Todo con evidencia en ClickUp o en el PR:
 
-   ```nginx
-   location /webhook/netelip/ {
-       allow 185.8.244.0/24;
-       allow 192.99.91.144/29;
-       deny all;
-       client_max_body_size 2m;
-       proxy_pass http://127.0.0.1:3003/webhook/netelip/;
-       proxy_http_version 1.1;
-       proxy_set_header Host $host;
-       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-       proxy_set_header X-Forwarded-Proto $scheme;
-       proxy_read_timeout 30s;
-   }
+- [ ] QA de NET-02 y NET-03 repetido con una llamada real y aprobado.
+- [ ] Motor de transcripción (P3) decidido por Producto y Legal, con su precisión medida.
+- [ ] Texto del aviso aprobado por Legal (BLOQ-01). Sin esa aprobación se puede desplegar el código, pero **no se activa ninguna ruta**.
+- [ ] Rama al día con `main` y Quality Gate en verde (Backend, Dashboard, Evolution y Extension).
+- [ ] Aprobación de Alejandro Yepez.
+
+### Despliegue
+
+`/opt/lyn` **no es un repositorio Git** y contiene ajustes de producción que hay que conservar: nunca `git pull` ahí ni copiar el repositorio encima sin comparar. `deploy.sh` **no hace respaldos**: solo valida (`preflight.sh`), compila, migra, reinicia y publica el dashboard. El respaldo es el paso 3 y es obligatorio.
+
+1. **Fusionar y fijar el SHA.** Fusionar en `main` y anotar el commit publicado. No seguir si el Quality Gate de ese SHA no está en verde:
+
+   ```bash
+   SHA=$(gh pr view 1 --json mergeCommit -q .mergeCommit.oid)
+   gh run list --workflow "Quality Gate" --commit "$SHA"
+   git archive --format=tar.gz -o "lyn-$SHA.tar.gz" "$SHA"
+   scp "lyn-$SHA.tar.gz" <servidor>:/var/tmp/
    ```
 
-   Después: `nginx -t && systemctl reload nginx`.
-5. **Despliegue.** Con el script de producción y el SHA aprobado. Al arrancar, el backend crea las tablas `netelip_*`. Comprobar:
-   - `/health`;
-   - el log `journalctl -u lyn-backend | grep netelip`;
-   - en psql, `\dt netelip_*`.
-6. **Panel de Netelip › API Voice.** Recepción y realización de llamadas en `…/control`, eventos en `…/callrecording` y reporte en `…/report`, todas con `https://<dominio>/webhook/netelip/<token>/`.
-7. **Prueba con el número de prueba.** Repetir la matriz del spike en producción, entrante y saliente, y verificar la llamada y su transcripción en Historial de llamadas.
-8. **Activación por rutas** (subtarea 869fg5z5b), fuera de horas punta y en este orden:
-   1. activar el aviso;
-   2. verificarlo con una llamada;
-   3. solo entonces pasar la ruta al plan de marcado de API Voice;
-   4. anotarlo en el inventario.
-9. **Primeras 24 h.** Revisar la conciliación (alertas) y las transcripciones fallidas.
+2. **Copia limpia y comparación con el servidor** (en el servidor, como root):
 
-### Rollback (menos de 15 minutos)
+   ```bash
+   SHA=<sha completo>
+   REL=/var/tmp/lyn-release-$SHA
+   install -d -m 0700 "$REL" && tar -xzf "/var/tmp/lyn-$SHA.tar.gz" -C "$REL"
+   rsync -rcn --delete --itemize-changes \
+     --exclude node_modules --exclude dist --exclude '.env' --exclude '.env.*' \
+     "$REL/" /opt/lyn/ | tee "/var/tmp/lyn-diff-$SHA.txt"
+   ```
 
-1. **En el panel de Netelip:** devolver la ruta o la extensión a su plan de marcado anterior. Deja de grabar en el acto.
-2. **Si falla el backend:** mientras haya rutas en API Voice, **esas líneas no pueden llamar**. Por eso hay que hacer antes el paso 1 y, después, desplegar el commit anterior.
-3. **Datos:** las tablas son independientes. `schema-down.sql` las borra **con su contenido**, así que antes hay que hacer copia.
+   Revisar cada línea:
+   - `>f…`: el fichero cambia. Si es un fichero que esta versión no toca, la diferencia es un ajuste de producción: conservarlo (añadirlo a `/var/tmp/lyn-keep-$SHA.txt`, una ruta relativa por línea) o llevarlo al repositorio en otro PR.
+   - `*deleting`: el fichero solo existe en el servidor. El paso 4 no borra nada, así que se conserva.
+
+   Resultado esperado: solo cambian los ficheros del PR y los de `main` que aún no estaban desplegados.
+
+3. **Snapshot y respaldo** antes de sustituir ningún fichero:
+   1. Snapshot manual de la instancia en Lightsail (consola › *Snapshots* › *Create snapshot*), con nombre `pre-netelip-<fecha>`. Esperar a que termine.
+   2. Respaldo local:
+
+      ```bash
+      STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+      B=/var/backups/lyn/pre-netelip-$STAMP
+      install -d -m 0700 "$B"
+      cp -a /opt/lyn "/opt/lyn.pre-netelip-$STAMP"                # código, node_modules y builds
+      cp -a /var/www/lyn/dashboard "$B/dashboard"
+      tar -C /etc -czf "$B/config.tar.gz" lyn nginx
+      systemctl cat lyn-backend lyn-evolution > "$B/services.txt"
+      runuser -u postgres -- pg_dump -Fc superagente > "$B/superagente.dump"
+      runuser -u postgres -- pg_dump -Fc evolution_db > "$B/evolution_db.dump"
+      pg_restore --list "$B/superagente.dump" >/dev/null && pg_restore --list "$B/evolution_db.dump" >/dev/null
+      (cd "$B" && sha256sum config.tar.gz services.txt *.dump > SHA256SUMS && sha256sum -c SHA256SUMS)
+      echo "Respaldo: $B · Código anterior: /opt/lyn.pre-netelip-$STAMP"
+      ```
+
+      Comprobar antes el espacio libre (`df -h /opt /var/backups`). En multiinstancia, respaldar también las bases de cada instancia de `/etc/lyn/instances`.
+
+4. **Instalar la versión conciliada, sin tocar todavía las rutas de llamadas:**
+
+   ```bash
+   rsync -a --exclude node_modules --exclude dist --exclude '.env' --exclude '.env.*' \
+     --exclude-from="/var/tmp/lyn-keep-$SHA.txt" "$REL/" /opt/lyn/
+   ```
+
+   (Si no hay ajustes que conservar, crear `lyn-keep-$SHA.txt` vacío.) Después:
+   - Variables `NETELIP_*` de la tabla anterior en `/etc/lyn/backend.env`, **entre comillas** (`deploy.sh` las carga con `source`). `NETELIP_TRANSCRIPTION_ENGINE=none` hasta que P3 esté decidido.
+   - Locución definitiva en `/etc/lyn/netelip/aviso.mp3` (`install -o root -g lyn -m 0640`).
+   - Bloque de Nginx para el receptor, que limita el origen a las redes de Netelip:
+
+     ```nginx
+     location /webhook/netelip/ {
+         allow 185.8.244.0/24;
+         allow 192.99.91.144/29;
+         deny all;
+         client_max_body_size 2m;
+         proxy_pass http://127.0.0.1:3003/webhook/netelip/;
+         proxy_http_version 1.1;
+         proxy_set_header Host $host;
+         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+         proxy_set_header X-Forwarded-Proto $scheme;
+         proxy_read_timeout 30s;
+     }
+     ```
+
+     `nginx -t && systemctl reload nginx`.
+
+   En el panel de Netelip no se cambia nada todavía: sin rutas en API Voice, no llega ninguna llamada ni se graba nada.
+
+5. **Despliegue, fuera del horario de llamadas** (el estado de cada llamada vive en memoria y un reinicio corta las que estén en curso):
+
+   ```bash
+   sudo bash /opt/lyn/deploy/scripts/preflight.sh
+   sudo bash /opt/lyn/deploy/scripts/deploy.sh
+   ```
+
+   Al arrancar, el backend crea las tablas `netelip_*`.
+
+6. **Comprobaciones:**
+   - Lo existente sigue funcionando: `curl -fsS http://127.0.0.1:3003/health`, `systemctl is-active lyn-backend lyn-evolution`, login en el dashboard, estado de WhatsApp conectado y un mensaje de prueba recibido.
+   - Netelip: `journalctl -u lyn-backend | grep netelip` y, en psql, `\dt netelip_*`.
+   - Con el **número de prueba**: en Netelip › API Voice, configurar solo ese número con `…/control` (recepción y realización), `…/callrecording` (eventos) y `…/report`, todas en `https://<dominio>/webhook/netelip/<token>/`. Repetir la matriz del spike, entrante y saliente, y verificar la llamada (y su transcripción, si hay motor) en Historial de llamadas.
+
+7. **Activación gradual**, solo con la aprobación legal del aviso y la prueba anterior correcta (subtarea 869fg5z5b), fuera de horas punta:
+   1. pasar **una** ruta al plan de marcado de API Voice;
+   2. verificarla con una llamada real (aviso, grabación, conexión con la extensión);
+   3. anotarla en el inventario y observarla al menos un día antes de pasar la siguiente.
+
+   Si una ruta falla, devolverla a su plan de marcado anterior (ver «Rollback»).
+
+8. **Primeras 24 h** tras cada ruta: revisar la conciliación (alertas) y las transcripciones fallidas.
+
+### Rollback
+
+1. **Una ruta falla:** en el panel de Netelip, devolver esa ruta o extensión a su plan de marcado anterior. Deja de grabar en el acto. Es lo primero, siempre: mientras una ruta apunte a API Voice, si el backend no responde **esa línea no puede llamar**.
+2. **Falla el backend o lo existente (WhatsApp, dashboard):** tras el paso 1 en todas las rutas activas,
+
+   ```bash
+   systemctl stop lyn-backend lyn-evolution
+   mv /opt/lyn "/opt/lyn.failed-$SHA" && mv "/opt/lyn.pre-netelip-$STAMP" /opt/lyn
+   rsync -a --delete "$B/dashboard/" /var/www/lyn/dashboard/
+   systemctl start lyn-evolution lyn-backend
+   curl -fsS http://127.0.0.1:3003/health
+   ```
+
+   Si también hay que volver atrás la configuración, restaurar `/etc/lyn` y Nginx desde `$B/config.tar.gz`. Como último recurso, la instancia completa desde el snapshot del paso 3.
+3. **Datos:** las tablas `netelip_*` son independientes y pueden quedarse. `schema-down.sql` las borra **con su contenido**: antes, otro `pg_dump`.
 
 ## Riesgos abiertos
 
