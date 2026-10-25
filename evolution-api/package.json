@@ -133,7 +133,8 @@
     "deepmerge-ts": "^8.0.2",
     "effect": "^3.22.2",
     "decode-uri-component": "^0.5.0",
-    "stream-json": "^3.7.0"
+    "stream-json": "^3.7.0",
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.8.1",
