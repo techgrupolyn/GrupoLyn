@@ -118,6 +118,11 @@ export const api = {
     status: (id) => request(`/whatsapp-accounts/${encodeURIComponent(id)}/status`),
     update: (id, payload) => request(/whatsapp-accounts/, { method: 'PATCH', body: JSON.stringify(payload) }),
   },
+  netelip: {
+    calls: (query) => request(`/netelip/calls?${query}`),
+    call: (id) => request(`/netelip/calls/${encodeURIComponent(id)}`),
+    filterOptions: () => request('/netelip/calls/filter-options'),
+  },
   meetings: {
     setOrganizer: (artifactId, employeeId) => request(`/meetings/${encodeURIComponent(artifactId)}/organizer`, { method: 'PUT', body: JSON.stringify({ employee_id: employeeId }) }),
     detectOrganizer: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}/organizer/detect`, { method: 'POST' }),

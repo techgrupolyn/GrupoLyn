@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bell, Bot, Building2, CalendarDays, FileText, LayoutDashboard, Settings, ShieldCheck, Sparkles, Tags, UsersRound } from 'lucide-react';
+import { Bell, Bot, Building2, CalendarDays, FileText, LayoutDashboard, PhoneCall, Settings, ShieldCheck, Sparkles, Tags, UsersRound } from 'lucide-react';
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import ConsultaIAPanel from './components/ConsultaIAPanel';
-import { isConsultationOnlyCeoUser, isMeetingEditorCeoUser, isMeetingLimitedCeoUser } from './CeoLogin';
+import { canAccessNetelipCalls, isConsultationOnlyCeoUser, isMeetingEditorCeoUser, isMeetingLimitedCeoUser } from './CeoLogin';
 import api from './api';
 import BackofficeView from './views/BackofficeView';
 import BusinessView from './views/BusinessView';
@@ -14,6 +14,7 @@ import MyWorkView from './views/MyWorkView';
 import MeetingImportIssue from './components/MeetingImportIssue';
 import SettingsView from './views/SettingsView';
 import OperationsView from './views/OperationsView';
+import NetelipCallsView from './views/NetelipCallsView';
 import { normalizeSettingsTab, readDashboardRoute, shouldShowMeetingsMigrationNotice } from './routing';
 import SpecialistsView from './views/SpecialistsView';
 import TemplatesView from './views/TemplatesView';
@@ -23,6 +24,7 @@ const CHART_COLORS = ['#BFBFBF', '#F2F2F2', '#737373', '#4A4A4A', '#2E2E2E'];
 const NAV_SECTIONS = [
   { label: 'General', items: [{ key: 'dashboard', label: 'Resumen ejecutivo', icon: LayoutDashboard, accent: 'amber' }, { key: 'work', label: 'Mis pendientes', icon: Bell, accent: 'amber' }, { key: 'ai', label: 'Consultas IA', icon: Sparkles, accent: 'violet' }] },
   { label: 'CRM', items: [{ key: 'leads', label: 'Leads / Prospectos', icon: UsersRound, accent: 'amber' }, { key: 'clients', label: 'Clientes', icon: Building2, accent: 'emerald' }, { key: 'identities', label: 'Identidades sin resolver', icon: UsersRound, accent: 'rose' }] },
+  { label: 'Netelip', items: [{ key: 'netelip', label: 'Historial de llamadas', icon: PhoneCall, accent: 'emerald' }] },
   { label: 'Operaciones', items: [{ key: 'organigrama', label: 'Organigrama y escalado', icon: UsersRound, accent: 'amber' }, { key: 'incidents', label: 'Control de obra / Incidencias', icon: ShieldCheck, accent: 'rose' }] },
   { label: 'Agente de reuniones', items: [{ key: 'meetings', label: 'Gestión de reuniones', icon: CalendarDays, accent: 'rose', badge: 'Nuevo' }] },
   { label: 'Superagente WhatsApp', items: [{ key: 'groups', label: 'Grupos', icon: UsersRound, accent: 'emerald' }, { key: 'labels', label: 'Etiquetas', icon: Tags, accent: 'amber' }, { key: 'templates', label: 'Plantillas', icon: FileText, accent: 'amber' }, { key: 'business', label: 'Business', icon: Building2, accent: 'emerald' }] },
@@ -34,7 +36,7 @@ const LIMITED_NAV_SECTIONS = [
   { label: 'Agente de reuniones', items: [{ key: 'meetings', label: 'Mis reuniones', icon: CalendarDays, accent: 'rose' }] },
 ];
 const VIEW_TITLES = {
-  organigrama: 'Organigrama y escalado', leads: 'Leads / Prospectos', clients: 'Clientes', identities: 'Identidades sin resolver', incidents: 'Control de obra / Incidencias',
+  organigrama: 'Organigrama y escalado', leads: 'Leads / Prospectos', clients: 'Clientes', identities: 'Identidades sin resolver', incidents: 'Control de obra / Incidencias', netelip: 'Historial de llamadas',
   dashboard: 'Resumen ejecutivo',
   work: 'Mis pendientes',
   ai: 'Consultas IA',
@@ -89,8 +91,12 @@ function formatDashboardRole(role) {
   return label.replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function NetelipAccessDenied() {
+  return <section className="ceo-page p-4 sm:p-6 xl:p-8"><p role="alert" className="max-w-xl rounded border border-amber-300/30 bg-amber-300/[.06] p-4 text-xs leading-5 text-amber-100">No tienes permisos para ver el historial de llamadas de Netelip. Solo pueden verlo los roles autorizados por Producto; si lo necesitas, pídeselo a un administrador.</p></section>;
+}
+
 function Sidebar({ view, setView, consultationOnly, meetingLimited, onLogout, mobileOpen, onClose, user, pendingCount = 0 }) {
-  const sections = consultationOnly ? [{ label: 'General', items: [{ key: 'ai', label: 'Consultas IA', icon: Sparkles, accent: 'violet' }] }] : meetingLimited ? LIMITED_NAV_SECTIONS : NAV_SECTIONS;
+  const sections = consultationOnly ? [{ label: 'General', items: [{ key: 'ai', label: 'Consultas IA', icon: Sparkles, accent: 'violet' }] }] : meetingLimited ? LIMITED_NAV_SECTIONS : NAV_SECTIONS.filter((section) => section.label !== 'Netelip' || canAccessNetelipCalls(user));
   const selectView = (nextView) => { setView(nextView); onClose(); };
   return <>
     {mobileOpen && <button aria-label="Cerrar navegación" type="button" onClick={onClose} className="fixed inset-0 z-30 bg-black/70 lg:hidden" />}
@@ -129,6 +135,7 @@ export default function CEOApp({ user, onLogout }) {
   const [workLoading, setWorkLoading] = useState(false);
   const [workOpen, setWorkOpen] = useState(false);
   const [openMeetingId, setOpenMeetingId] = useState('');
+  const [contactQuery, setContactQuery] = useState('');
   const [importIssue, setImportIssue] = useState(null);
   const [showMeetingsMigrationNotice, setShowMeetingsMigrationNotice] = useState(() => {
     try { return shouldShowMeetingsMigrationNotice(window.localStorage.getItem('lyn-meetings-drive-config-migration-v1')); } catch { return true; }
@@ -146,7 +153,8 @@ export default function CEOApp({ user, onLogout }) {
 
   useEffect(() => {
     if (consultationOnly && view !== 'ai') setView('ai');
-    if (meetingLimited && !['ai', 'meetings', 'work'].includes(view)) setView('meetings');
+    // Netelip sin permiso no redirige: la vista muestra el aviso de que no tiene permisos (Q09).
+    if (meetingLimited && !['ai', 'meetings', 'work', 'netelip'].includes(view)) setView('meetings');
   }, [consultationOnly, meetingLimited, view]);
   useEffect(() => {
     const handlePopState = () => {
@@ -201,7 +209,8 @@ export default function CEOApp({ user, onLogout }) {
       case 'labels': return <LabelsView />;
       case 'business': return <BusinessView />;
       case 'settings': return <SettingsView activeTab={settingsTab} onTabChange={setSettingsTab} onOpenMeeting={(id) => { setOpenMeetingId(id); setView('meetings'); }} />;
-      case 'organigrama': case 'leads': case 'clients': case 'identities': case 'incidents': return <OperationsView key={view} mode={view} onOpenMeeting={(id) => { setOpenMeetingId(id); setView('meetings'); }} />;
+      case 'netelip': if (!canAccessNetelipCalls(user)) return <NetelipAccessDenied />; return <NetelipCallsView onOpenContact={(contact) => { setContactQuery(contact.name); setView(contact.type === 'client' ? 'clients' : 'leads'); }} />;
+      case 'organigrama': case 'leads': case 'clients': case 'identities': case 'incidents': return <OperationsView key={view} mode={view} initialQuery={contactQuery} onInitialQueryUsed={() => setContactQuery('')} onOpenMeeting={(id) => { setOpenMeetingId(id); setView('meetings'); }} />;
       case 'templates': return <TemplatesView />;
       case 'specialists': return <SpecialistsView />;
       case 'backoffice': return <BackofficeView />;
@@ -210,5 +219,5 @@ export default function CEOApp({ user, onLogout }) {
     }
   };
 
-return <div className="flex min-h-screen bg-[#0D0D0D] text-[#F2F2F2] selection:bg-[#BFBFBF] selection:text-black"><Sidebar view={view} setView={selectView} consultationOnly={consultationOnly} meetingLimited={meetingLimited} onLogout={onLogout} mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} user={user} pendingCount={work.items.filter((item) => item.kind === 'action' && item.unread).length} /><main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto"><header className="sticky top-0 z-20 flex min-h-16 items-center justify-between gap-4 border-b border-[#2E2E2E] bg-[#141414]/95 px-4 backdrop-blur sm:px-6 xl:px-8"><div className="flex min-w-0 items-center gap-3"><button type="button" aria-label="Abrir navegación" onClick={() => setMobileOpen(true)} className="rounded border border-[#2E2E2E] p-2 text-[#BFBFBF] hover:border-[#737373] lg:hidden"><svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h16" /></svg></button><div className="min-w-0"><p className="truncate text-xs text-[#737373]">Dashboard <span className="px-1 text-[#4A4A4A]">/</span> {view === 'meetings' ? meetingLimited ? 'Mis reuniones' : 'Agente de reuniones' : view === 'settings' ? 'Configuración' : consultationOnly ? 'Acceso de consultas' : 'Operaciones'}</p><h1 className="truncate text-sm font-semibold text-[#F2F2F2]">{VIEW_TITLES[view] || 'Dashboard'}</h1></div></div><div className="relative flex shrink-0 items-center gap-2">{!consultationOnly && <><button type="button" aria-label="Abrir mis notificaciones" onClick={() => setWorkOpen((open) => !open)} className="relative rounded border border-[#2E2E2E] p-2 text-[#BFBFBF] hover:border-amber-300/50 hover:text-amber-100"><Bell size={15} />{work.unread > 0 && <span className="absolute -right-1 -top-1 flex min-w-4 h-4 items-center justify-center rounded-full bg-amber-300 px-1 text-[9px] font-bold text-[#0D0D0D]">{work.unread > 99 ? '99+' : work.unread}</span>}</button>{workOpen && <div className="absolute right-0 top-11 z-50 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-md border border-[#2E2E2E] bg-[#141414] text-left shadow-2xl"><div className="flex items-center justify-between border-b border-[#2E2E2E] px-3 py-2.5"><span className="text-xs font-semibold text-[#F2F2F2]">Notificaciones</span><button type="button" onClick={() => { setWorkOpen(false); setView('work'); }} className="text-[11px] text-amber-200 hover:text-amber-100">Ver todo</button></div>{work.items.slice(0, 5).map((item) => <button key={item.key} type="button" onClick={() => { void markWorkRead([item.key]); openWorkItem(item); }} className="flex w-full gap-2 border-b border-[#2E2E2E] px-3 py-2.5 text-left hover:bg-[#0D0D0D]"><span className={`mt-1 size-1.5 shrink-0 rounded-full ${item.unread ? 'bg-amber-300' : 'bg-transparent'}`} /><span className="min-w-0"><span className="block truncate text-xs font-medium text-[#F2F2F2]">{item.title}</span><span className="mt-0.5 block truncate text-[10px] text-[#737373]">{item.meetingName}</span></span></button>)}{!work.items.length && <p className="px-3 py-6 text-center text-xs text-[#737373]">No tienes notificaciones pendientes.</p>}</div>}</>}{!consultationOnly && !meetingLimited && view === 'dashboard' && <button type="button" onClick={loadMetrics} disabled={loading} className="hidden rounded border border-[#2E2E2E] px-3 py-2 text-xs text-[#BFBFBF] hover:border-[#737373] disabled:opacity-40 sm:block">{loading ? 'Actualizando…' : 'Actualizar'}</button>}<span className="hidden rounded border border-[#2E2E2E] px-2.5 py-1.5 text-[10px] text-[#BFBFBF] sm:block">Operación centralizada</span><span title={user?.usuario || 'Usuario'} className="flex size-8 items-center justify-center rounded-full bg-[#2E2E2E] text-[10px] font-semibold text-[#F2F2F2]">{String(user?.usuario || 'LY').slice(0, 2).toUpperCase()}</span></div></header>{!consultationOnly && !meetingLimited && error && view === 'dashboard' && <div className="mx-4 mt-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200 sm:mx-6 xl:mx-8">{error}</div>}{renderView()}{importIssue && <MeetingImportIssue key={importIssue.artifactId} issue={importIssue} canAssign={!meetingLimited && !consultationOnly} onClose={() => setImportIssue(null)} onChanged={loadWork} />}</main></div>;
+return <div className="flex min-h-screen bg-[#0D0D0D] text-[#F2F2F2] selection:bg-[#BFBFBF] selection:text-black"><Sidebar view={view} setView={selectView} consultationOnly={consultationOnly} meetingLimited={meetingLimited} onLogout={onLogout} mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} user={user} pendingCount={work.items.filter((item) => item.kind === 'action' && item.unread).length} /><main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto"><header className="sticky top-0 z-20 flex min-h-16 items-center justify-between gap-4 border-b border-[#2E2E2E] bg-[#141414]/95 px-4 backdrop-blur sm:px-6 xl:px-8"><div className="flex min-w-0 items-center gap-3"><button type="button" aria-label="Abrir navegación" onClick={() => setMobileOpen(true)} className="rounded border border-[#2E2E2E] p-2 text-[#BFBFBF] hover:border-[#737373] lg:hidden"><svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h16" /></svg></button><div className="min-w-0"><p className="truncate text-xs text-[#737373]">Dashboard <span className="px-1 text-[#4A4A4A]">/</span> {view === 'meetings' ? meetingLimited ? 'Mis reuniones' : 'Agente de reuniones' : view === 'settings' ? 'Configuración' : view === 'netelip' ? 'Netelip' : consultationOnly ? 'Acceso de consultas' : 'Operaciones'}</p><h1 className="truncate text-sm font-semibold text-[#F2F2F2]">{VIEW_TITLES[view] || 'Dashboard'}</h1></div></div><div className="relative flex shrink-0 items-center gap-2">{!consultationOnly && <><button type="button" aria-label="Abrir mis notificaciones" onClick={() => setWorkOpen((open) => !open)} className="relative rounded border border-[#2E2E2E] p-2 text-[#BFBFBF] hover:border-amber-300/50 hover:text-amber-100"><Bell size={15} />{work.unread > 0 && <span className="absolute -right-1 -top-1 flex min-w-4 h-4 items-center justify-center rounded-full bg-amber-300 px-1 text-[9px] font-bold text-[#0D0D0D]">{work.unread > 99 ? '99+' : work.unread}</span>}</button>{workOpen && <div className="absolute right-0 top-11 z-50 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-md border border-[#2E2E2E] bg-[#141414] text-left shadow-2xl"><div className="flex items-center justify-between border-b border-[#2E2E2E] px-3 py-2.5"><span className="text-xs font-semibold text-[#F2F2F2]">Notificaciones</span><button type="button" onClick={() => { setWorkOpen(false); setView('work'); }} className="text-[11px] text-amber-200 hover:text-amber-100">Ver todo</button></div>{work.items.slice(0, 5).map((item) => <button key={item.key} type="button" onClick={() => { void markWorkRead([item.key]); openWorkItem(item); }} className="flex w-full gap-2 border-b border-[#2E2E2E] px-3 py-2.5 text-left hover:bg-[#0D0D0D]"><span className={`mt-1 size-1.5 shrink-0 rounded-full ${item.unread ? 'bg-amber-300' : 'bg-transparent'}`} /><span className="min-w-0"><span className="block truncate text-xs font-medium text-[#F2F2F2]">{item.title}</span><span className="mt-0.5 block truncate text-[10px] text-[#737373]">{item.meetingName}</span></span></button>)}{!work.items.length && <p className="px-3 py-6 text-center text-xs text-[#737373]">No tienes notificaciones pendientes.</p>}</div>}</>}{!consultationOnly && !meetingLimited && view === 'dashboard' && <button type="button" onClick={loadMetrics} disabled={loading} className="hidden rounded border border-[#2E2E2E] px-3 py-2 text-xs text-[#BFBFBF] hover:border-[#737373] disabled:opacity-40 sm:block">{loading ? 'Actualizando…' : 'Actualizar'}</button>}<span className="hidden rounded border border-[#2E2E2E] px-2.5 py-1.5 text-[10px] text-[#BFBFBF] sm:block">Operación centralizada</span><span title={user?.usuario || 'Usuario'} className="flex size-8 items-center justify-center rounded-full bg-[#2E2E2E] text-[10px] font-semibold text-[#F2F2F2]">{String(user?.usuario || 'LY').slice(0, 2).toUpperCase()}</span></div></header>{!consultationOnly && !meetingLimited && error && view === 'dashboard' && <div className="mx-4 mt-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200 sm:mx-6 xl:mx-8">{error}</div>}{renderView()}{importIssue && <MeetingImportIssue key={importIssue.artifactId} issue={importIssue} canAssign={!meetingLimited && !consultationOnly} onClose={() => setImportIssue(null)} onChanged={loadWork} />}</main></div>;
 }

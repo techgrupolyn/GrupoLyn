@@ -41,6 +41,13 @@ check_instance() {
   [[ "$(value_of "$backend_env" CORS_ALLOWED_ORIGINS)" == https://* ]] || { echo 'CORS_ALLOWED_ORIGINS debe usar HTTPS.' >&2; return 1; }
   [[ "$(value_of "$backend_env" CHROME_EXTENSION_IDS)" =~ ^[a-z]{32}(,[a-z]{32})*$ ]] || { echo 'CHROME_EXTENSION_IDS debe contener uno o más IDs válidos de Chrome.' >&2; return 1; }
   [[ "$(value_of "$backend_env" EVOLUTION_API_KEY)" == "$(value_of "$evolution_env" AUTHENTICATION_API_KEY)" ]] || { echo 'EVOLUTION_API_KEY y AUTHENTICATION_API_KEY deben coincidir.' >&2; return 1; }
+  # Con Netelip activo, las transcripciones pendientes descargan el audio de vDrive cuando caduca su URL.
+  if [[ -n "$(value_of "$backend_env" NETELIP_WEBHOOK_TOKEN | tr -d "\"'")" ]]; then
+    local key
+    for key in NETELIP_VDRIVE_USER NETELIP_VDRIVE_APP_PASSWORD; do
+      [[ -n "$(value_of "$backend_env" "$key" | tr -d "\"'")" ]] || { echo "Falta $key en $backend_env: sin vDrive no se podrán transcribir las llamadas pendientes." >&2; return 1; }
+    done
+  fi
 }
 
 [[ "$(id -u)" -eq 0 ]] || { echo 'Ejecuta este preflight con sudo.' >&2; exit 1; }
