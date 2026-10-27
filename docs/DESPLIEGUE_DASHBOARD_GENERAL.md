@@ -30,7 +30,7 @@ Antes de migraciones, confirma un respaldo recuperable de ambas bases, configura
 
 ```bash
 sudo bash /opt/lyn/deploy/scripts/backup-postgres.sh
-sudo ls -lh /var/backups/lyn/*.dump
+sudo find /var/backups/lyn -maxdepth 1 -type f -name '*.dump' -printf '%f %s bytes\n'
 ```
 
 El script valida el formato con `pg_restore --list`, pero eso **no prueba una restauración**. Comprueba también que existe un snapshot reciente de Lightsail o respaldo equivalente de `/opt/lyn`, `/etc/lyn` y `/var/www/lyn/dashboard`. No continúes si el respaldo necesario no está disponible.
