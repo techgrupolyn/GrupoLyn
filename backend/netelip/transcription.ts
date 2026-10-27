@@ -1,12 +1,14 @@
-// Motores de transcripción. La ruta definitiva se decide en P3 (spike + dictamen de Legal):
+// Motores de transcripción (NETELIP_TRANSCRIPTION_ENGINE). La ruta definitiva se decide en P3 (Producto + Legal):
+//   gemini           Gemini con la clave de los informes. Sin carga en el servidor; el audio sale a Google.
+//   local_whisper    Whisper en un proceso aparte. Pesado en CPU y RAM: mejor en un servidor dedicado.
 //   netelip_ai       IA de Netelip (ruta A): pendiente de que el spike confirme cómo se obtiene el texto.
-//   whisper_command  Whisper en un proceso aparte (ruta propia). En producción no cabe en el servidor
-//                    actual (1 GB de RAM): solo para local o para un servidor de transcripción dedicado.
 //   none             sin motor: la transcripción queda pendiente.
+// Todos obtienen el audio igual (fetchCallAudio): URL del aviso o, si caducó, vDrive.
 import { spawn } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
+import { callGeminiWithMediaResult } from '../geminiService.ts';
 import { VdriveClient, vdriveConfigFromEnv } from './vdrive.ts';
 
 export type Segment = { speaker: string | null; start: number; end: number; text: string };
@@ -48,6 +50,20 @@ export async function downloadAudio(url: string, dir: string): Promise<string> {
   return file;
 }
 
+/** Audio por la URL del aviso; si falta o falla, por su ruta en vDrive (API WebDAV). Común a todos los motores. */
+export async function fetchCallAudio(downloadUrl: string | null, audioRef: string | null | undefined, dir: string, vdrive: VdriveClient | null): Promise<string> {
+  let urlError: Error | null = null;
+  if (downloadUrl) {
+    try { return await downloadAudio(downloadUrl, dir); } catch (error) { urlError = error as Error; }
+  }
+  if (vdrive && audioRef) {
+    const file = join(dir, `audio${extname(audioRef) || '.mp3'}`);
+    await writeFile(file, await vdrive.download(audioRef), { mode: 0o600 });
+    return file;
+  }
+  throw urlError || new TranscriptionError('sin URL de descarga ni acceso a vDrive: no se puede obtener el audio');
+}
+
 /**
  * Ejecuta `NETELIP_WHISPER_COMMAND <fichero>`, que debe imprimir en stdout
  * {"language": "es", "text": "...", "segments": [{start, end, text}]}.
@@ -59,24 +75,10 @@ export class WhisperCommandEngine implements TranscriptionEngine {
   constructor(private readonly command: string, private readonly timeoutMs = 30 * 60_000, private readonly debugAudioDir: string | null = null,
     private readonly vdrive: VdriveClient | null = null) {}
 
-  /** Audio por la URL del aviso; si falta o falla, por su ruta en vDrive (API WebDAV). */
-  private async fetchAudio(downloadUrl: string | null, audioRef: string | null | undefined, dir: string): Promise<string> {
-    let urlError: Error | null = null;
-    if (downloadUrl) {
-      try { return await downloadAudio(downloadUrl, dir); } catch (error) { urlError = error as Error; }
-    }
-    if (this.vdrive && audioRef) {
-      const file = join(dir, `audio${extname(audioRef) || '.mp3'}`);
-      await writeFile(file, await this.vdrive.download(audioRef), { mode: 0o600 });
-      return file;
-    }
-    throw urlError || new TranscriptionError('sin URL de descarga ni acceso a vDrive: no se puede obtener el audio');
-  }
-
   async transcribe({ externalId, downloadUrl, audioRef, onProgress, avisoInRecording, channelSpeakers }: TranscriptionInput): Promise<Transcript> {
     const dir = await mkdtemp(join(tmpdir(), 'netelip-audio-'));
     try {
-      const file = await this.fetchAudio(downloadUrl, audioRef, dir);
+      const file = await fetchCallAudio(downloadUrl, audioRef, dir, this.vdrive);
       if (this.debugAudioDir) {
         await mkdir(this.debugAudioDir, { recursive: true, mode: 0o700 });
         await copyFile(file, join(this.debugAudioDir, `${externalId.replace(/[^\w.-]/g, '_')}${extname(file)}`));
@@ -124,6 +126,61 @@ export class WhisperCommandEngine implements TranscriptionEngine {
   }
 }
 
+const GEMINI_TIMEOUT_MS = 5 * 60_000;
+
+const GEMINI_PROMPT = `Transcribe literalmente, en español, esta llamada telefónica de Grupo LYN con un cliente.
+- Al principio puede sonar una locución grabada que avisa de que la llamada se graba: no la transcribas.
+- Hablan dos personas: "agente" (Grupo LYN) y "cliente". Si no puedes saber quién habla, usa null.
+- Si no hay conversación (solo silencio, ruido, tonos o la locución), devuelve segments vacío. No inventes texto.
+Responde solo con JSON: {"language":"es","segments":[{"start":0.0,"end":0.0,"speaker":"agente","text":"..."}]}
+start y end en segundos desde el inicio de la grabación.`;
+
+function words(text: string): string[] {
+  return text.normalize('NFD').replace(/\p{Mn}/gu, '').toLowerCase().match(/[a-z0-9]+/g) || [];
+}
+
+/** Mismo criterio que whisper_transcribe.py: el aviso queda en la grabación, pero no lo dijo nadie. */
+function isAviso(text: string, avisoWords: Set<string>): boolean {
+  const w = words(text);
+  return avisoWords.size > 0 && w.length >= 3 && w.filter((x) => avisoWords.has(x)).length / w.length >= 0.7;
+}
+
+/** Respuesta de Gemini → Transcript. Descarta el aviso y los segmentos que solo dicen «Grupo LYN» (NET-03). */
+export function parseGeminiTranscript(raw: string, avisoText = ''): Transcript {
+  let parsed: { language?: string; segments?: Array<{ start?: unknown; end?: unknown; speaker?: unknown; text?: unknown }> };
+  try { parsed = JSON.parse(raw); } catch { throw new TranscriptionError('respuesta de Gemini no es JSON'); }
+  if (!parsed || !Array.isArray(parsed.segments)) throw new TranscriptionError('respuesta de Gemini sin segments');
+  const avisoWords = new Set(words(avisoText));
+  const segments: Segment[] = parsed.segments
+    .map((s) => {
+      const speaker = String(s.speaker ?? '').toLowerCase();
+      return { speaker: speaker === 'agente' || speaker === 'cliente' ? speaker : null, start: Number(s.start) || 0, end: Number(s.end) || 0, text: String(s.text ?? '').trim() };
+    })
+    .filter((s) => s.text && !isAviso(s.text, avisoWords) && !words(s.text).every((w) => w === 'grupo' || w === 'lyn'));
+  return { engine: 'gemini', language: parsed.language || 'es', text: segments.map((s) => s.text).join(' '), segments: segments.length ? segments : null };
+}
+
+/** Gemini (Interactions API, misma clave que los informes). El audio sale a Google: requiere el visto bueno de Legal (P3). */
+export class GeminiEngine implements TranscriptionEngine {
+  readonly name = 'gemini';
+  constructor(private readonly vdrive: VdriveClient | null = null, private readonly call: typeof callGeminiWithMediaResult = callGeminiWithMediaResult) {}
+
+  async transcribe({ downloadUrl, audioRef, onProgress }: TranscriptionInput): Promise<Transcript> {
+    const dir = await mkdtemp(join(tmpdir(), 'netelip-audio-'));
+    try {
+      const file = await fetchCallAudio(downloadUrl, audioRef, dir, this.vdrive);
+      onProgress?.(10);
+      const audio = { type: 'audio' as const, base64: (await readFile(file)).toString('base64'), mimeType: extname(file) === '.wav' ? 'audio/wav' : 'audio/mpeg' };
+      const result = await this.call(GEMINI_PROMPT, [audio], 'flash', undefined, GEMINI_TIMEOUT_MS);
+      // Sin Gemini, callGeminiWithMediaResult devuelve un texto local de reserva: nunca se guarda como transcripción.
+      if (result.fallback) throw new TranscriptionError(`Gemini no disponible${result.retryable ? ' (temporal)' : ' (clave, cuota o petición rechazada)'}`);
+      return parseGeminiTranscript(result.text, process.env.NETELIP_AVISO_TEXT || '');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+}
+
 export class NetelipAIEngine implements TranscriptionEngine {
   readonly name = 'netelip_ai';
   async transcribe(): Promise<Transcript> {
@@ -135,6 +192,10 @@ export function buildEngine(env: NodeJS.ProcessEnv): TranscriptionEngine | null 
   const name = String(env.NETELIP_TRANSCRIPTION_ENGINE || 'none').trim();
   if (name === 'none' || !name) return null;
   if (name === 'netelip_ai') return new NetelipAIEngine();
+  if (name === 'gemini') {
+    const vdrive = vdriveConfigFromEnv(env);
+    return new GeminiEngine(vdrive ? new VdriveClient(vdrive) : null);
+  }
   if (name === 'local_whisper') {
     const command = String(env.NETELIP_WHISPER_COMMAND || '').trim();
     if (!command) throw new Error('NETELIP_WHISPER_COMMAND es obligatorio con NETELIP_TRANSCRIPTION_ENGINE=local_whisper');

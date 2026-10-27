@@ -51,7 +51,7 @@ Llamada ─► Netelip API Voice ─► /webhook/netelip/<token>/control   (avis
 | `NETELIP_AVISO_ANNOUNCE` | `remote\|https://<dominio>/webhook/netelip/<token>/aviso.mp3` |
 | `NETELIP_OUTBOUND_CALLERID` | `Grupo LYN;34XXXXXXXXX` (número asignado a la cuenta). El nombre no suele llegar a los móviles, solo el número. En el QA del 22/10/2026, con `34910054498` el móvil mostró +34 910 05 92 15: falta que Netelip confirme qué número presenta (pregunta 16 a soporte) |
 | `NETELIP_CONTROL_ROUTES` / `NETELIP_CONTROL_DEFAULT_EXTENSION` | Número entrante → extensión, según el inventario del runbook |
-| `NETELIP_TRANSCRIPTION_ENGINE` | `none` hasta que se decida P3; después, el motor aprobado (ver «Transcripción») |
+| `NETELIP_TRANSCRIPTION_ENGINE` | `none` hasta que se decida P3; después, `gemini` o `local_whisper` (ver «Transcripción») |
 | `NETELIP_VDRIVE_USER` / `NETELIP_VDRIVE_APP_PASSWORD` | **Obligatorias** (el preflight no deja desplegar sin ellas). Usuario de vDrive y contraseña de aplicación de Nextcloud, nunca la del panel. Con ellas se descarga el audio de las llamadas pendientes cuando se active el motor |
 | `NETELIP_ALERT_WEBHOOK_URL` | Canal de tecnología (Slack/Teams) para fallos y conciliación |
 | `NETELIP_TRANSCRIPT_RETENTION_DAYS` / `NETELIP_AUDIO_RETENTION_DAYS` | Según P5. Sin definir no se borra nada |
@@ -59,7 +59,17 @@ Llamada ─► Netelip API Voice ─► /webhook/netelip/<token>/control   (avis
 
 ## Transcripción
 
-`local_whisper` ejecuta `backend/netelip/whisper_transcribe.py` (faster-whisper). Medido el 15/10/2026 con una llamada real a un móvil, leyendo un texto conocido:
+Se elige con `NETELIP_TRANSCRIPTION_ENGINE` y se cambia reiniciando el backend. Todos los motores obtienen el audio igual (URL del aviso o, si caducó, vDrive) y guardan el mismo formato; las llamadas ya transcritas conservan el motor que las procesó.
+
+| Motor | Qué hace | En el servidor | Datos |
+|---|---|---|---|
+| `none` | Nada: las llamadas quedan `pending` | — | — |
+| `gemini` | Sube el audio a Gemini con la clave de los informes (`GOOGLE_GEMINI_API_KEY`, modelo `GOOGLE_GEMINI_FLASH_MODEL`) y pide el texto separado en agente y cliente | Nada que instalar, sin carga | **El audio sale a Google**: requiere el visto bueno de Legal |
+| `local_whisper` | `whisper_transcribe.py` (faster-whisper) en el propio servidor | Python, ffmpeg, modelo de ~1,6 GB; usa toda la CPU y 1,5–2 GB de RAM durante minutos | No sale del servidor |
+
+**Gemini.** Descarta, como Whisper, los segmentos que repiten el aviso (`NETELIP_AVISO_TEXT`) o que solo dicen «Grupo LYN» (NET-03). Si Gemini no responde (clave, cuota o red), la transcripción falla y se reintenta: nunca se guarda la respuesta local de reserva que usan los informes. Precisión: pendiente de medir con las grabaciones del QA.
+
+**Whisper.** `local_whisper` ejecuta `backend/netelip/whisper_transcribe.py` (faster-whisper). Medido el 15/10/2026 con una llamada real a un móvil, leyendo un texto conocido:
 
 | Configuración | Palabras acertadas |
 |---|---|
@@ -70,7 +80,7 @@ Llamada ─► Netelip API Voice ─► /webhook/netelip/<token>/control   (avis
 - **Inicio de la conversación.** En las salientes se salta el aviso, pero nunca más que lo que dura `NETELIP_AVISO_FILE`: así no se pierde un saludo en voz baja justo después del aviso.
 - **GRUPO LYN y CLIENTE.** La grabación es mono. El script parte cada segmento por las pausas y los finales de frase, y reparte los tramos entre las dos voces por su energía grave: la red móvil la recorta y la voz por VoIP la conserva. Si las dos voces no se distinguen (una sola voz, o dos por la misma red), no etiqueta y el panel avisa de que no se pudo separar. Las frases muy cortas al final pueden quedar en el turno equivocado. La separación exacta necesita la grabación estéreo, pendiente de Netelip (pregunta 17).
 - **Llamadas grabadas con el motor apagado.** Cada llamada queda en el historial con la transcripción `pending`. La grabación la guarda Netelip en vDrive (`/APIVoice/Record/<día>/`) y la llamada conserva su ruta. Al activar el motor (cambiar `NETELIP_TRANSCRIPTION_ENGINE` y reiniciar el backend fuera del horario de llamadas), se transcriben todas las pendientes, de una en una y de la más antigua a la más reciente. Como el enlace de descarga del aviso caduca, el audio se baja de vDrive. Mientras el motor está apagado no se avisa de las pendientes; si vDrive no responde al arrancar, sí llega la alerta «vDrive de Netelip inaccesible». **Hay que confirmar con Netelip cuánto tiempo conserva vDrive las grabaciones:** es el plazo máximo para activar el motor sin perder audios.
-- **Motor pendiente de decidir (P3).** Que el servidor tenga 4 GB de RAM no demuestra que Whisper funcione con la calidad requerida (lo medido es 72–76 % frente al 95 % objetivo) ni sin quitar memoria al backend y a Evolution. Mientras Producto y Legal no aprueben un motor con evidencia de precisión, `NETELIP_TRANSCRIPTION_ENGINE` queda en `none`: las llamadas se guardan y la transcripción queda pendiente.
+- **Motor pendiente de decidir (P3).** La instancia de producción tiene 3,7 GB de RAM (2,6 GB disponibles el 27/10/2026) y CPU de ráfaga de Lightsail: Whisper cabe justo y, con muchas pendientes, puede agotar los créditos de CPU y ralentizar WhatsApp. Mientras Producto y Legal no aprueben un motor con evidencia de precisión, `NETELIP_TRANSCRIPTION_ENGINE` queda en `none`: las llamadas se guardan y la transcripción queda pendiente.
 - **Precisión objetivo de Producto: 95 %.** Depende sobre todo de la calidad del audio: mono, 8 kHz, línea móvil. Ver el estado en la subtarea del spike.
 
 ## Paso a paso hasta producción
