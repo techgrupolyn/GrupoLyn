@@ -11,7 +11,8 @@ describe.skipIf(!databaseUrl)('Grabaciones en PostgreSQL QA local', () => {
   let service: ReturnType<typeof createMeetingRecordingService>;
   beforeAll(async () => {
     const url = new URL(databaseUrl!);
-    if (url.hostname !== '127.0.0.1' || url.port !== '15439' || url.pathname !== '/lyn_qa_retest') throw new Error('Solo QA local');
+    const localPort = url.port === '15439' || (process.env.CI === 'true' && url.port === '5432');
+    if (url.hostname !== '127.0.0.1' || !localPort || url.pathname !== '/lyn_qa_retest') throw new Error('Solo QA local');
     client = new Client({ connectionString: databaseUrl });
     await client.connect();
     await client.query(`CREATE TEMP TABLE google_drive_connections(id TEXT PRIMARY KEY,scope TEXT,revoked_at TIMESTAMPTZ);
