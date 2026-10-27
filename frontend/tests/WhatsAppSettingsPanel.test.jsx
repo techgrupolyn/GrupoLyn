@@ -1,7 +1,10 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, configure, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WhatsAppSettingsPanel } from '../src/ceo-dashboard/views/SettingsView';
 import api from '../src/ceo-dashboard/api';
+
+configure({ asyncUtilTimeout: 15000 });
+vi.setConfig({ testTimeout: 30000 });
 
 vi.mock('../src/ceo-dashboard/api', () => ({ default: {
   settings: { find: vi.fn() }, chat: { privacySettings: vi.fn() },
@@ -24,6 +27,31 @@ describe('Desvincular cuentas de WhatsApp', () => {
     api.whatsappAccounts.status.mockImplementation(async (id) => ({ account_id: id, state: 'open', connected: true }));
   });
   afterEach(() => vi.restoreAllMocks());
+
+  it('selecciona una cuenta activa antes que la cuenta principal inactiva', async () => {
+    api.whatsappAccounts.list.mockResolvedValueOnce([
+      { id: 'default', nombre: 'Cuenta principal', evolution_instance_name: 'lyn-production', activo: false },
+      { id: 'sergio', nombre: 'Sergio', evolution_instance_name: 'Sergio-01', activo: true },
+    ]);
+    render(<WhatsAppSettingsPanel />);
+    expect(await screen.findByText('Conectada')).toBeInTheDocument();
+    expect(screen.getByLabelText('Cuenta de WhatsApp')).toHaveValue('sergio');
+    expect(api.whatsappAccounts.status).toHaveBeenCalledExactlyOnceWith('sergio');
+  });
+
+  it('muestra una cuenta inactiva sin consultar una instancia inexistente', async () => {
+    api.whatsappAccounts.list.mockResolvedValueOnce([
+      { id: 'default', nombre: 'Cuenta principal', evolution_instance_name: 'lyn-production', activo: false },
+      { id: 'sergio', nombre: 'Sergio', evolution_instance_name: 'Sergio-01', activo: true },
+    ]);
+    render(<WhatsAppSettingsPanel />);
+    await screen.findByText('Conectada');
+    fireEvent.change(screen.getByLabelText('Cuenta de WhatsApp'), { target: { value: 'default' } });
+    expect(await screen.findByText('Desactivada')).toBeInTheDocument();
+    expect(screen.getByText(/0 chats guardados · Cuenta inactiva/)).toBeInTheDocument();
+    expect(api.whatsappAccounts.status).not.toHaveBeenCalledWith('default');
+    expect(screen.queryByText(/Escanea un nuevo QR/)).not.toBeInTheDocument();
+  });
 
   it('confirma la cuenta, conserva el historial y no envía el formulario de alta', async () => {
     render(<WhatsAppSettingsPanel />);

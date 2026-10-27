@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import { linkUnassignedMeetingActions } from './meeting-action-linking.ts';
 import cors from 'cors';
 import express, { NextFunction, Request, Response } from 'express';
 import { createServer } from 'http';
@@ -9,8 +11,10 @@ import rateLimit from 'express-rate-limit';
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'crypto';
 import type { EvolutionInstance, MessageItem, Chat, ConnectionStatus, Mensaje, ResumenRequest, ResumenResponse, RoleClassification, Specialist } from './types/index.ts';
 import { callGeminiWithPrompt, callGeminiWithPromptResult, resolveSpecialist, setSpecialists, specialists } from './geminiService.ts';
+import { requestWithDeadline } from './request-deadline.ts';
 import { canExtractGoogleDriveText, classifyGoogleDriveArtifact, decryptGoogleDriveSecret, encryptGoogleDriveSecret, parseGoogleDriveFolderId } from './google-drive.ts';
 import { iterateGoogleDriveFolderFiles, type GoogleDriveFile } from './google-drive-sync.ts';
+import { createMeetingRecordingService, ensureMeetingRecordingSchema, recordingState } from './meeting-recordings.ts';
 import { meetingDirectoryContext, syncSupabaseDirectory, supabaseDirectoryConfigFromEnv, type MeetingDirectoryCandidate } from './supabase-directory.ts';
 import { authenticateWithSupabasePassword, authenticateWithSupabaseAccessToken, isSupabaseAuthConfigured, supabaseAuthConfigFromEnv, SupabaseAuthServiceError, type SupabaseAuthenticatedUser } from './supabase-auth.ts';
 import { createClubSsoRouter } from './club-sso.ts';
@@ -19,8 +23,11 @@ import { createPhonePrefixInference } from './phone-prefix.ts';
 import { Readable } from 'stream';
 import { unwrapWhatsAppContent, nonTextWhatsAppKind } from './whatsapp-content.ts';
 import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from './meeting-organizer.ts';
+import { meetingReviewChain, meetingEmployeeRoles, meetingStageRecipientCondition, canDeleteMeetingActionsForRole } from './meeting-routing.ts';
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
 import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
+import { ensureProjectMeetingSchema, registerProjectMeetingRoutes, refreshProjectMeetings, syncProjectMeeting } from './meeting-project-workflow.ts';
+import { exactActionProject, reconcileMeetingActionProjects } from './meeting-project-linking.ts';
 import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryMessagesReviewed, createSummaryQueue, publicSummaryJob, summaryJobStorage, SummaryJobError, type SummaryJob } from './summary-jobs.ts';
 import { generateBatchedGlobalSummary } from './global-summary-batches.ts';
 import { evolutionHistoryPages } from './evolution-history.ts';
@@ -123,11 +130,16 @@ async function runSupabaseDirectorySync(): Promise<unknown> {
   if (supabaseDirectorySyncPromise) return supabaseDirectorySyncPromise;
   supabaseDirectorySyncPromise = syncSupabaseDirectory(pool, supabaseDirectoryConfigFromEnv())
     .then(async (result) => {
-      const tagged = await backfillMeetingDirectoryTags();
+      await pool.query('UPDATE meeting_project_feature SET directory_available=TRUE WHERE singleton=TRUE');
+      const tagged = await backfillMeetingDirectoryTags({ skipPending: true });
       netelipWorkers.relink();
       console.log(`[supabase-directory] Sincronizados ${result.profiles} perfiles, ${result.projects} proyectos y ${result.assignments} asignaciones`);
       publish('directory-sync', { ...result, tagged });
       return { ...result, tagged };
+    })
+    .catch(async (error) => {
+      await pool.query('UPDATE meeting_project_feature SET directory_available=FALSE WHERE singleton=TRUE').catch(() => undefined);
+      throw error;
     })
     .finally(() => { supabaseDirectorySyncPromise = null; });
   return supabaseDirectorySyncPromise;
@@ -703,6 +715,8 @@ async function ensureDatabaseSchema(): Promise<void> {
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS pmc_employee_id VARCHAR(255);
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS pmc_in_training BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS pmc_assignments JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS workflow_recipient_id VARCHAR(255);
+    CREATE INDEX IF NOT EXISTS meeting_reviews_workflow_recipient_idx ON meeting_reviews(workflow_recipient_id) WHERE workflow_recipient_id IS NOT NULL;
     ALTER TABLE meeting_reviews ADD COLUMN IF NOT EXISTS directory_match_confidence VARCHAR(20);
     CREATE INDEX IF NOT EXISTS idx_meeting_reviews_analysis_queue ON meeting_reviews(analysis_status, updated_at ASC);
     CREATE INDEX IF NOT EXISTS idx_meeting_reviews_project_id ON meeting_reviews(project_id);
@@ -711,6 +725,7 @@ async function ensureDatabaseSchema(): Promise<void> {
     ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS origin VARCHAR(40) NOT NULL DEFAULT 'manual';
     ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS project_id VARCHAR(255);
     ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS project_unresolved BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS project_link_policy VARCHAR(32);
     ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS responsible_id VARCHAR(255);
     ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS responsible_kind VARCHAR(32);
     ALTER TABLE meeting_review_actions ADD COLUMN IF NOT EXISTS responsible_role VARCHAR(255);
@@ -818,8 +833,8 @@ async function ensureDatabaseSchema(): Promise<void> {
     CREATE TABLE IF NOT EXISTS meeting_agent_settings (
       id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id = TRUE),
       naming_convention TEXT NOT NULL DEFAULT 'Comité de obra · NOMBRE DEL PMC | Reunión cliente · NOMBRE DE LA OBRA',
-      committee_workflow JSONB NOT NULL DEFAULT '["delineante","pmc","operations","director"]'::jsonb,
-      client_workflow JSONB NOT NULL DEFAULT '["delineante","pmc","operations","director"]'::jsonb,
+      committee_workflow JSONB NOT NULL DEFAULT '["organizer","delineante","pmc"]'::jsonb,
+      client_workflow JSONB NOT NULL DEFAULT '["organizer","delineante","pmc"]'::jsonb,
       recording_notice TEXT NOT NULL DEFAULT 'La grabación y la transcripción de esta reunión se gestionan para fines operativos internos.',
       updated_by VARCHAR(120),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -947,6 +962,8 @@ async function ensureDatabaseSchema(): Promise<void> {
       synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_organigrama_asignaciones_empleado ON organigrama_cargo_asignaciones(empleado_id) WHERE activo = TRUE;
+    ALTER TABLE organigrama_cargos ADD COLUMN IF NOT EXISTS tipo_equipo_proyecto TEXT;
+    ALTER TABLE organigrama_cargo_asignaciones ADD COLUMN IF NOT EXISTS source_assigned_at TIMESTAMPTZ;
     CREATE INDEX IF NOT EXISTS idx_organigrama_asignaciones_proyecto ON organigrama_cargo_asignaciones(proyecto_id) WHERE activo = TRUE;
     CREATE TABLE IF NOT EXISTS proyecto_aliases (
       id UUID PRIMARY KEY,
@@ -984,6 +1001,8 @@ async function ensureDatabaseSchema(): Promise<void> {
 
   const defaultPasswordHash = hashPassword(process.env.CEO_INITIAL_PASSWORD || 'superadmin');
   await ensureDashboardOperations(pool);
+  await ensureProjectMeetingSchema(pool);
+  await ensureMeetingRecordingSchema(pool);
   await ensureSummaryJobs(pool);
   await ensureNetelipCalls(pool);
   await ensureWhatsAppReliability(pool);
@@ -1208,6 +1227,10 @@ type MeetingAccessScope = { employeeId: string | null; canEdit: boolean; hierarc
 function meetingVisibilityCondition(reviewAlias: string, employeePlaceholder: string): string {
   return `(
     ${reviewAlias}.pmc_employee_id = ${employeePlaceholder}
+    OR ${reviewAlias}.workflow_recipient_id = ${employeePlaceholder}
+    OR EXISTS (SELECT 1 FROM meeting_artifact_organizers organizer WHERE organizer.artifact_id = ${reviewAlias}.artifact_id AND organizer.employee_id = ${employeePlaceholder})
+    OR EXISTS (SELECT 1 FROM jsonb_array_elements(${reviewAlias}.pmc_assignments) person WHERE person->>'employee_id' = ${employeePlaceholder})
+    OR EXISTS (SELECT 1 FROM organigrama_cargo_asignaciones assignment WHERE assignment.proyecto_id = ${reviewAlias}.project_id AND assignment.empleado_id = ${employeePlaceholder} AND assignment.activo = TRUE)
     OR EXISTS (SELECT 1 FROM proyecto_asignaciones scoped_assignment WHERE scoped_assignment.proyecto_id = ${reviewAlias}.project_id AND scoped_assignment.empleado_id = ${employeePlaceholder})
     OR EXISTS (SELECT 1 FROM meeting_review_actions scoped_action WHERE scoped_action.artifact_id = ${reviewAlias}.artifact_id AND scoped_action.responsible_kind = 'employee' AND scoped_action.responsible_id = ${employeePlaceholder})
     OR EXISTS (
@@ -1287,11 +1310,44 @@ async function requireMeetingEditor(req: Request, res: Response, next: NextFunct
     res.status(500).json({ error: 'No se pudo resolver el permiso de edición.' });
   }
 }
-function requireMeetingResponsibleAssigner(_req: Request, res: Response, next: NextFunction): void {
-  const session = res.locals.ceoSession as CeoSession | undefined;
-  const scope = res.locals.meetingAccessScope as MeetingAccessScope | undefined;
-  if (isCeoAdministratorRole(session?.rol) || meetingEditorRoleRank(scope?.hierarchyRole) >= 2) return next();
-  res.status(403).json({ error: 'La asignación manual de responsables requiere PMC/Jefe de Proyectos, Dirección o superadministrador.' });
+async function canDeleteMeetingActions(session: CeoSession, scope: MeetingAccessScope, artifactId: string): Promise<boolean> {
+  if (['superadmin', 'admin', 'ceo'].includes(String(session.rol || '').trim().toLowerCase())) return false;
+  const employeeId = await resolveSessionEmployeeId(session, scope);
+  if (!employeeId) return false;
+  if (isCeoAdministratorRole(session.rol) && canDeleteMeetingActionsForRole(session.rol)) return true;
+  const result = await pool.query<{ role: string }>(
+    `SELECT roles.role FROM meeting_reviews r CROSS JOIN LATERAL (${meetingEmployeeRoles('r', '$2')}) roles WHERE r.artifact_id = $1`,
+    [artifactId, employeeId],
+  );
+  return result.rows.some((row) => canDeleteMeetingActionsForRole(row.role));
+}
+
+async function requireMeetingActionEditor(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const session = readCeoSession(req);
+  if (!session) return void res.status(401).json({ error: 'Sesión inválida o vencida.' });
+  if (!isCeoMeetingAccessRole(session.rol)) return void res.status(403).json({ error: 'No tienes acceso a reuniones.' });
+  try {
+    const scope = await resolveMeetingAccessScope(session);
+    if (!scope) return void res.status(403).json({ error: 'Tu cuenta no está vinculada a un empleado activo.' });
+    const artifactId = String(req.params.artifactId || req.path.match(/^\/meetings\/([^/]+)/)?.[1] || '');
+    const visible = await pool.query(`SELECT r.artifact_id FROM meeting_reviews r WHERE r.artifact_id = $1${scope.employeeId ? ' AND ' + meetingVisibilityCondition('r', '$2') : ''}`, scope.employeeId ? [artifactId, scope.employeeId] : [artifactId]);
+    if (!visible.rows.length) return void res.status(403).json({ error: 'No tienes acceso a esta reunión.' });
+    res.locals.ceoSession = session;
+    res.locals.meetingAccessScope = scope;
+    next();
+  } catch (error) {
+    console.error('[meetings/actions/access]', (error as Error).message);
+    res.status(500).json({ error: 'No se pudo verificar el permiso de acciones.' });
+  }
+}
+
+async function requireMeetingActionDeleter(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    if (await canDeleteMeetingActions(res.locals.ceoSession, res.locals.meetingAccessScope, String(req.params.artifactId))) return next();
+    res.status(403).json({ error: 'Solo PMC y Director pueden borrar acciones. El superadministrador no tiene esta excepción.' });
+  } catch {
+    res.status(500).json({ error: 'No se pudo verificar el permiso de borrado.' });
+  }
 }
 
 export function isCeoConsultationRoute(path: string): boolean {
@@ -1312,11 +1368,6 @@ type MeetingWorkItem = {
   updatedAt: string;
 };
 
-function workflowStageForOrganizationRole(role: unknown): string | null {
-  const rank = meetingEditorRoleRank(role);
-  return rank === 1 ? 'delineante' : rank === 2 ? 'pmc' : rank === 3 ? 'operations' : rank === 4 ? 'director' : null;
-}
-
 async function resolveSessionEmployeeId(session: CeoSession, scope: MeetingAccessScope): Promise<string | null> {
   if (scope.employeeId) return scope.employeeId;
   if (!session.id) return null;
@@ -1324,26 +1375,18 @@ async function resolveSessionEmployeeId(session: CeoSession, scope: MeetingAcces
   return result.rows[0]?.id || null;
 }
 
-async function meetingReviewerPositions(employeeId: string): Promise<{ projectId: string | null; stage: string }[]> {
-  const result = await pool.query<{ project_id: string | null; cargo: string }>(
-    'SELECT oca.proyecto_id AS project_id, c.nombre AS cargo FROM organigrama_cargo_asignaciones oca INNER JOIN organigrama_cargos c ON c.id = oca.cargo_id WHERE oca.empleado_id = $1 AND oca.activo = TRUE AND c.activo = TRUE', [employeeId],
-  );
-  return result.rows.map((row) => ({ projectId: row.project_id, stage: workflowStageForOrganizationRole(row.cargo) })).filter((row): row is { projectId: string | null; stage: string } => Boolean(row.stage));
-}
-
 async function loadMeetingWorkItems(session: CeoSession, scope: MeetingAccessScope): Promise<MeetingWorkItem[]> {
   const employeeId = await resolveSessionEmployeeId(session, scope);
-  const reviewVisibility = scope.employeeId ? ' AND ' + meetingVisibilityCondition('r', '$1') : '';
+  const reviewVisibility = ' AND ' + meetingStageRecipientCondition('r', '$1') + (scope.employeeId ? ' AND ' + meetingVisibilityCondition('r', '$1') : '');
   const actionVisibility = scope.employeeId ? ' AND ' + meetingVisibilityCondition('r', '$2') : '';
   const reviewQuery = 'SELECT r.artifact_id, a.name, r.project_id, r.project_name, r.workflow_stage, r.status, r.updated_at FROM meeting_reviews r INNER JOIN google_drive_artifacts a ON a.id = r.artifact_id WHERE r.analysis_status = \'completed\' AND r.status IN (\'draft\', \'pending\', \'returned\')' + reviewVisibility + ' ORDER BY r.updated_at DESC';
   const actionQuery = 'SELECT ma.id, ma.artifact_id, ma.title, ma.project_name, ma.due_date, ma.updated_at, a.name AS meeting_name FROM meeting_review_actions ma INNER JOIN meeting_reviews r ON r.artifact_id = ma.artifact_id INNER JOIN google_drive_artifacts a ON a.id = ma.artifact_id WHERE ma.status = \'pending\' AND ((ma.responsible_kind = \'employee\' AND ma.responsible_id = $1) OR EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id AND (mar.employee_id = $1 OR (mar.responsible_kind = \'employee\' AND mar.responsible_id = $1))))' + actionVisibility + ' ORDER BY ma.due_date ASC NULLS LAST, ma.updated_at DESC';
-  const [reviewResult, actionResult, positions] = await Promise.all([
-    pool.query<{ artifact_id: string; name: string | null; project_id: string | null; project_name: string | null; workflow_stage: string; status: string; updated_at: string }>(reviewQuery, scope.employeeId ? [scope.employeeId] : []),
+  const [reviewResult, actionResult] = await Promise.all([
+    employeeId ? pool.query<{ artifact_id: string; name: string | null; project_id: string | null; project_name: string | null; workflow_stage: string; status: string; updated_at: string }>(reviewQuery, [employeeId]) : Promise.resolve({ rows: [] }),
     employeeId ? pool.query<{ id: string; artifact_id: string; title: string; project_name: string | null; due_date: string | null; updated_at: string; meeting_name: string | null }>(actionQuery, scope.employeeId ? [employeeId, scope.employeeId] : [employeeId]) : Promise.resolve({ rows: [] }),
-    employeeId ? meetingReviewerPositions(employeeId) : Promise.resolve([]),
   ]);
-  const stageLabels: Record<string, string> = { delineante: 'Delineante', pmc: 'PMC / Jefe de Proyectos', operations: 'Dirección de Operaciones', director: 'Director General' };
-  const reviewItems = reviewResult.rows.filter((row) => positions.some((position) => position.stage === row.workflow_stage && (position.projectId === null || position.projectId === row.project_id))).map((row) => ({
+  const stageLabels: Record<string, string> = { organizer: 'Encargado de la reunión', delineante: 'Delineante', pmc: 'PMC', assigned: 'Persona asignada', operations: 'PMC (flujo anterior)', director: 'PMC (flujo anterior)' };
+  const reviewItems = reviewResult.rows.map((row) => ({
     key: ['review', row.artifact_id, row.workflow_stage, row.updated_at].join(':'), kind: 'review' as const, artifactId: row.artifact_id,
     title: 'Revisión requerida · ' + (stageLabels[row.workflow_stage] || 'Revisión'), detail: row.status === 'returned' ? 'El documento fue devuelto y requiere una nueva revisión.' : 'Hay un documento pendiente de tu revisión.',
     meetingName: row.name || 'Reunión sin título', projectName: row.project_name, dueDate: null, updatedAt: row.updated_at,
@@ -1357,7 +1400,7 @@ async function loadMeetingWorkItems(session: CeoSession, scope: MeetingAccessSco
     `SELECT a.id, a.name, a.metadata->>'import_error' AS error, a.updated_at
      FROM google_drive_artifacts a LEFT JOIN meeting_artifact_organizers organizer ON organizer.artifact_id = a.id
      WHERE a.metadata ? 'import_error' AND ($1::boolean OR organizer.employee_id = $2::varchar)
-     ORDER BY a.updated_at DESC LIMIT 250`, [scope.employeeId === null, employeeId],
+     ORDER BY a.updated_at DESC LIMIT 250`, [['superadmin', 'admin', 'ceo'].includes(String(session.rol || '').toLowerCase()), employeeId],
   );
   const issueItems: MeetingWorkItem[] = issues.rows.map((row) => ({
     key: `import_error:${row.id}:${row.updated_at}`, kind: 'import_error', artifactId: row.id,
@@ -1491,17 +1534,20 @@ async function googleDriveAccessToken(connectionId: string): Promise<string> {
   }
 
   const refreshToken = decryptGoogleDriveSecret(connection.refresh_token_encrypted, GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY);
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: GOOGLE_DRIVE_CLIENT_ID,
-      client_secret: GOOGLE_DRIVE_CLIENT_SECRET,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-    }),
-  });
-  const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+  const { response, payload } = await requestWithDeadline(async (signal) => {
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: GOOGLE_DRIVE_CLIENT_ID,
+        client_secret: GOOGLE_DRIVE_CLIENT_SECRET,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+      }),
+      signal,
+    });
+    return { response, payload: await response.json().catch(() => ({})) as Record<string, unknown> };
+  }, 30_000);
   if (!response.ok || !payload.access_token) throw new Error(String(payload.error_description || payload.error || 'No se pudo renovar la conexión de Google Drive'));
   const expiresAt = new Date(Date.now() + Math.max(60, Number(payload.expires_in || 3600)) * 1000);
   await pool.query(
@@ -1615,6 +1661,7 @@ async function syncGoogleDriveFolderUnsafe(folderId: string): Promise<GoogleDriv
           if (previous) {
             if (!previous.review_id && previous.has_text && canExtractGoogleDriveText(file.mimeType, file.name)) await queueMeetingAiAnalysis(previous.id);
             await linkMeetingOrganizer(previous.id, calendarCache);
+            if (previous.review_id) meetingRecordings.schedule(previous.id);
           }
           continue;
         }
@@ -1653,6 +1700,7 @@ async function syncGoogleDriveFolderUnsafe(folderId: string): Promise<GoogleDriv
         await linkMeetingOrganizer(artifactId, calendarCache);
         if (artifactId && mustExtractText && ['transcript', 'notes', 'document'].includes(artifactType)) {
           await queueMeetingAiAnalysis(artifactId);
+          meetingRecordings.schedule(artifactId);
         }
         if (isNew) imported += 1;
         else updated += 1;
@@ -1759,10 +1807,14 @@ function requireApiAccess(req: Request, res: Response, next: NextFunction): void
     return;
   }
   if (req.header('authorization')) {
-    if (isCeoConsultationRoute(req.path)) {
+    if (/^\/project-meetings(?:\/|$)/.test(req.path) || /^\/meetings\/work-items(?:\/|$)/.test(req.path)) {
+      requireCeoSession(req, res, next);
+    } else if (isCeoConsultationRoute(req.path)) {
       requireCeoSession(req, res, next);
     } else if (isCeoMeetingReadRoute(req.method, req.path)) {
       void requireCeoMeetingAccess(req, res, next);
+    } else if (req.method !== 'GET' && /^\/meetings\/[^/]+\/(actions(?:\/|$)|workflow$)/.test(req.path)) {
+      void requireMeetingActionEditor(req, res, next);
     } else if (isCeoMeetingEditRoute(req.method, req.path)) {
       void requireMeetingEditor(req, res, next);
     } else {
@@ -4306,36 +4358,34 @@ app.post('/api/google-drive/folders/:id/sync', requireCeoAuth, async (req: Reque
   }
 });
 
-const MEETING_WORKFLOW_STAGES = new Set(['delineante', 'pmc', 'operations', 'director']);
-
 type MeetingAgentSettings = { naming_convention: string; committee_workflow: string[]; client_workflow: string[]; recording_notice: string };
 
 async function loadMeetingAgentSettings(): Promise<MeetingAgentSettings> {
   const fallback: MeetingAgentSettings = {
     naming_convention: 'Comité de obra · NOMBRE DEL PMC | Reunión cliente · NOMBRE DE LA OBRA',
-    committee_workflow: ['delineante', 'pmc', 'operations', 'director'],
-    client_workflow: ['delineante', 'pmc', 'operations', 'director'],
+    committee_workflow: ['organizer', 'delineante', 'pmc'],
+    client_workflow: ['organizer', 'delineante', 'pmc'],
     recording_notice: 'La grabación y la transcripción de esta reunión se gestionan para fines operativos internos.',
   };
   try {
     const { rows } = await pool.query<{ naming_convention: string; committee_workflow: unknown; client_workflow: unknown; recording_notice: string }>('SELECT naming_convention, committee_workflow, client_workflow, recording_notice FROM meeting_agent_settings WHERE id = TRUE');
     const settings = rows[0];
-    return settings ? { naming_convention: settings.naming_convention || fallback.naming_convention, committee_workflow: meetingWorkflowSetting(settings.committee_workflow).length ? meetingWorkflowSetting(settings.committee_workflow) : fallback.committee_workflow, client_workflow: meetingWorkflowSetting(settings.client_workflow).length ? meetingWorkflowSetting(settings.client_workflow) : fallback.client_workflow, recording_notice: settings.recording_notice || fallback.recording_notice } : fallback;
+    return settings ? { naming_convention: settings.naming_convention || fallback.naming_convention, committee_workflow: fallback.committee_workflow, client_workflow: fallback.client_workflow, recording_notice: settings.recording_notice || fallback.recording_notice } : fallback;
   } catch {
     return fallback;
   }
 }
 
-function meetingWorkflowSetting(value: unknown): string[] {
-  const input = Array.isArray(value) ? value : [];
-  const stages = input.map((item) => String(item || '').trim()).filter((stage) => MEETING_WORKFLOW_STAGES.has(stage));
-  return Array.from(new Set(stages));
-}
+const meetingRecordings = createMeetingRecordingService(pool, {
+  token: googleDriveAccessToken, drive: googleDriveFetch,
+  changed: artifactId => publish('meetings-updated', { source: 'recording', artifactId }),
+});
+registerProjectMeetingRoutes(app, pool, readCeoSession, meetingRecordings);
 
 app.get('/api/meetings/configuration', requireCeoAuth, async (_req: Request, res: Response) => {
   try {
     const { rows } = await pool.query('SELECT naming_convention, committee_workflow, client_workflow, recording_notice, updated_by, updated_at FROM meeting_agent_settings WHERE id = TRUE');
-    res.json(rows[0] || {});
+    res.json({ ...rows[0], committee_workflow: meetingReviewChain.map(([stage]) => stage), client_workflow: meetingReviewChain.map(([stage]) => stage) });
   } catch (error) {
     console.error('[meetings/configuration] Error consultando:', (error as Error).message);
     res.status(500).json({ error: 'No se pudo cargar la configuración del Agente de reuniones.' });
@@ -4345,9 +4395,8 @@ app.get('/api/meetings/configuration', requireCeoAuth, async (_req: Request, res
 app.put('/api/meetings/configuration', requireMeetingEditor, async (req: Request, res: Response) => {
   try {
     const body = (req.body || {}) as Record<string, unknown>;
-    const committeeWorkflow = meetingWorkflowSetting(body.committee_workflow);
-    const clientWorkflow = meetingWorkflowSetting(body.client_workflow);
-    if (!committeeWorkflow.length || !clientWorkflow.length) return res.status(400).json({ error: 'Cada tipo de reunión debe tener al menos una etapa de revisión válida.' });
+    const committeeWorkflow = meetingReviewChain.map(([stage]) => stage);
+    const clientWorkflow = [...committeeWorkflow];
     const namingConvention = String(body.naming_convention || '').trim().slice(0, 2_000);
     const recordingNotice = String(body.recording_notice || '').trim().slice(0, 4_000);
     if (!namingConvention) return res.status(400).json({ error: 'La convención de nombrado es obligatoria.' });
@@ -5036,7 +5085,8 @@ async function persistMeetingActionResponsibles(actionId: string, projectName: s
   }
   return inserted;
 }
-async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillResult> {
+export async function backfillMeetingDirectoryTags(options: { skipPending?: boolean } = {}): Promise<MeetingDirectoryBackfillResult> {
+  await refreshProjectMeetings(pool);
   const candidates = await loadMeetingDirectoryCandidates();
   const result: MeetingDirectoryBackfillResult = { reviewsScanned: 0, reviewsTagged: 0, actionsScanned: 0, actionsTagged: 0 };
   if (!candidates.length) return result;
@@ -5052,9 +5102,14 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
               a.name AS source_name, a.metadata, LEFT(COALESCE(a.content_text, ''), 20000) AS content_text
        FROM meeting_reviews r
        INNER JOIN google_drive_artifacts a ON a.id = r.artifact_id
-       ORDER BY r.artifact_id FOR UPDATE OF r`,
+       WHERE r.analysis_status <> 'processing'
+         AND NOT EXISTS (SELECT 1 FROM meeting_project_drafts draft WHERE draft.artifact_id=r.artifact_id)
+         AND (NOT $1::boolean OR r.analysis_status <> 'pending' OR r.manual_revision = TRUE)
+       ORDER BY r.artifact_id FOR UPDATE OF r SKIP LOCKED`,
+      [Boolean(options.skipPending)],
     );
     for (const review of reviewsResult.rows) {
+      await yieldToEventLoop();
       result.reviewsScanned += 1;
       const detected = deriveMeetingIdentity({ name: review.source_name, metadata: review.metadata, content_text: review.content_text });
       const source = [review.project_name, review.source_name, review.content_text].filter(Boolean).join('\n');
@@ -5101,17 +5156,23 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
               r.project_name AS review_project_name, r.project_id AS review_project_id, r.pmc_employee_id AS review_pmc_employee_id
        FROM meeting_review_actions ma
        INNER JOIN meeting_reviews r ON r.artifact_id = ma.artifact_id
-       WHERE ma.project_unresolved = FALSE AND r.manual_revision = FALSE`,
+       WHERE ma.project_unresolved = FALSE AND r.manual_revision = FALSE AND r.analysis_status <> 'processing'
+         AND NOT EXISTS (SELECT 1 FROM meeting_project_drafts draft WHERE draft.artifact_id=r.artifact_id)
+         AND (NOT $1::boolean OR r.analysis_status <> 'pending')
+         AND ma.responsible_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM meeting_review_action_responsibles linked WHERE linked.action_id = ma.id)`,
+      [Boolean(options.skipPending)],
     );
     for (const action of actionsResult.rows) {
+      await yieldToEventLoop();
       result.actionsScanned += 1;
       if (action.responsible_source === 'manual') continue;
       const reference = resolveMeetingDirectoryReferences({ projectName: action.project_name || action.review_project_name, employeeName: action.responsible, roleHint: action.responsible_role }, candidates);
       const directedReference = resolveMeetingDirectoryReferences({ projectName: action.project_name || action.review_project_name, employeeName: actionDirectedPerson(action.title) }, candidates);
       const matchedReference = directedReference.employeeId && isDirectorReference(directedReference) ? directedReference : reference;
       const effectiveReference = matchedReference;
-      const inheritedProject = action.review_project_id ? candidates.find((candidate) => candidate.project_id === action.review_project_id) : undefined;
-      const project = effectiveReference.projectId ? candidates.find((candidate) => candidate.project_id === effectiveReference.projectId) : inheritedProject;
+      const exactProject = process.env.MEETING_PROJECT_MATCHING_ENABLED === 'true' ? null : exactActionProject(action.project_name, candidates.filter((candidate) => candidate.project_id).map((candidate) => ({ id:candidate.project_id!, name:candidate.project_name || '', aliases:candidate.project_aliases || [] })));
+      const project = candidates.find((candidate) => candidate.project_id === (action.project_id || exactProject?.id));
       const projectName = action.project_name || project?.project_name || null;
       const projectId = project?.project_id || null;
       const responsible = effectiveReference.employeeName || action.responsible;
@@ -5132,6 +5193,10 @@ async function backfillMeetingDirectoryTags(): Promise<MeetingDirectoryBackfillR
       );
       if (projectId || effectiveReference.employeeId || additionalResponsibles) result.actionsTagged += 1;
     }
+    const projectLinks = await reconcileMeetingActionProjects(client);
+    result.actionsTagged += projectLinks.linked.length;
+    const linked = await linkUnassignedMeetingActions(client, { skipPending: options.skipPending });
+    result.actionsTagged += linked.linked.length;
     await client.query('COMMIT');
     return result;
   } catch (error) {
@@ -5500,15 +5565,8 @@ app.get('/api/meetings', requireCeoMeetingAccess, async (req: Request, res: Resp
       where.push("r.analysis_status = 'completed'");
       const employeeId = await resolveSessionEmployeeId(res.locals.ceoSession as CeoSession, scope);
       if (employeeId) {
-        const positions = await meetingReviewerPositions(employeeId);
-        const turns = positions.map((position) => {
-          parameters.push(position.stage);
-          const stageParameter = '$' + parameters.length;
-          if (position.projectId === null) return `r.workflow_stage = ${stageParameter}`;
-          parameters.push(position.projectId);
-          return `(r.workflow_stage = ${stageParameter} AND r.project_id = $${parameters.length})`;
-        });
-        where.push(turns.length ? '(' + turns.join(' OR ') + ')' : 'FALSE');
+        parameters.push(employeeId);
+        where.push(meetingStageRecipientCondition('r', '$' + parameters.length));
       } else where.push('FALSE');
     }
     if (filter === 'pending') where.push("r.status = 'pending'");
@@ -5535,23 +5593,34 @@ app.get('/api/meetings', requireCeoMeetingAccess, async (req: Request, res: Resp
     const offsetPlaceholder = '$' + parameters.length;
     const [listResult, metricsResult] = await Promise.all([
       pool.query(
-        `SELECT a.id, a.name, LEFT(COALESCE(a.content_text, ''), 20000) AS content_text, a.metadata, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_truncated,
+        `WITH meeting_page AS MATERIALIZED (
+           SELECT a.id, COUNT(*) OVER()::int AS total_count
+           FROM google_drive_artifacts a
+           INNER JOIN meeting_reviews r ON r.artifact_id = a.id
+           WHERE ${where.join(' AND ')}
+           ORDER BY r.meeting_date ${listFilters.sort === 'oldest' ? 'ASC' : 'DESC'} NULLS LAST, CASE r.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 WHEN 'returned' THEN 2 ELSE 3 END, a.source_modified_at DESC NULLS LAST, a.id
+           LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}
+         )
+         SELECT a.id, a.name, LEFT(COALESCE(a.content_text, ''), 20000) AS content_text, a.metadata, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_truncated,
                 f.label AS folder_label, c.google_email, r.summary, r.decisions, r.project_name, r.project_id, r.contact_name, r.contact_id,
                 r.meeting_kind, r.pmc, r.pmc_employee_id, r.pmc_in_training, r.pmc_assignments, (SELECT role_lookup.nombre FROM usuario_rol role_link INNER JOIN roles role_lookup ON role_lookup.id = role_link.rol_id WHERE role_link.empleado_id = r.pmc_employee_id ORDER BY role_lookup.nombre ASC LIMIT 1) AS pmc_role, r.directory_match_confidence, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.updated_at,
-                COUNT(ma.id)::int AS actions_count,
+                action_counts.actions_count,
                 FALSE AS recording_notice_required,
-                COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND ma.responsible_id IS NULL AND NOT EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id))::int AS actions_without_responsible,
-                COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND ma.due_date IS NULL)::int AS actions_without_due_date,
-                COUNT(*) OVER()::int AS total_count
-         FROM google_drive_artifacts a
+                action_counts.actions_without_responsible,
+                action_counts.actions_without_due_date,
+                meeting_page.total_count
+         FROM meeting_page
+         INNER JOIN google_drive_artifacts a ON a.id = meeting_page.id
          INNER JOIN meeting_reviews r ON r.artifact_id = a.id
          LEFT JOIN google_drive_folders f ON f.id = a.folder_id
          LEFT JOIN google_drive_connections c ON c.id = a.connection_id
-         LEFT JOIN meeting_review_actions ma ON ma.artifact_id = a.id
-         WHERE ${where.join(' AND ')}
-         GROUP BY a.id, f.label, c.google_email, r.artifact_id
-         ORDER BY r.meeting_date ${listFilters.sort === 'oldest' ? 'ASC' : 'DESC'} NULLS LAST, CASE r.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 WHEN 'returned' THEN 2 ELSE 3 END, a.source_modified_at DESC NULLS LAST
-         LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
+         CROSS JOIN LATERAL (
+           SELECT COUNT(ma.id)::int AS actions_count,
+                  COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND ma.responsible_id IS NULL AND NOT EXISTS (SELECT 1 FROM meeting_review_action_responsibles mar WHERE mar.action_id = ma.id))::int AS actions_without_responsible,
+                  COUNT(ma.id) FILTER (WHERE ma.status = 'pending' AND ma.due_date IS NULL)::int AS actions_without_due_date
+           FROM meeting_review_actions ma WHERE ma.artifact_id = a.id
+         ) action_counts
+         ORDER BY r.meeting_date ${listFilters.sort === 'oldest' ? 'ASC' : 'DESC'} NULLS LAST, CASE r.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 WHEN 'returned' THEN 2 ELSE 3 END, a.source_modified_at DESC NULLS LAST, a.id`,
         parameters,
       ),
       pool.query(
@@ -5690,6 +5759,8 @@ async function assertMeetingAnalysisAllowed(artifactId: string, queryable: Pick<
 }
 
 async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIdentity?: MeetingAuditIdentity): Promise<MeetingAiRunResult> {
+  const startedAt = Date.now();
+  console.log(`[meetings/worker] Inicio id=${artifactId}`);
   await assertMeetingAnalysisAllowed(artifactId);
   await ensureMeetingReview(artifactId, actor);
   const artifactResult = await pool.query(
@@ -5711,6 +5782,7 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIden
   const directoryContext = meetingDirectoryContext(directoryCandidates).slice(0, 8_000);
   const agentSettings = await loadMeetingAgentSettings();
   const initialVersion = await pool.query<{ count: string }>('SELECT COUNT(*) AS count FROM meeting_review_versions WHERE artifact_id = $1', [artifactId]);
+  console.log(`[meetings/worker] Gemini id=${artifactId}`);
   const generation = await callGeminiWithPromptResult(
     meetingAiPrompt(source, {
       meetingKind: current.meeting_kind,
@@ -5724,6 +5796,7 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIden
     source,
   );
   if (generation.fallback) throw new Error('Gemini no está disponible para analizar esta reunión');
+  console.log(`[meetings/worker] Validando id=${artifactId}`);
   const analysis = parseMeetingAiAnalysis(generation.text);
   if (!analysis) throw new Error('La IA no devolvió un análisis de reunión válido');
 
@@ -5743,7 +5816,8 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIden
   }
   identity.pmc = identity.pmc || identityTags.employeeName;
   identity.projectName = identityTags.projectName || identity.projectName;
-  const taggedActions = resolveMeetingActionTags(retainExplicitIncompleteActions(source, analysis.actions), fullDirectory, { projectName: identityTags.projectName || identity.projectName, pmcEmployeeId: identityTags.employeeId });
+  const extractedActions = retainExplicitIncompleteActions(source, analysis.actions);
+  const taggedActions = resolveMeetingActionTags(extractedActions, fullDirectory, { projectName: identityTags.projectName || identity.projectName, pmcEmployeeId: identityTags.employeeId });
   const decisions = analysis.decisions.map((decision) => '- ' + decision).join('\n');
   const client = await pool.connect();
   try {
@@ -5761,15 +5835,17 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIden
     );
     await client.query("DELETE FROM meeting_review_actions WHERE artifact_id = $1 AND origin = 'ai'", [artifactId]);
     await client.query('DELETE FROM meeting_review_blockers WHERE artifact_id = $1', [artifactId]);
-    for (const action of taggedActions) {
+    for (const [actionIndex, action] of taggedActions.entries()) {
       const actionId = randomUUID();
       const actionProjectName = action.projectUnresolved ? null : action.projectName;
       await client.query(
-        "INSERT INTO meeting_review_actions (id, artifact_id, title, project_name, project_id, responsible, responsible_id, responsible_kind, responsible_role, match_confidence, due_date, estimated_minutes, source_ref, status, origin, project_unresolved) VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $7::varchar IS NOT NULL THEN 'employee' END, $8, $9, $10, $11, $12, $13, 'ai', $14)",
+        "INSERT INTO meeting_review_actions (id, artifact_id, title, project_name, project_id, responsible, responsible_id, responsible_kind, responsible_role, match_confidence, due_date, estimated_minutes, source_ref, status, origin, project_unresolved, project_link_policy) VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $7::varchar IS NOT NULL THEN 'employee' END, $8, $9, $10, $11, $12, $13, 'ai', $14, 'automatic')",
         [actionId, artifactId, action.title, actionProjectName, action.projectId, action.responsible, action.responsibleId, action.responsibleRole, action.matchConfidence, action.dueDate, action.estimatedMinutes, action.sourceRef, action.status, Boolean(action.projectUnresolved)],
       );
       await persistMeetingActionResponsibles(actionId, actionProjectName, action.responsible, action.responsibleRole || action.responsible || action.title, fullDirectory, client);
+      await client.query('UPDATE meeting_review_actions SET mentioned_responsible=$2 WHERE id=$1', [actionId, extractedActions[actionIndex]?.responsible || '']);
     }
+    await linkUnassignedMeetingActions(client, { artifactId });
     for (const blocker of analysis.blockers) {
       await client.query(
         'INSERT INTO meeting_review_blockers (id, artifact_id, title, detail, severity, source_ref) VALUES ($1, $2, $3, $4, $5, $6)',
@@ -5777,6 +5853,7 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIden
       );
     }
     const output = { meetingDate: analysis.meetingDate || meetingAnalysisDate(artifact.meeting_date) || deriveMeetingDate(artifact), summary: analysis.summary, decisions: analysis.decisions, relevantInformation: analysis.relevantInformation, identity, actions: taggedActions, blockers: analysis.blockers };
+    await syncProjectMeeting(client, artifactId);
     await client.query(
       'INSERT INTO meeting_review_ai_runs (id, artifact_id, actor, provider, model, input_chars, output_json) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)',
       [randomUUID(), artifactId, actor, generation.provider, generation.model, source.length, JSON.stringify(output)],
@@ -5793,6 +5870,7 @@ async function runMeetingAiAnalysis(artifactId: string, actor: string, auditIden
     client.release();
   }
   const routed = await routeReadyMeetingReviews();
+  console.log(`[meetings/worker] Completado id=${artifactId} ms=${Date.now() - startedAt}`);
   return { provider: generation.provider, model: generation.model, actions: taggedActions.length, blockers: analysis.blockers.length, routed };
 }
 
@@ -5827,7 +5905,7 @@ export async function processPendingMeetingAnalyses(): Promise<void> {
       } catch (error) {
         const message = String((error as Error).message || 'No se pudo analizar la reunión').slice(0, 2_000);
         await pool.query("UPDATE meeting_reviews SET analysis_status = CASE WHEN $4::varchar = 'pending' AND analysis_completed_at IS NOT NULL THEN 'completed' ELSE $4::varchar END, analysis_error = $2, analysis_version = $3, updated_at = NOW() WHERE artifact_id = $1", [row.artifact_id, message, MEETING_AI_ANALYSIS_VERSION, error instanceof MeetingAnalysisPausedError ? 'pending' : 'failed']);
-        console.error('[meetings/worker] Error:', message);
+        console.error(`[meetings/worker] Error id=${row.artifact_id}:`, message);
       }
     }
   } catch (error) {
@@ -5915,6 +5993,20 @@ app.post('/api/meetings/:artifactId/analyze', requireMeetingEditor, async (req: 
   }
 });
 
+app.get('/api/meetings/:artifactId/recording', requireCeoMeetingAccess, async (req: Request, res: Response) => {
+  try {
+    const artifactId = String(req.params.artifactId || '');
+    const scope = res.locals.meetingAccessScope as MeetingAccessScope;
+    const result = await pool.query(`SELECT r.recording_file_id,r.recording_status FROM meeting_reviews r
+      WHERE r.artifact_id=$1${scope.employeeId ? ` AND ${meetingVisibilityCondition('r', '$2')}` : ''}`, scope.employeeId ? [artifactId, scope.employeeId] : [artifactId]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Reunión no encontrada' });
+    meetingRecordings.schedule(artifactId);
+    return res.json(recordingState(result.rows[0]));
+  } catch {
+    return res.status(500).json({ error: 'No se pudo consultar la grabación' });
+  }
+});
+
 app.get('/api/meetings/:artifactId', requireCeoMeetingAccess, async (req: Request, res: Response) => {
   try {
     const artifactId = String(req.params.artifactId || '').trim();
@@ -5930,7 +6022,10 @@ app.get('/api/meetings/:artifactId', requireCeoMeetingAccess, async (req: Reques
     const artifactResult = await pool.query(
       `SELECT a.id, a.name, a.metadata, a.artifact_type, a.web_view_link, a.source_modified_at, a.content_text, a.content_truncated,
               f.label AS folder_label, c.google_email, r.summary, r.decisions, r.relevant_information, r.project_name, r.project_id, r.contact_name, r.contact_id,
-              r.meeting_kind, r.pmc, r.pmc_employee_id, r.pmc_in_training, r.pmc_assignments, r.directory_match_confidence, r.meeting_date, r.workflow_stage, r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.approved_at, r.approved_by, r.returned_reason, r.updated_at
+              r.meeting_kind, r.pmc, r.pmc_employee_id, r.pmc_in_training, r.pmc_assignments, r.directory_match_confidence, r.meeting_date, r.workflow_stage, r.workflow_recipient_id,
+              (SELECT json_build_object('id', e.id, 'name', CONCAT_WS(' ', e.nombre, e.apellido)) FROM meeting_artifact_organizers organizer JOIN empleados e ON e.id = organizer.employee_id AND e.activo = TRUE WHERE organizer.artifact_id = r.artifact_id) AS organizer,
+              r.recording_file_id, r.recording_status,
+              r.status, r.analysis_status, r.analysis_completed_at, r.analysis_error, r.approved_at, r.approved_by, r.returned_reason, r.updated_at
        FROM google_drive_artifacts a
        INNER JOIN meeting_reviews r ON r.artifact_id = a.id
        LEFT JOIN google_drive_folders f ON f.id = a.folder_id
@@ -5938,6 +6033,7 @@ app.get('/api/meetings/:artifactId', requireCeoMeetingAccess, async (req: Reques
        WHERE a.id = $1${visibilityWhere}`, artifactParameters,
     );
     if (!artifactResult.rows.length) return res.status(404).json({ error: 'Reunión no encontrada' });
+    meetingRecordings.schedule(artifactId);
     const [actionsResult, versionsResult, detectedBlockersResult, projectsResult, noticeResult] = await Promise.all([
       pool.query(`SELECT ma.id, ma.title, ma.project_name, ma.project_id, ma.responsible, ma.responsible_id, ma.responsible_kind, ma.responsible_source, ma.responsible_role, ma.match_confidence, ma.due_date, ma.estimated_minutes, ma.source_ref, ma.status, ma.origin, ma.created_at, ma.updated_at,
         COALESCE(json_agg(json_build_object('responsible_id', mar.responsible_id, 'responsible_kind', mar.responsible_kind, 'employee_id', mar.employee_id, 'name', mar.responsible_name, 'role', mar.responsible_role, 'match_confidence', mar.match_confidence) ORDER BY mar.responsible_name) FILTER (WHERE mar.responsible_id IS NOT NULL), '[]'::json) AS responsibles
@@ -5951,7 +6047,22 @@ app.get('/api/meetings/:artifactId', requireCeoMeetingAccess, async (req: Reques
       meetingActionProjects(artifactId),
       pool.query('SELECT notice_text, occurred_at, evidence, actor_id, actor_name, actor_role, recorded_at FROM meeting_recording_notices WHERE artifact_id = $1', [artifactId]),
     ]);
-    res.json({ ...meetingRowWithName(artifactResult.rows[0]), actions: actionsResult.rows, versions: versionsResult.rows, blockers: meetingApprovalBlockers(actionsResult.rows), detected_blockers: detectedBlockersResult.rows, available_projects: projectsResult, recording_notice: noticeResult.rows[0] || null });
+    const session = res.locals.ceoSession as CeoSession;
+    const row = artifactResult.rows[0];
+    const [deleteActions, editMeeting, review, employees, clients] = await Promise.all([
+      canDeleteMeetingActions(session, scope, artifactId),
+      scope.canEdit ? canEditMeetingArtifact(artifactId, scope.employeeId) : Promise.resolve(false),
+      canSessionReviewWorkflowStage(session, scope, artifactId, row.workflow_stage),
+      pool.query(`SELECT e.id, e.nombre, e.apellido, TRUE AS activo,
+        COALESCE(array_agg(DISTINCT role.nombre) FILTER (WHERE role.nombre IS NOT NULL), ARRAY[]::varchar[]) AS roles
+        FROM empleados e LEFT JOIN usuario_rol membership ON membership.empleado_id = e.id
+        LEFT JOIN roles role ON role.id = membership.rol_id WHERE e.activo = TRUE GROUP BY e.id ORDER BY e.nombre, e.apellido`),
+      pool.query('SELECT id, nombre, apellido, TRUE AS activo FROM clientes WHERE activo = TRUE ORDER BY nombre, apellido'),
+    ]);
+    res.json({ ...meetingRowWithName(row), actions: actionsResult.rows, versions: versionsResult.rows, blockers: meetingApprovalBlockers(actionsResult.rows), detected_blockers: detectedBlockersResult.rows, available_projects: projectsResult, recording_notice: noticeResult.rows[0] || null,
+      permissions: { manageActions: true, deleteActions, editMeeting, review: review && row.status !== 'approved', assignOrganizer: isCeoAdministratorRole(session.rol) },
+      assignment_directory: { employees: employees.rows, clients: clients.rows },
+    });
   } catch (error) {
     console.error('[meetings] Error detalle:', (error as Error).message);
     res.status(500).json({ error: 'No se pudo cargar la reunión' });
@@ -6007,7 +6118,7 @@ app.put('/api/meetings/:artifactId', requireMeetingEditor, async (req: Request, 
   }
 });
 
-app.post('/api/meetings/:artifactId/actions', requireMeetingEditor, async (req: Request, res: Response) => {
+app.post('/api/meetings/:artifactId/actions', requireMeetingActionEditor, async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -6036,7 +6147,7 @@ app.post('/api/meetings/:artifactId/actions', requireMeetingEditor, async (req: 
   }
 });
 
-app.put('/api/meetings/:artifactId/actions/:actionId', requireMeetingEditor, async (req: Request, res: Response) => {
+app.put('/api/meetings/:artifactId/actions/:actionId', requireMeetingActionEditor, async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     const artifactId = String(req.params.artifactId || '').trim();
@@ -6053,7 +6164,7 @@ app.put('/api/meetings/:artifactId/actions/:actionId', requireMeetingEditor, asy
     const previous = previousResult.rows[0];
     const { rows } = await client.query(
       `UPDATE meeting_review_actions SET title = $3, project_name = $4, project_id = $5, project_unresolved = ($5::varchar IS NULL), due_date = $6,
-       estimated_minutes = $7, source_ref = $8, status = $9, updated_at = NOW()
+       estimated_minutes = $7, source_ref = $8, status = $9, project_link_policy = 'manual', updated_at = NOW()
        WHERE id = $1 AND artifact_id = $2 RETURNING *`,
       [actionId, artifactId, action.title, project?.nombre || null, project?.id || null, action.dueDate, action.estimatedMinutes, action.sourceRef, action.status],
     );
@@ -6074,7 +6185,7 @@ app.put('/api/meetings/:artifactId/actions/:actionId', requireMeetingEditor, asy
   }
 });
 
-app.put('/api/meetings/:artifactId/actions/:actionId/responsible', requireMeetingEditor, requireMeetingResponsibleAssigner, async (req: Request, res: Response) => {
+app.put('/api/meetings/:artifactId/actions/:actionId/responsible', requireMeetingActionEditor, async (req: Request, res: Response) => {
   const artifactId = String(req.params.artifactId || '').trim();
   const actionId = String(req.params.actionId || '').trim();
   const actor = meetingAuditActor(res);
@@ -6140,7 +6251,7 @@ app.put('/api/meetings/:artifactId/actions/:actionId/responsible', requireMeetin
     client.release();
   }
 });
-app.delete('/api/meetings/:artifactId/actions/:actionId/responsible', requireMeetingEditor, requireMeetingResponsibleAssigner, async (req: Request, res: Response) => {
+app.delete('/api/meetings/:artifactId/actions/:actionId/responsible', requireMeetingActionEditor, async (req: Request, res: Response) => {
   const artifactId = String(req.params.artifactId || '').trim();
   const actionId = String(req.params.actionId || '').trim();
   const actor = meetingAuditActor(res);
@@ -6189,7 +6300,7 @@ app.delete('/api/meetings/:artifactId/actions/:actionId/responsible', requireMee
     client.release();
   }
 });
-app.put('/api/meetings/:artifactId/actions/:actionId/responsibles', requireMeetingEditor, requireMeetingResponsibleAssigner, async (req: Request, res: Response) => {
+app.put('/api/meetings/:artifactId/actions/:actionId/responsibles', requireMeetingActionEditor, async (req: Request, res: Response) => {
   const artifactId = String(req.params.artifactId || '').trim();
   const actionId = String(req.params.actionId || '').trim();
   const actor = meetingAuditActor(res);
@@ -6274,7 +6385,7 @@ app.put('/api/meetings/:artifactId/actions/:actionId/responsibles', requireMeeti
     client.release();
   }
 });
-app.delete('/api/meetings/:artifactId/actions/:actionId/responsibles/:responsibleKind/:responsibleId', requireMeetingEditor, requireMeetingResponsibleAssigner, async (req: Request, res: Response) => {
+app.delete('/api/meetings/:artifactId/actions/:actionId/responsibles/:responsibleKind/:responsibleId', requireMeetingActionEditor, async (req: Request, res: Response) => {
   const artifactId = String(req.params.artifactId || '').trim();
   const actionId = String(req.params.actionId || '').trim();
   const selection = manualActionResponsibleInput({ kind: req.params.responsibleKind, id: req.params.responsibleId });
@@ -6324,7 +6435,7 @@ app.delete('/api/meetings/:artifactId/actions/:actionId/responsibles/:responsibl
     client.release();
   }
 });
-app.delete('/api/meetings/:artifactId/actions/:actionId', requireMeetingEditor, async (req: Request, res: Response) => {
+app.delete('/api/meetings/:artifactId/actions/:actionId', requireMeetingActionEditor, requireMeetingActionDeleter, async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -6343,114 +6454,45 @@ app.delete('/api/meetings/:artifactId/actions/:actionId', requireMeetingEditor, 
   }
 });
 
-const MEETING_WORKFLOW_ORDER = [
-  ['delineante', 'Delineante'],
-  ['pmc', 'PMC / Jefe de Proyectos'],
-  ['operations', 'Dirección de Operaciones'],
-  ['director', 'Director General'],
-] as const;
+const MEETING_WORKFLOW_ORDER = meetingReviewChain;
 
-function workflowStageRank(stage: string): number {
-  return Math.max(0, MEETING_WORKFLOW_ORDER.findIndex(([key]) => key === stage));
-}
-
-function workflowStageRoleRank(stage: string): number {
-  return stage === 'delineante' ? 1 : stage === 'pmc' ? 2 : stage === 'operations' ? 3 : stage === 'director' ? 4 : 0;
-}
-
-async function meetingWorkflowOrder(artifactId: string): Promise<Array<(typeof MEETING_WORKFLOW_ORDER)[number]>> {
-  const review = await pool.query<{ meeting_kind: string | null }>('SELECT meeting_kind FROM meeting_reviews WHERE artifact_id = $1', [artifactId]);
-  if (!review.rows[0]) return [...MEETING_WORKFLOW_ORDER];
-  const settings = await loadMeetingAgentSettings();
-  const configured = review.rows[0].meeting_kind === 'REUNION_CLIENTE' ? settings.client_workflow : settings.committee_workflow;
-  const configuredSet = new Set(configured);
-  const order = MEETING_WORKFLOW_ORDER.filter(([stage]) => configuredSet.has(stage));
-  return order.length ? order : [...MEETING_WORKFLOW_ORDER];
-}
-
-async function nextAvailableMeetingWorkflowStage(artifactId: string, requestedStage: string, options: { currentStage?: string; omissions?: string[] } = {}): Promise<{ stage: string; label: string } | null> {
-  const review = await pool.query<{ project_id: string | null }>('SELECT project_id FROM meeting_reviews WHERE artifact_id = $1', [artifactId]);
-  if (!review.rows[0]) return null;
-  const { rows } = await pool.query<{ cargo: string; employee_id: string }>(
-    `SELECT DISTINCT c.nombre AS cargo, e.id AS employee_id
-     FROM organigrama_cargo_asignaciones oca
-     INNER JOIN organigrama_cargos c ON c.id = oca.cargo_id
-     INNER JOIN empleados e ON e.id = oca.empleado_id AND e.activo = TRUE
-     WHERE oca.activo = TRUE AND c.activo = TRUE
-       AND (oca.proyecto_id = $1 OR oca.proyecto_id IS NULL)`,
-    [review.rows[0].project_id],
+async function nextAvailableMeetingWorkflowStage(artifactId: string, requestedStage: string, _options: { currentStage?: string; omissions?: string[] } = {}): Promise<{ stage: string; label: string } | null> {
+  const next = MEETING_WORKFLOW_ORDER.find(([stage]) => stage === requestedStage);
+  if (!next) return null;
+  const result = await pool.query(
+    `SELECT candidate.id FROM meeting_reviews r CROSS JOIN empleados candidate
+     WHERE r.artifact_id = $1 AND ${meetingVisibilityCondition('r', 'candidate.id')}
+       AND ${meetingStageRecipientCondition('r', 'candidate.id', '$2')} LIMIT 1`,
+    [artifactId, requestedStage],
   );
-  const order = await meetingWorkflowOrder(artifactId);
-  const previousPeople = new Set(rows.filter((row) => meetingEditorRoleRank(row.cargo) === workflowStageRoleRank(options.currentStage || '')).map((row) => row.employee_id));
-  const requestedIndex = order.findIndex(([stage]) => stage === requestedStage);
-  for (const [stage, label] of order.slice(requestedIndex >= 0 ? requestedIndex : 0)) {
-    const rank = workflowStageRoleRank(stage);
-    const people = new Set(rows.filter((row) => meetingEditorRoleRank(row.cargo) === rank).map((row) => row.employee_id));
-    if (!people.size) {
-      options.omissions?.push(`${label}: sin persona activa asignada`);
-      continue;
-    }
-    if (people.size === 1 && previousPeople.size === 1 && [...people][0] === [...previousPeople][0]) {
-      options.omissions?.push(`${label}: misma persona que la etapa revisada`);
-      continue;
-    }
-    return { stage, label };
-  }
-  return null;
+  return result.rows.length ? { stage: next[0], label: next[1] } : null;
 }
 
 async function previousAvailableMeetingWorkflowStage(artifactId: string, currentStage: string): Promise<{ stage: string; label: string } | null> {
-  const order = await meetingWorkflowOrder(artifactId);
-  const currentIndex = order.findIndex(([stage]) => stage === currentStage);
-  if (currentIndex <= 0) return { stage: 'agent', label: 'Agente IA' };
-  const review = await pool.query<{ project_id: string | null }>('SELECT project_id FROM meeting_reviews WHERE artifact_id = $1', [artifactId]);
-  if (!review.rows[0]) return null;
-  const { rows } = await pool.query<{ cargo: string }>(
-    `SELECT DISTINCT c.nombre AS cargo
-     FROM organigrama_cargo_asignaciones oca
-    INNER JOIN organigrama_cargos c ON c.id = oca.cargo_id
-     INNER JOIN empleados e ON e.id = oca.empleado_id AND e.activo = TRUE
-     WHERE oca.activo = TRUE AND c.activo = TRUE
-       AND (oca.proyecto_id = $1 OR oca.proyecto_id IS NULL)`,
-    [review.rows[0].project_id],
-  );
-  const availableRanks = new Set(rows.map((row) => meetingEditorRoleRank(row.cargo)));
-  const history = await pool.query<{ previous_stage: string }>(
-    "SELECT previous_stage FROM meeting_review_versions WHERE artifact_id = $1 AND stage = $2 AND event_type = 'approve' AND previous_stage IS NOT NULL AND previous_stage <> stage ORDER BY created_at DESC LIMIT 1",
-    [artifactId, currentStage],
-  );
-  const previousStage = history.rows[0]?.previous_stage;
-  if (previousStage === 'agent') return { stage: 'agent', label: 'Agente IA' };
-  const historicalStage = order.find(([stage]) => stage === previousStage && availableRanks.has(workflowStageRoleRank(stage)));
-  if (historicalStage) return { stage: historicalStage[0], label: historicalStage[1] };
-  for (let index = currentIndex - 1; index >= 0; index -= 1) {
-    const [stage, label] = order[index];
-    if (availableRanks.has(workflowStageRoleRank(stage))) return { stage, label };
-  }
-  return { stage: 'agent', label: 'Agente IA' };
+  const previousStage = currentStage === 'assigned' || currentStage === 'operations' || currentStage === 'director'
+    ? 'pmc' : currentStage === 'pmc' ? 'delineante' : currentStage === 'delineante' ? 'organizer' : null;
+  return previousStage ? nextAvailableMeetingWorkflowStage(artifactId, previousStage) : null;
 }
 
-async function routeReadyMeetingReviews(limit = 500): Promise<number> {
+export async function routeReadyMeetingReviews(limit = 500): Promise<number> {
   const queued = await pool.query<{ artifact_id: string }>(
-    'SELECT artifact_id FROM meeting_reviews WHERE status = \'draft\' AND workflow_stage = \'agent\' AND analysis_status = \'completed\' ORDER BY analysis_completed_at ASC NULLS LAST LIMIT $1',
+    "SELECT r.artifact_id FROM meeting_reviews r WHERE r.status = 'draft' AND r.workflow_stage = 'agent' AND r.analysis_status = 'completed' AND EXISTS (SELECT 1 FROM meeting_artifact_organizers organizer JOIN empleados employee ON employee.id = organizer.employee_id AND employee.activo = TRUE WHERE organizer.artifact_id = r.artifact_id) ORDER BY r.analysis_completed_at ASC NULLS LAST LIMIT $1",
     [Math.max(1, Math.min(limit, 500))],
   );
   let routed = 0;
   for (const row of queued.rows) {
-    const omissions: string[] = [];
-    const next = await nextAvailableMeetingWorkflowStage(row.artifact_id, 'delineante', { omissions });
+    const next = await nextAvailableMeetingWorkflowStage(row.artifact_id, 'organizer');
     if (!next) continue;
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       await setMeetingAuditContext(client);
       const updated = await client.query(
-        'UPDATE meeting_reviews SET status = \'pending\', workflow_stage = $2, updated_at = NOW() WHERE artifact_id = $1 AND status = \'draft\' AND workflow_stage = \'agent\' RETURNING artifact_id',
-        [row.artifact_id, next.stage],
+        "UPDATE meeting_reviews SET status = 'pending', workflow_stage = 'organizer', workflow_recipient_id = NULL, updated_at = NOW() WHERE artifact_id = $1 AND status = 'draft' AND workflow_stage = 'agent' AND analysis_status = 'completed' RETURNING artifact_id",
+        [row.artifact_id],
       );
       if (!updated.rows.length) continue;
-      const detail = 'Análisis listo y enviado automáticamente a ' + next.label + '.' + (omissions.length ? ' Etapas omitidas: ' + omissions.join('; ') + '.' : '');
-      await client.query('INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, $4, $5)', [randomUUID(), row.artifact_id, 'agente-reuniones', next.stage, detail]);
+      await client.query('INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, $4, $5)', [randomUUID(), row.artifact_id, 'agente-reuniones', next.stage, 'Análisis listo y enviado al encargado de la reunión.']);
       await client.query('COMMIT');
       routed += 1;
     } finally {
@@ -6462,19 +6504,18 @@ async function routeReadyMeetingReviews(limit = 500): Promise<number> {
   return routed;
 }
 
-async function canSessionReviewWorkflowStage(session: CeoSession, scope: MeetingAccessScope, artifactId: string, stage: string): Promise<boolean> {
-  const normalizedRole = String(session.rol || '').trim().toLowerCase();
-  if (['superadmin', 'admin', 'ceo'].includes(normalizedRole)) return true;
+async function canSessionReviewWorkflowStage(session: CeoSession, scope: MeetingAccessScope, artifactId: string, _stage: string): Promise<boolean> {
+  if (['superadmin', 'admin', 'ceo'].includes(String(session.rol || '').trim().toLowerCase())) return true;
   const employeeId = await resolveSessionEmployeeId(session, scope);
   if (!employeeId) return false;
-  const result = await pool.query<{ cargo: string | null }>(
-    'SELECT c.nombre AS cargo FROM meeting_reviews r INNER JOIN organigrama_cargo_asignaciones oca ON (oca.proyecto_id = r.project_id OR oca.proyecto_id IS NULL) INNER JOIN organigrama_cargos c ON c.id = oca.cargo_id WHERE r.artifact_id = $1 AND oca.empleado_id = $2 AND oca.activo = TRUE AND c.activo = TRUE',
+  const result = await pool.query(
+    `SELECT r.artifact_id FROM meeting_reviews r WHERE r.artifact_id = $1 AND ${meetingStageRecipientCondition('r', '$2')}`,
     [artifactId, employeeId],
   );
-  return result.rows.some((row) => workflowStageForOrganizationRole(row.cargo) === stage);
+  return result.rows.length > 0;
 }
 
-app.post('/api/meetings/:artifactId/workflow', requireMeetingEditor, async (req: Request, res: Response) => {
+app.post('/api/meetings/:artifactId/workflow', requireMeetingActionEditor, async (req: Request, res: Response) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -6485,7 +6526,7 @@ app.post('/api/meetings/:artifactId/workflow', requireMeetingEditor, async (req:
     const actor = meetingAuditActor(res);
     const command = String(req.body?.command || '').trim();
     if (!['approve', 'return', 'save'].includes(command)) return res.status(400).json({ error: 'Comando de flujo inválido' });
-    const reviewResult = await client.query<{ workflow_stage: string; status: string; analysis_status: string; analysis_error: string | null }>('SELECT workflow_stage, status, analysis_status, analysis_error FROM meeting_reviews WHERE artifact_id = $1 FOR UPDATE', [artifactId]);
+    const reviewResult = await client.query<{ workflow_stage: string; workflow_recipient_id: string | null; status: string; analysis_status: string; analysis_error: string | null }>('SELECT workflow_stage, workflow_recipient_id, status, analysis_status, analysis_error FROM meeting_reviews WHERE artifact_id = $1 FOR UPDATE', [artifactId]);
     const review = reviewResult.rows[0];
     if (!review) return res.status(404).json({ error: 'Reunión no encontrada' });
     await client.query("SELECT set_config('lyn.audit_previous_stage', $1, TRUE), set_config('lyn.audit_event_type', $2, TRUE)", [review.workflow_stage, command]);
@@ -6497,35 +6538,38 @@ app.post('/api/meetings/:artifactId/workflow', requireMeetingEditor, async (req:
     const blockers = meetingApprovalBlockers(actionsResult.rows);
     if (command === 'approve' && blockers.missingResponsible) return res.status(409).json({ error: 'La aprobación está bloqueada hasta asignar responsable a todas las acciones pendientes. La fecha es opcional.', blockers });
 
+    if (review.status === 'approved' && command !== 'save') return res.status(409).json({ error: 'Esta reunión ya está aprobada.' });
+    const requestedRecipient = String(req.body?.recipient_id || '').trim();
+    const pmcStage = review.workflow_stage === 'pmc' || (['operations', 'director'].includes(review.workflow_stage) && !review.workflow_recipient_id);
+    if (requestedRecipient && (command !== 'approve' || !pmcStage)) return res.status(400).json({ error: 'Solo la etapa PMC puede escalar a una persona concreta.' });
+    let recipientId = review.workflow_recipient_id;
     let status = review.status;
     let stage = review.workflow_stage;
     let detail = 'Borrador guardado.';
     const omissions: string[] = [];
     if (command === 'return') {
       const previous = await previousAvailableMeetingWorkflowStage(artifactId, review.workflow_stage);
-      if (!previous) return res.status(409).json({ error: 'No hay una etapa anterior disponible en la cadena de revisión.' });
-      status = 'returned'; stage = previous.stage; detail = 'Devuelta a ' + previous.label;
-    } else if (command === 'approve') {
-      const workflowOrder = await meetingWorkflowOrder(artifactId);
-      const currentIndex = workflowOrder.findIndex(([stage]) => stage === review.workflow_stage);
-      const requestedStage = review.workflow_stage === 'agent' ? workflowOrder[0]?.[0] : workflowOrder[currentIndex + 1]?.[0];
-      const next = requestedStage ? await nextAvailableMeetingWorkflowStage(artifactId, requestedStage, { currentStage: review.workflow_stage, omissions }) : null;
-      if (next) {
-        status = 'pending'; stage = next.stage; detail = (review.workflow_stage === 'agent' ? 'Enviada a ' : 'Revisada y enviada a ') + next.label;
-      } else {
-        status = 'approved'; stage = review.workflow_stage; detail = 'Aprobada definitivamente.';
-      }
-    } else if (review.workflow_stage === 'agent') {
-      const next = await nextAvailableMeetingWorkflowStage(artifactId, 'delineante', { omissions });
-      if (!next) return res.status(409).json({ error: 'No hay una persona activa en la cadena de revisión de esta obra. Regulariza el organigrama o asigna manualmente el responsable.' });
-      status = 'pending'; stage = next.stage; detail = 'Guardada y enviada a ' + next.label;
+      if (!previous) return res.status(409).json({ error: 'Falta una persona activa en la etapa anterior. Asigna al encargado o completa el equipo del proyecto; no se omitirán etapas.' });
+      status = 'returned'; stage = previous.stage; recipientId = null; detail = 'Devuelta a ' + previous.label;
+    } else if (command === 'approve' && pmcStage && requestedRecipient) {
+      const target = await client.query<{ name: string }>("SELECT CONCAT_WS(' ', nombre, apellido) AS name FROM empleados WHERE id = $1 AND activo = TRUE", [requestedRecipient]);
+      if (!target.rows.length) return res.status(400).json({ error: 'Selecciona un empleado activo como destinatario.' });
+      status = 'pending'; stage = 'assigned'; recipientId = requestedRecipient;
+      detail = 'PMC revisó y asignó la revisión a ' + target.rows[0].name + '.';
+    } else if (command === 'approve' && (pmcStage || review.workflow_stage === 'assigned')) {
+      status = 'approved'; detail = 'Aprobada definitivamente.';
+    } else if (command === 'approve' || review.workflow_stage === 'agent') {
+      const nextStage = review.workflow_stage === 'agent' ? 'organizer' : review.workflow_stage === 'organizer' ? 'delineante' : review.workflow_stage === 'delineante' ? 'pmc' : null;
+      const next = nextStage ? await nextAvailableMeetingWorkflowStage(artifactId, nextStage) : null;
+      if (!next) return res.status(409).json({ error: 'Falta ' + (MEETING_WORKFLOW_ORDER.find(([key]) => key === nextStage)?.[1] || 'responsable') + ' activo para continuar. Completa el encargado/equipo del proyecto; no se omitirán etapas.' });
+      status = 'pending'; stage = next.stage; recipientId = null; detail = 'Revisada y enviada a ' + next.label + '.';
     }
 
     const returnReason = String(req.body?.reason || '').trim().slice(0, 500);
     const finalDetail = (command === 'return' && returnReason ? detail + ': «' + returnReason + '».' : detail) + (omissions.length ? ' Etapas omitidas: ' + omissions.join('; ') + '.' : '');
     const { rows } = await client.query(
-      'UPDATE meeting_reviews SET status = $2::varchar, workflow_stage = $3, approved_at = CASE WHEN $2::varchar = \'approved\' THEN NOW() ELSE NULL END, approved_by = CASE WHEN $2::varchar = \'approved\' THEN $4 ELSE NULL END, returned_reason = CASE WHEN $2::varchar = \'returned\' THEN COALESCE($5, \'\') ELSE NULL END, updated_at = NOW() WHERE artifact_id = $1 RETURNING *',
-      [artifactId, status, stage, actor, String(req.body?.reason || '').slice(0, 2000)],
+      'UPDATE meeting_reviews SET status = $2::varchar, workflow_stage = $3, workflow_recipient_id = $6, approved_at = CASE WHEN $2::varchar = \'approved\' THEN NOW() ELSE NULL END, approved_by = CASE WHEN $2::varchar = \'approved\' THEN $4 ELSE NULL END, returned_reason = CASE WHEN $2::varchar = \'returned\' THEN COALESCE($5, \'\') ELSE NULL END, updated_at = NOW() WHERE artifact_id = $1 RETURNING *',
+      [artifactId, status, stage, actor, String(req.body?.reason || '').slice(0, 2000), recipientId],
     );
     await client.query('INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, $3, $4, $5)', [randomUUID(), artifactId, actor, stage, finalDetail]);
     await client.query('COMMIT');
@@ -8762,12 +8806,7 @@ registerNetelipCalls(app, {
 registerDashboardOperations(app, {
   pool, admin: requireCeoAuth, actor: meetingAuditActor, identity: meetingAuditIdentity,
   audit: setMeetingAuditContext, publish, onLeadSaved: netelipWorkers.relink,
-  nextStage: async (artifactId, currentStage) => {
-    const order = await meetingWorkflowOrder(artifactId);
-    const index = order.findIndex(([stage]) => stage === currentStage);
-    if (index < 0 || index + 1 >= order.length) return null;
-    return nextAvailableMeetingWorkflowStage(artifactId, order[index + 1][0], { currentStage });
-  },
+  nextStage: async () => null,
 });
 
 if (!isTestEnv) {

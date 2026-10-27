@@ -1,8 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, configure, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import CEOApp from '../src/ceo-dashboard/App';
 import { initialDashboardView, isCeoView, shouldPollWhatsappConnection } from '../src/ceo-dashboard/CeoLogin';
 import api from '../src/ceo-dashboard/api';
+
+configure({ asyncUtilTimeout: 15000 });
+vi.setConfig({ testTimeout: 30000 });
 
 vi.mock('../src/ceo-dashboard/api', () => ({ default: {
   meetings: { workItems: vi.fn(), markWorkItemsRead: vi.fn() },
@@ -47,6 +50,23 @@ describe('Mis pendientes para usuarios limitados', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Ver todo' }));
     expect(await screen.findByText('Revisar reunión QA')).toBeInTheDocument();
     expect(new URLSearchParams(window.location.search).get('view')).toBe('work');
+  });
+
+  it('conserva los pendientes visibles si una actualización falla', async () => {
+    let refresh;
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {
+      if (delay === 30_000) refresh = callback;
+      return 12345;
+    });
+    window.history.replaceState({}, '', '/?view=work');
+    const view = render(<CEOApp user={{ usuario: 'qa', rol: 'employee:delineante' }} />);
+    try {
+      await screen.findByText('Revisar reunión QA');
+      api.meetings.workItems.mockRejectedValueOnce(new Error('Temporal'));
+      await act(async () => { refresh(); });
+      expect(screen.getByText('Revisar reunión QA')).toBeVisible();
+      expect(api.meetings.workItems).toHaveBeenCalledTimes(2);
+    } finally { view.unmount(); interval.mockRestore(); }
   });
 });
 

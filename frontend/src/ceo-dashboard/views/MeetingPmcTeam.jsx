@@ -7,6 +7,6 @@ export default function MeetingPmcTeam({ meeting }) {
       <summary className="cursor-pointer text-amber-100">Equipo del proyecto · {additional.length}</summary>
       <ul className="mt-1 space-y-1">{additional.map((person) => <li key={person.employee_id}>{person.name} · {person.in_training ? 'PMC en prácticas' : 'PMC'}</li>)}</ul>
     </details>}
-    {!meeting.pmc && !people.length && <p className="text-amber-200">PMC pendiente de vincular</p>}
+    {!meeting.pmc && !people.length && <p className="text-amber-200">{meeting.workflow_stage === 'project_branches' ? 'Sin PMC asignado en esta obra' : 'PMC pendiente de vincular'}</p>}
   </div>;
 }

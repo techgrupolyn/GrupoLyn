@@ -187,6 +187,23 @@ describe('callGeminiWithPrompt', () => {
       .resolves.toContain('datos locales');
   });
 
+  it.each(['fetch', 'body'])('no bloquea la cola cuando %s ignora el aborto', async (stage) => {
+    vi.useFakeTimers();
+    try {
+      global.fetch = vi.fn().mockImplementation(() => stage === 'fetch'
+        ? new Promise(() => undefined)
+        : Promise.resolve({ ok: true, text: () => new Promise(() => undefined) }));
+      const pending = callGeminiWithPromptResult('Consulta', 'flash', undefined, 100);
+      const assertion = expect(pending).resolves.toMatchObject({ fallback: true, retryable: true });
+      await vi.advanceTimersByTimeAsync(100);
+      await assertion;
+      expect((global.fetch as any).mock.calls[0][1].signal.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('maneja el aborto reportado por Node sin AbortError', async () => {
     global.fetch = vi.fn().mockImplementation((_url, options?: any) => {
       const { signal } = options || {};

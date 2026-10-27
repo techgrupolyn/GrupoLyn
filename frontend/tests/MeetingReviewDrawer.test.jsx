@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MeetingReviewDrawer, { actionResponsibleReferences } from '../src/ceo-dashboard/views/MeetingReviewDrawer';
 import api from '../src/ceo-dashboard/api';
 
-vi.mock('../src/ceo-dashboard/api', () => ({ default: { meetings: { recordingNotice: vi.fn(), update: vi.fn(), workflow: vi.fn() } } }));
+vi.mock('../src/ceo-dashboard/api', () => ({ default: { meetings: { recordingNotice: vi.fn(), update: vi.fn(), workflow: vi.fn(), addAction: vi.fn(), updateAction: vi.fn(), deleteAction: vi.fn() } } }));
 
 const meeting = {
   id: 'qa-meeting', name: 'Comité QA', summary: 'Resumen actual', decisions: 'Decisión actual',
@@ -12,6 +12,47 @@ const meeting = {
 };
 
 describe('QA del panel lateral', () => {
+  it('permite editar y crear acciones a roles limitados sin editar el resumen ni borrar', async () => {
+    api.meetings.updateAction.mockResolvedValue({ ok: true });
+    api.meetings.addAction.mockResolvedValue({ ok: true });
+    const current = { ...meeting, permissions: { manageActions: true, editMeeting: false, deleteActions: false, review: false }, actions: [{ id: 'action', title: 'Revisar planos', status: 'pending' }] };
+    render(<MeetingReviewDrawer meeting={current} readOnly onClose={vi.fn()} onChanged={vi.fn()} />);
+    expect(screen.getByDisplayValue('Resumen actual')).toHaveAttribute('readonly');
+    expect(screen.queryByRole('button', { name: 'Guardar datos' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Regenerar' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Eliminar acción/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Editar' }));
+    fireEvent.change(screen.getByDisplayValue('Revisar planos'), { target: { value: 'Confirmar planos' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar cambios' }));
+    await waitFor(() => expect(api.meetings.updateAction).toHaveBeenCalledWith(meeting.id, 'action', expect.objectContaining({ title: 'Confirmar planos' })));
+    fireEvent.click(screen.getByRole('button', { name: '+ Añadir acción' }));
+    fireEvent.change(screen.getByPlaceholderText('Qué se debe hacer'), { target: { value: 'Nueva tarea' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Añadir acción' }));
+    await waitFor(() => expect(api.meetings.addAction).toHaveBeenCalledWith(meeting.id, expect.objectContaining({ title: 'Nueva tarea' })));
+  });
+
+  it.each([['PMC', true], ['Director', true], ['Superadministrador', false], ['Delineante', false]])('borrado visible según permiso del servidor: %s', async (_role, deleteActions) => {
+    render(<MeetingReviewDrawer meeting={{ ...meeting, permissions: { manageActions: true, deleteActions, editMeeting: true, review: false }, actions: [{ id: 'action', title: 'Acción QA' }] }} onClose={vi.fn()} onChanged={vi.fn()} />);
+    expect(Boolean(screen.queryByRole('button', { name: 'Eliminar acción: Acción QA' }))).toBe(deleteActions);
+  });
+
+  it('PMC elige un destinatario explícito; no envía automáticamente al director', async () => {
+    api.meetings.workflow.mockResolvedValue({ ok: true });
+    render(<MeetingReviewDrawer meeting={{ ...meeting, workflow_stage: 'pmc', permissions: { manageActions: true, deleteActions: true, editMeeting: true, review: true }, assignment_directory: { employees: [{ id: 'director', nombre: 'Alex', roles: ['Director'] }] } }} onClose={vi.fn()} onChanged={vi.fn()} />);
+    expect(screen.getByRole('combobox', { name: 'Escalar revisión a' })).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Aprobar definitivamente' })).toBeEnabled();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Escalar revisión a' }), { target: { value: 'director' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Aprobar y asignar' }));
+    await waitFor(() => expect(api.meetings.workflow).toHaveBeenCalledWith(meeting.id, 'approve', '', 'director'));
+  });
+
+  it('el encargado puede revisar aunque no sea editor del resumen', async () => {
+    render(<MeetingReviewDrawer meeting={{ ...meeting, workflow_stage: 'organizer', organizer: { name: 'Persona QA' }, permissions: { manageActions: true, deleteActions: false, editMeeting: false, review: true } }} readOnly onClose={vi.fn()} onChanged={vi.fn()} />);
+    expect(screen.getByText('Encargado: Persona QA')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Aprobar y enviar' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Devolver' })).toBeDisabled();
+  });
+
   it('guarda cambios del resumen desde el botón principal sin aprobar la reunión', async () => {
     const onChanged = vi.fn();
     api.meetings.update.mockResolvedValue({ ok: true });

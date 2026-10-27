@@ -8,6 +8,7 @@ import { encryptGoogleDriveSecret } from '../google-drive.ts';
 import { acquireSummaryLock, releaseSummaryLock, createSummaryQueue, markSummaryMessagesReviewed, publicSummaryJob } from '../summary-jobs.ts';
 import { evidencePayload, evidenceResponse } from './summary-evidence-fixtures.ts';
 import { createWhatsAppInbox } from '../whatsapp-reliability.ts';
+import { linkUnassignedMeetingActions } from '../meeting-action-linking.ts';
 
 const generation = vi.hoisted(() => vi.fn());
 const mediaGeneration = vi.hoisted(() => vi.fn());
@@ -71,6 +72,18 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
+  it('devuelve el vídeo en detalle y consulta protegida sin tocar permisos de Drive', async () => {
+    try {
+      await server.pool.query("UPDATE meeting_reviews SET recording_file_id='video123456',recording_status='available' WHERE artifact_id=$1", [artifactId]);
+      expect((await request(server.app).get(`${endpoint}/recording`)).status).toBe(401);
+      const response = await request(server.app).get(`${endpoint}/recording`).set('Authorization',authorization);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({recording_file_id:'video123456',recording_status:'available'});
+      expect((await request(server.app).get(endpoint).set('Authorization',authorization)).body).toMatchObject({recording_file_id:'video123456',recording_status:'available'});
+    } finally {
+      await server.pool.query("UPDATE meeting_reviews SET recording_file_id=NULL,recording_status='pending' WHERE artifact_id=$1", [artifactId]);
+    }
+  });
   it('abre el detalle existente sin esperar al bloqueo de una sincronización', async () => {
     const connection = await server.pool.connect();
     try {
@@ -83,6 +96,43 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     } finally {
       await connection.query('ROLLBACK');
       connection.release();
+    }
+  });
+
+  it('pagina reuniones antes de cargar textos y conserva conteos, filtros y visibilidad', async () => {
+    const prefix = `qa-pagination-${randomUUID()}`;
+    const meetings = Array.from({ length: 12 }, () => randomUUID());
+    const actionIds = [randomUUID(), randomUUID()];
+    try {
+      for (const [index, id] of meetings.entries()) {
+        await server.pool.query("INSERT INTO google_drive_artifacts(id,connection_id,google_file_id,name,mime_type,artifact_type,content_text) VALUES($1::uuid,$2,$1::text,$3,'text/plain','transcript','Texto sintético para paginación')", [id, connectionId, `${prefix}-${index}`]);
+        await server.pool.query("INSERT INTO meeting_reviews(artifact_id,analysis_status,status,workflow_stage,meeting_date,pmc_employee_id,summary) VALUES($1,'completed','pending','pmc',$2,$3,'Resumen sintético')", [id, `2026-10-${String(index + 1).padStart(2, '0')}`, index === 11 ? employeeId : null]);
+      }
+      for (const id of actionIds) {
+        await server.pool.query("INSERT INTO meeting_review_actions(id,artifact_id,title,status) VALUES($1,$2,'Acción sintética','pending')", [id, meetings[11]]);
+      }
+      await server.pool.query("INSERT INTO meeting_review_action_responsibles(action_id,employee_id,responsible_id,responsible_kind,responsible_name) VALUES($1,$2,$2,'employee','Persona QA')", [actionIds[0], employeeId]);
+      const list = (query = {}, auth = authorization) => request(server.app).get('/api/meetings').query({ q: prefix, page_size: 10, ...query }).set('Authorization', auth);
+      const first = await list();
+      expect(first.status).toBe(200);
+      expect(first.body).toMatchObject({ total: 12, totalPages: 2 });
+      expect(first.body.items).toHaveLength(10);
+      expect(first.body.items[0]).toMatchObject({ id: meetings[11], actions_count: 2, actions_without_responsible: 1, actions_without_due_date: 2 });
+      expect(first.body.items[0]).not.toHaveProperty('content_text');
+      expect(first.body.items[0]).not.toHaveProperty('metadata');
+      const second = await list({ page: 2 });
+      expect(second.body).toMatchObject({ total: 12, items: [{ id: meetings[1], actions_count: 0 }, { id: meetings[0], actions_count: 0 }] });
+      const oldest = await list({ sort: 'oldest' });
+      expect(oldest.body.items[0].id).toBe(meetings[0]);
+      const empty = await list({ filter: 'approved' });
+      expect(empty.body).toMatchObject({ total: 0, items: [] });
+      const session = Buffer.from(JSON.stringify({ id: userId, usuario: employeeId, rol: 'employee:interiorista', exp: Date.now() + 60000 })).toString('base64url');
+      const auth = `Bearer ${session}.${createHmac('sha256', secret).update(session).digest('base64url')}`;
+      const limited = await list({}, auth);
+      expect(limited.status).toBe(200);
+      expect(limited.body).toMatchObject({ total: 1, items: [{ id: meetings[11], actions_count: 2 }] });
+    } finally {
+      await server.pool.query('DELETE FROM google_drive_artifacts WHERE id=ANY($1::uuid[])', [meetings]);
     }
   });
 
@@ -123,7 +173,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       expect(row).toMatchObject({ project_id: project, pmc: unresolved ? null : mode === 'existente' ? 'Otro PMC' : 'PMC de Club', pmc_employee_id: unresolved ? null : mode === 'existente' ? other : employee, pmc_in_training: trainee && !unresolved });
       expect((await request(server.app).get(`/api/meetings/${meeting}`).set('Authorization', authorization)).body.pmc_in_training).toBe(trainee && !unresolved);
       if (!isAnalysis) expect(row.summary).toBe('Resumen conservado');
-      if (mode === 'con-tarea') expect((await server.pool.query('SELECT project_id,responsible_id,responsible_kind FROM meeting_review_actions WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ project_id: project, responsible_id: null, responsible_kind: null });
+      if (mode === 'con-tarea') expect((await server.pool.query('SELECT project_id,responsible_id,responsible_kind FROM meeting_review_actions WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ project_id: null, responsible_id: null, responsible_kind: null });
       if (isManual) expect(row.manual_revision).toBe(true);
       await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({});
       expect((await server.pool.query('SELECT pmc_assignments,updated_at FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0]).toEqual({ pmc_assignments: row.pmc_assignments, updated_at: row.updated_at });
@@ -139,6 +189,77 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       await server.pool.query('DELETE FROM organigrama_cargos WHERE id=$1', [position]);
       await server.pool.query('DELETE FROM proyectos WHERE id=$1', [project]);
       await server.pool.query('DELETE FROM empleados WHERE id=ANY($1::varchar[])', [[employee, other]]);
+    }
+  });
+
+  it.each(['processing', 'pending'])('no bloquea ni modifica una reunión %s durante la vinculación del directorio', async (status) => {
+    const meeting = randomUUID();
+    const action = randomUUID();
+    const lock = await server.pool.connect();
+    try {
+      await server.pool.query("INSERT INTO google_drive_artifacts(id,connection_id,folder_id,google_file_id,name,mime_type,artifact_type,content_text) VALUES($1::uuid,$2,$3,$1::text,'Obra QA','text/plain','transcript','Obra QA')", [meeting, connectionId, folderId]);
+      await server.pool.query('INSERT INTO meeting_reviews(artifact_id,analysis_status) VALUES($1,$2)', [meeting, status]);
+      await server.pool.query("INSERT INTO meeting_review_actions(id,artifact_id,title,responsible) VALUES($1,$2,'Revisar planos','Persona QA')", [action, meeting]);
+      const before = (await server.pool.query('SELECT project_id,pmc_employee_id,updated_at FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0];
+      await lock.query('BEGIN');
+      await lock.query('SELECT artifact_id FROM meeting_reviews WHERE artifact_id=$1 FOR UPDATE', [meeting]);
+      if (status === 'pending') {
+        await server.backfillMeetingDirectoryTags({ skipPending: true });
+      } else {
+        const response = await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({}).timeout(5000);
+        expect(response.status).toBe(200);
+      }
+      expect((await server.pool.query('SELECT project_id,pmc_employee_id,updated_at FROM meeting_reviews WHERE artifact_id=$1', [meeting])).rows[0]).toEqual(before);
+      expect((await server.pool.query('SELECT responsible_id FROM meeting_review_actions WHERE id=$1', [action])).rows[0].responsible_id).toBeNull();
+    } finally {
+      await lock.query('ROLLBACK');
+      lock.release();
+      await server.pool.query('DELETE FROM google_drive_artifacts WHERE id=$1', [meeting]);
+    }
+  });
+
+  it('repara responsables empleados y clientes sin proyecto, conserva vínculos y respeta exclusiones manuales', async () => {
+    const meeting = randomUUID();
+    const person = `qa-link-${meeting}`;
+    const customer = `qa-client-${meeting}`;
+    const actions = Array.from({ length: 5 }, () => randomUUID());
+    const connection = await server.pool.connect();
+    try {
+      await connection.query('BEGIN');
+      await connection.query("INSERT INTO empleados(id,nombre,apellido) VALUES($1,$1,'Prueba')", [person]);
+      await connection.query("INSERT INTO clientes(id,nombre,apellido) VALUES($1,$1,'Apellido')", [customer]);
+      await connection.query("INSERT INTO google_drive_artifacts(id,connection_id,folder_id,google_file_id,name,mime_type,artifact_type) VALUES($1::uuid,$2,$3,$1::text,'Revisión protegida','text/plain','transcript')", [meeting, connectionId, folderId]);
+      await connection.query("INSERT INTO meeting_reviews(artifact_id,summary,manual_revision) VALUES($1,'No modificar',TRUE)", [meeting]);
+      for (const [index, action] of actions.entries()) {
+        await connection.query(`INSERT INTO meeting_review_actions(id,artifact_id,title,responsible,project_unresolved,responsible_source,status)
+          VALUES($1,$2,'Tarea conservada',$3,TRUE,$4,$5)`,
+        [action, meeting, index === 1 ? `${customer} Apellido Extra` : `${person} Prueba Apellido`, index === 2 ? 'manual' : 'automatic', index === 3 ? 'completed' : 'pending']);
+      }
+      await connection.query("INSERT INTO meeting_review_action_responsibles(action_id,responsible_id,employee_id,responsible_name,match_confidence) VALUES($1,$2,$2,'Conservar','manual')", [actions[4], person]);
+      const preview = await linkUnassignedMeetingActions(connection, { dryRun: true, artifactId: meeting });
+      expect(preview.linked.map((link) => link.actionId).sort()).toEqual(actions.slice(0, 2).sort());
+      expect((await connection.query('SELECT responsible_id FROM meeting_review_actions WHERE id=$1', [actions[0]])).rows[0].responsible_id).toBeNull();
+      const result = await linkUnassignedMeetingActions(connection, { artifactId: meeting });
+      expect(result.linked).toHaveLength(2);
+      expect((await linkUnassignedMeetingActions(connection, { artifactId: meeting })).linked).toHaveLength(0);
+      const stored = await connection.query('SELECT responsible_id,responsible_kind,responsible,project_unresolved FROM meeting_review_actions WHERE id=$1', [actions[1]]);
+      expect(stored.rows[0]).toEqual({ responsible_id: customer, responsible_kind: 'client', responsible: `${customer} Apellido Extra`, project_unresolved: true });
+      const clientLink = await connection.query('SELECT employee_id FROM meeting_review_action_responsibles WHERE action_id=$1', [actions[1]]);
+      expect(clientLink.rows[0].employee_id).toBeNull();
+      const audit = await connection.query("SELECT detail,snapshot FROM meeting_review_versions WHERE artifact_id=$1 AND actor='directory-linker'", [meeting]);
+      expect(audit.rows).toHaveLength(1);
+      expect(JSON.parse(audit.rows[0].detail).changes).toHaveLength(2);
+      expect(JSON.parse(audit.rows[0].detail).changes[0].action_before.responsible_id).toBeNull();
+      expect(audit.rows[0].snapshot.meeting.summary).toBe('No modificar');
+      await connection.query('COMMIT');
+      expect((await request(server.app).post('/api/meetings/retag').set('Authorization', authorization).send({})).status).toBe(200);
+      expect((await connection.query('SELECT responsible_id FROM meeting_review_actions WHERE id=$1', [actions[1]])).rows[0].responsible_id).toBe(customer);
+    } finally {
+      await connection.query('ROLLBACK');
+      await connection.query('DELETE FROM google_drive_artifacts WHERE id=$1', [meeting]);
+      await connection.query('DELETE FROM clientes WHERE id=$1', [customer]);
+      await connection.query('DELETE FROM empleados WHERE id=$1', [person]);
+      connection.release();
     }
   });
 
@@ -306,6 +427,9 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
   });
 
   it('A-01: guardar, devolver con motivo y aprobar no generan error SQL', async () => {
+    await server.pool.query("INSERT INTO organigrama_cargos(id,nombre) VALUES($1,'Delineante')", [employeeId + '-temporary']);
+    await server.pool.query('INSERT INTO organigrama_cargo_asignaciones(id,cargo_id,empleado_id,proyecto_id) VALUES($1,$1,$2,$3)', [employeeId + '-temporary', employeeId, projectId]);
+    await server.pool.query('UPDATE meeting_reviews SET project_id=$2 WHERE artifact_id=$1', [artifactId, projectId]);
     for (const command of ['save', 'return', 'approve']) {
       await server.pool.query("UPDATE meeting_reviews SET workflow_stage = 'pmc', status = 'pending' WHERE artifact_id = $1", [artifactId]);
       const response = await request(server.app).post(`${endpoint}/workflow`).set('Authorization', authorization).send({ command, reason: 'Falta revisar evidencia' });
@@ -315,6 +439,8 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     expect(audit.rows).toHaveLength(3);
     expect(audit.rows.every((row) => row.actor === 'Revisor QA')).toBe(true);
     expect(audit.rows.some((row) => row.detail.includes('Falta revisar evidencia'))).toBe(true);
+    await server.pool.query('DELETE FROM organigrama_cargos WHERE id=$1', [employeeId + '-temporary']);
+    await server.pool.query('UPDATE meeting_reviews SET project_id=NULL WHERE artifact_id=$1', [artifactId]);
   });
 
   it('M-04: minutos vacíos permanecen nulos y la edición deja evento', async () => {
@@ -411,7 +537,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     expect((await request(server.app).get('/api/meetings/filter-options').set('Authorization', auth)).status).toBe(200);
   });
 
-  it('acceso restringido: solo ve una reunión tras ser vinculado; nunca puede editar como interiorista', async () => {
+  it('acceso restringido: interiorista edita acciones vinculadas, no la reunión completa', async () => {
     const employeePayload = Buffer.from(JSON.stringify({ id: userId, usuario: employeeId, rol: 'employee:interiorista', exp: Date.now() + 3600000 })).toString('base64url');
     const auth = `Bearer ${employeePayload}.${createHmac('sha256', secret).update(employeePayload).digest('base64url')}`;
     expect((await request(server.app).get(endpoint).set('Authorization', auth)).status).toBe(404);
@@ -419,7 +545,9 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     await server.pool.query("INSERT INTO meeting_review_actions (id, artifact_id, title, responsible_id, responsible_kind) VALUES ($1, $2, 'Tarea de Persona QA', $3, 'employee')", [actionId, artifactId, employeeId]);
     expect((await request(server.app).get(endpoint).set('Authorization', auth)).status).toBe(200);
     expect((await request(server.app).get('/api/meetings/filter-options').set('Authorization', auth)).status).toBe(200);
-    expect((await request(server.app).put(`${endpoint}/actions/${actionId}`).set('Authorization', auth).send({ title: 'Prohibido' })).status).toBe(403);
+    expect((await request(server.app).put(`${endpoint}/actions/${actionId}`).set('Authorization', auth).send({ title: 'Permitido' })).status).toBe(200);
+    expect((await request(server.app).put(endpoint).set('Authorization', auth).send({ summary: 'Prohibido' })).status).toBe(403);
+    expect((await request(server.app).delete(`${endpoint}/actions/${actionId}`).set('Authorization', auth)).status).toBe(403);
   });
 
   it('M-07: Delineante guarda su reunión pero no una ajena ni operaciones globales', async () => {
@@ -452,90 +580,94 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
-  it.each(['COMITE_OBRA', 'REUNION_CLIENTE'])('cadena completa %s con cuatro usuarios, devolución, permisos, avisos y snapshots', async (meetingKind) => {
-    const prefix = `qa-chain-${randomUUID()}`;
+  it.each(['COMITE_OBRA', 'REUNION_CLIENTE'])('cadena y permisos encargado → delineante → PMC → destinatario: %s', async (meetingKind) => {
+    const prefix = 'qa-chain-' + randomUUID();
     const reviewId = randomUUID();
-    const actionId = randomUUID();
-    const stages = ['delineante', 'pmc', 'operations', 'director'];
-    const labels = ['Delineante', 'PMC / Jefe de Proyectos', 'Dirección de Operaciones', 'Director General'];
-    const roles = ['employee:delineante', 'employee:pmc', 'employee:direccion_de_operaciones', 'employee:director_general'];
-    const people = stages.map((stage, index) => ({ id: `${prefix}-${stage}`, name: `QA ${labels[index]}`, role: roles[index], auth: '', userId: 0 }));
-    const originalSettings = (await server.pool.query('SELECT committee_workflow,client_workflow FROM meeting_agent_settings WHERE id=TRUE')).rows[0];
-    const route = `/api/meetings/${reviewId}`;
-    const transition = (index: number, command: string, reason?: string) => request(server.app).post(`${route}/workflow`).set('Authorization', people[index].auth).send({ command, reason });
-    const checkTurn = async (stage: string | null) => {
+    const route = '/api/meetings/' + reviewId;
+    const stages = ['organizer', 'delineante', 'pmc', 'operations', 'director', 'external'];
+    const labels = ['Interiorista', meetingKind === 'REUNION_CLIENTE' ? 'Planimetrista' : 'Delineante', 'PMC', 'Dirección de Operaciones', 'Director General', 'Empleado externo al proyecto'];
+    const people = stages.map((stage, index) => ({ id: prefix + '-' + stage, role: 'employee:' + stage, name: labels[index], auth: '', userId: 0 }));
+    const transition = (index: number, command: string, recipient_id?: string) => request(server.app).post(route + '/workflow').set('Authorization', people[index].auth).send({ command, recipient_id, reason: 'Corregir evidencia QA' });
+    const checkTurn = async (recipient: number | null) => {
       for (const [index, person] of people.entries()) {
         const response = await request(server.app).get('/api/meetings/work-items').set('Authorization', person.auth);
         expect(response.status, JSON.stringify(response.body)).toBe(200);
-        const notices = response.body.items.filter((item: { artifactId: string; kind: string }) => item.artifactId === reviewId && item.kind === 'review');
-        expect(notices.length, `${meetingKind}: turno ${stage}, usuario ${stages[index]}`).toBe(stages[index] === stage ? 1 : 0);
-        if (notices.length) expect(notices[0].unread).toBe(true);
+        expect(response.body.items.some((item: { artifactId: string; kind: string }) => item.artifactId === reviewId && item.kind === 'review')).toBe(index === recipient);
         const mine = await request(server.app).get('/api/meetings?filter=mine').set('Authorization', person.auth);
-        expect(mine.status).toBe(200);
-        expect(mine.body.items.some((item: { id: string }) => item.id === reviewId)).toBe(stages[index] === stage);
-        const approved = await request(server.app).get('/api/meetings?filter=approved').set('Authorization', person.auth);
-        expect(approved.status).toBe(200);
-        expect(approved.body.items.some((item: { id: string }) => item.id === reviewId)).toBe(stage === null);
+        expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+        expect(mine.body.items.some((item: { id: string }) => item.id === reviewId)).toBe(index === recipient);
       }
     };
     try {
-      await server.pool.query('UPDATE meeting_agent_settings SET committee_workflow=$1::jsonb,client_workflow=$1::jsonb WHERE id=TRUE', [JSON.stringify(stages)]);
       await server.pool.query("INSERT INTO proyectos(id,nombre) VALUES($1,'Proyecto cadena QA')", [prefix]);
       for (const [index, person] of people.entries()) {
-        await server.pool.query('INSERT INTO empleados(id,nombre,numero,email) VALUES($1,$2,$1,$3)', [person.id, person.name, `${person.id}@example.test`]);
-        person.userId = (await server.pool.query("INSERT INTO usuarios(usuario,email,auth_provider,rol) VALUES($1,$2,'supabase',$3) RETURNING id", [person.id, `${person.id}@example.test`, person.role])).rows[0].id;
+        await server.pool.query('INSERT INTO empleados(id,nombre,numero,email) VALUES($1,$2,$1,$3)', [person.id, person.name, person.id + '@example.test']);
+        person.userId = (await server.pool.query("INSERT INTO usuarios(usuario,email,auth_provider,rol) VALUES($1,$2,'supabase',$3) RETURNING id", [person.id, person.id + '@example.test', person.role])).rows[0].id;
         await server.pool.query('INSERT INTO organigrama_cargos(id,nombre) VALUES($1,$2)', [person.id, labels[index]]);
-        await server.pool.query('INSERT INTO organigrama_cargo_asignaciones(id,cargo_id,empleado_id,proyecto_id) VALUES($1,$1,$1,$2)', [person.id, prefix]);
-        await server.pool.query('INSERT INTO proyecto_asignaciones(id,proyecto_id,empleado_id,rol_en_proyecto) VALUES($1,$2,$1,$3)', [person.id, prefix, labels[index]]);
-        const signedPayload = Buffer.from(JSON.stringify({ id: person.userId, usuario: person.id, nombre: person.name, rol: person.role, exp: Date.now() + 60000 })).toString('base64url');
-        person.auth = `Bearer ${signedPayload}.${createHmac('sha256', secret).update(signedPayload).digest('base64url')}`;
+        if (index < 5) {
+          await server.pool.query('INSERT INTO organigrama_cargo_asignaciones(id,cargo_id,empleado_id,proyecto_id) VALUES($1,$1,$1,$2)', [person.id, prefix]);
+          await server.pool.query('INSERT INTO proyecto_asignaciones(id,proyecto_id,empleado_id,rol_en_proyecto) VALUES($1,$2,$1,$3)', [person.id, prefix, labels[index]]);
+        }
+        const signed = Buffer.from(JSON.stringify({ id: person.userId, usuario: person.id, nombre: person.name, rol: person.role, exp: Date.now() + 60000 })).toString('base64url');
+        person.auth = 'Bearer ' + signed + '.' + createHmac('sha256', secret).update(signed).digest('base64url');
       }
-      await server.pool.query("INSERT INTO google_drive_artifacts(id,connection_id,google_file_id,name,mime_type,artifact_type,content_text) VALUES($1,$2,$3,'Cadena completa QA','text/plain','transcript','Fixture sintético sin datos personales')", [reviewId, connectionId, reviewId]);
-      await server.pool.query("INSERT INTO meeting_reviews(artifact_id,analysis_status,summary,workflow_stage,status,project_id,meeting_kind,pmc_employee_id) VALUES($1,'completed','Resumen inicial','agent','draft',$2,$3,$4)", [reviewId, prefix, meetingKind, people[1].id]);
-      await server.pool.query("INSERT INTO meeting_review_actions(id,artifact_id,title,status,project_id) VALUES($1,$2,'Revisar planos QA','pending',$3)", [actionId, reviewId, prefix]);
+      await server.pool.query("INSERT INTO google_drive_artifacts(id,connection_id,google_file_id,name,mime_type,artifact_type,content_text) VALUES($1,$2,$3,'Cadena QA','text/plain','transcript','Fixture sintético')", [reviewId, connectionId, reviewId]);
+      await server.pool.query("INSERT INTO meeting_reviews(artifact_id,analysis_status,summary,workflow_stage,status,project_id,meeting_kind) VALUES($1,'completed','Resumen','agent','draft',$2,$3)", [reviewId, prefix, meetingKind]);
+      expect((await transition(0, 'save')).status).toBe(409);
+      await server.pool.query("INSERT INTO meeting_artifact_organizers(artifact_id,employee_id,assigned_by) VALUES($1,$2,'QA')", [reviewId, people[0].id]);
+      expect((await request(server.app).get(route).set('Authorization', people[5].auth)).status).toBe(404);
+      expect((await request(server.app).post(route + '/actions').set('Authorization', people[5].auth).send({ title: 'Fuera de alcance' })).status).toBe(403);
+      for (const [index, person] of people.slice(0, 5).entries()) {
+        const created = await request(server.app).post(route + '/actions').set('Authorization', person.auth).send({ title: 'Acción de ' + person.name });
+        expect(created.status, JSON.stringify(created.body)).toBe(201);
+        const actionRoute = route + '/actions/' + created.body.id;
+        expect((await request(server.app).put(actionRoute).set('Authorization', person.auth).send({ title: 'Editada por ' + person.name })).status).toBe(200);
+        expect((await request(server.app).put(actionRoute + '/responsible').set('Authorization', person.auth).send({ kind: 'employee', id: people[0].id })).status).toBe(200);
+        expect((await request(server.app).put(actionRoute + '/responsibles').set('Authorization', person.auth).send({ kind: 'employee', id: people[1].id })).status).toBe(200);
+        const detail = await request(server.app).get(route).set('Authorization', person.auth);
+        expect(detail.body.permissions).toMatchObject({ manageActions: true, deleteActions: [2, 4].includes(index) });
+        expect(detail.body.assignment_directory.employees.every((row: Record<string, unknown>) => !('email' in row) && !('numero' in row))).toBe(true);
+        expect((await request(server.app).delete(actionRoute).set('Authorization', authorization)).status).toBe(403);
+        expect((await request(server.app).delete(actionRoute).set('Authorization', person.auth)).status).toBe([2, 4].includes(index) ? 204 : 403);
+      }
+      await server.routeReadyMeetingReviews();
+      expect((await request(server.app).get(route).set('Authorization', people[0].auth)).body.workflow_stage).toBe('organizer');
+      await checkTurn(0);
+      expect((await transition(4, 'approve')).status).toBe(403);
+      expect((await transition(0, 'approve', people[4].id)).status).toBe(400);
+      await server.pool.query('UPDATE empleados SET activo=FALSE WHERE id=$1', [people[1].id]);
       expect((await transition(0, 'approve')).status).toBe(409);
-      await server.pool.query("UPDATE meeting_review_actions SET responsible_id=$2,responsible_kind='employee' WHERE id=$1", [actionId, people[0].id]);
-      const initial = await transition(0, 'save');
-      expect(initial.status, JSON.stringify(initial.body)).toBe(200);
-      expect(initial.body.meeting.workflow_stage).toBe('delineante');
-      await checkTurn('delineante');
-      expect((await transition(1, 'approve')).status).toBe(403);
-      const edit = await request(server.app).put(`${route}/actions/${actionId}`).set('Authorization', people[0].auth).send({ title: 'Planos corregidos por Delineante QA' });
-      expect(edit.status, JSON.stringify(edit.body)).toBe(200);
-      for (const index of [0, 1]) {
-        const advanced = await transition(index, 'approve');
-        expect(advanced.status, JSON.stringify(advanced.body)).toBe(200);
-        expect(advanced.body.meeting).toMatchObject({ workflow_stage: stages[index + 1], status: 'pending' });
-        await checkTurn(stages[index + 1]);
-        expect((await transition(index, 'approve')).status).toBe(403);
-      }
-      const returned = await transition(2, 'return', 'Corregir el plano antes de continuar');
+      await server.pool.query('UPDATE empleados SET activo=TRUE WHERE id=$1', [people[1].id]);
+      expect((await transition(0, 'approve')).body.meeting.workflow_stage).toBe('delineante');
+      await checkTurn(1);
+      expect((await transition(1, 'approve')).body.meeting.workflow_stage).toBe('pmc');
+      await checkTurn(2);
+      expect((await transition(2, 'approve', people[5].id)).status).toBe(200);
+      await checkTurn(5);
+      expect((await request(server.app).get(route).set('Authorization', people[5].auth)).status).toBe(200);
+      expect((await transition(5, 'approve', people[4].id)).status).toBe(400);
+      expect((await transition(5, 'return')).status).toBe(200);
+      expect((await request(server.app).get(route).set('Authorization', people[5].auth)).status).toBe(404);
+      await checkTurn(2);
+      expect((await transition(2, 'approve', 'missing-employee')).status).toBe(400);
+      await server.pool.query('UPDATE empleados SET activo=FALSE WHERE id=$1', [people[4].id]);
+      expect((await transition(2, 'approve', people[4].id)).status).toBe(400);
+      await server.pool.query('UPDATE empleados SET activo=TRUE WHERE id=$1', [people[4].id]);
+      const assigned = await transition(2, 'approve', people[4].id);
+      expect(assigned.status, JSON.stringify(assigned.body)).toBe(200);
+      expect(assigned.body.meeting).toMatchObject({ workflow_stage: 'assigned', workflow_recipient_id: people[4].id, status: 'pending' });
+      await checkTurn(4);
+      expect((await transition(3, 'approve')).status).toBe(403);
+      const returned = await transition(4, 'return');
       expect(returned.status, JSON.stringify(returned.body)).toBe(200);
-      expect(returned.body.meeting).toMatchObject({ workflow_stage: 'pmc', status: 'returned', returned_reason: 'Corregir el plano antes de continuar' });
-      await checkTurn('pmc');
-      const saved = await transition(1, 'save');
-      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
-      expect(saved.body.meeting.workflow_stage).toBe('pmc');
-      for (const index of [1, 2, 3]) {
-        const advanced = await transition(index, 'approve');
-        expect(advanced.status, JSON.stringify(advanced.body)).toBe(200);
-        expect(advanced.body.meeting).toMatchObject({ workflow_stage: stages[Math.min(index + 1, 3)], status: index === 3 ? 'approved' : 'pending' });
-        await checkTurn(index === 3 ? null : stages[index + 1]);
-      }
-      const final = (await server.pool.query('SELECT status,approved_by,approved_at FROM meeting_reviews WHERE artifact_id=$1', [reviewId])).rows[0];
-      expect(final.status).toBe('approved');
-      expect(final.approved_by).toBe(people[3].name);
-      expect(final.approved_at).toBeTruthy();
-      const versions = (await server.pool.query('SELECT actor,actor_id,actor_role,snapshot,event_type,previous_stage,stage,detail FROM meeting_review_versions WHERE artifact_id=$1 ORDER BY created_at', [reviewId])).rows;
-      expect(versions).toHaveLength(9);
-      for (const [index, person] of people.entries()) {
-        const auditRole = index < 2 ? labels[index] : person.role;
-        expect(versions.some((version) => version.actor === person.name && version.actor_id === String(person.userId) && version.actor_role === auditRole)).toBe(true);
-      }
+      expect(returned.body.meeting).toMatchObject({ workflow_stage: 'pmc', workflow_recipient_id: null, status: 'returned' });
+      await checkTurn(2);
+      expect((await transition(2, 'approve')).body.meeting.status).toBe('approved');
+      await checkTurn(null);
+      const versions = (await server.pool.query('SELECT snapshot,event_type,previous_stage,stage FROM meeting_review_versions WHERE artifact_id=$1 ORDER BY created_at', [reviewId])).rows;
       expect(versions.every((version) => version.snapshot?.meeting && Array.isArray(version.snapshot.actions))).toBe(true);
       expect(versions.at(-1).snapshot.meeting.status).toBe('approved');
-      expect(versions.at(-1).snapshot.actions[0].title).toBe('Planos corregidos por Delineante QA');
-      expect(versions.some((version) => version.event_type === 'return' && version.previous_stage === 'operations' && version.stage === 'pmc' && version.detail.includes('Corregir el plano'))).toBe(true);
+      expect(versions.some((version) => version.event_type === 'return' && version.previous_stage === 'assigned' && version.stage === 'pmc')).toBe(true);
     } finally {
       await server.pool.query('DELETE FROM google_drive_artifacts WHERE id=$1', [reviewId]);
       await server.pool.query('DELETE FROM organigrama_cargo_asignaciones WHERE cargo_id=ANY($1::text[])', [people.map((person) => person.id)]);
@@ -543,7 +675,6 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       await server.pool.query('DELETE FROM usuarios WHERE usuario=ANY($1::text[])', [people.map((person) => person.id)]);
       await server.pool.query('DELETE FROM empleados WHERE id=ANY($1::text[])', [people.map((person) => person.id)]);
       await server.pool.query('DELETE FROM proyectos WHERE id=$1', [prefix]);
-      await server.pool.query('UPDATE meeting_agent_settings SET committee_workflow=$1::jsonb,client_workflow=$2::jsonb WHERE id=TRUE', [JSON.stringify(originalSettings.committee_workflow), JSON.stringify(originalSettings.client_workflow)]);
     }
   });
 
@@ -605,24 +736,23 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     expect(response.body.available_projects).toEqual([]);
   });
 
-  it('A-01: omite cargos vacíos y registra la omisión', async () => {
+  it('A-01: no omite al encargado aunque haya PMC disponible', async () => {
     await server.pool.query("UPDATE meeting_reviews SET workflow_stage = 'agent', status = 'draft', project_id = $2 WHERE artifact_id = $1", [artifactId, projectId]);
     await server.pool.query("UPDATE meeting_review_actions SET status = 'cancelled' WHERE artifact_id = $1", [artifactId]);
     const response = await request(server.app).post(`${endpoint}/workflow`).set('Authorization', authorization).send({ command: 'approve' });
-    expect(response.status).toBe(200);
-    expect(response.body.meeting.workflow_stage).toBe('pmc');
-    const event = await server.pool.query('SELECT detail FROM meeting_review_versions WHERE artifact_id = $1 ORDER BY created_at DESC LIMIT 1', [artifactId]);
-    expect(event.rows[0].detail).toMatch(/omitid.*Delineante/i);
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain('Encargado');
   });
 
-  it('A-01: una persona con dos cargos consecutivos no tiene que aprobar dos veces', async () => {
+  it('A-01: PMC puede aprobar sin escalar automáticamente a su otro cargo', async () => {
     await server.pool.query("INSERT INTO organigrama_cargos (id, nombre) VALUES ($1, 'Dirección de Operaciones')", [`${employeeId}-operations`]);
     await server.pool.query('INSERT INTO organigrama_cargo_asignaciones (id, cargo_id, empleado_id) VALUES ($1, $1, $2)', [`${employeeId}-operations`, employeeId]);
+    await server.pool.query("UPDATE meeting_reviews SET workflow_stage='pmc',status='pending' WHERE artifact_id=$1", [artifactId]);
     const response = await request(server.app).post(`${endpoint}/workflow`).set('Authorization', authorization).send({ command: 'approve' });
     expect(response.status).toBe(200);
     expect(response.body.meeting.status).toBe('approved');
     const event = await server.pool.query('SELECT detail, snapshot FROM meeting_review_versions WHERE artifact_id = $1 ORDER BY created_at DESC LIMIT 1', [artifactId]);
-    expect(event.rows[0].detail).toMatch(/misma persona/i);
+    expect(event.rows[0].detail).toMatch(/definitivamente/i);
     expect(event.rows[0].snapshot.meeting.status).toBe('approved');
   });
 
@@ -637,14 +767,16 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
   it('M-04: también revierte guardado, creación, borrado y flujo si falla su evento', async () => {
     const actionId = randomUUID();
     await server.pool.query("INSERT INTO meeting_review_actions (id, artifact_id, title, status) VALUES ($1, $2, 'Conservar acción', 'cancelled')", [actionId, artifactId]);
+    const signed = Buffer.from(JSON.stringify({ id: userId, usuario: employeeId, rol: 'employee:pmc', exp: Date.now() + 60000 })).toString('base64url');
+    const pmcAuth = 'Bearer ' + signed + '.' + createHmac('sha256', secret).update(signed).digest('base64url');
     const previous = await server.pool.query('SELECT summary, status, workflow_stage FROM meeting_reviews WHERE artifact_id = $1', [artifactId]);
     await server.pool.query(`CREATE OR REPLACE FUNCTION qa_reject_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Fallo de auditoría simulado'; END $$; CREATE TRIGGER qa_audit_failure BEFORE INSERT ON meeting_review_versions FOR EACH ROW EXECUTE FUNCTION qa_reject_audit()`);
     try {
       const attempts = [
         () => request(server.app).put(endpoint).set('Authorization', authorization).send({ summary: 'Resumen no persistible' }),
         () => request(server.app).post(`${endpoint}/actions`).set('Authorization', authorization).send({ title: 'Acción no persistible' }),
-        () => request(server.app).delete(`${endpoint}/actions/${actionId}`).set('Authorization', authorization),
-        () => request(server.app).post(`${endpoint}/workflow`).set('Authorization', authorization).send({ command: 'return', reason: 'No persistible' }),
+        () => request(server.app).delete(`${endpoint}/actions/${actionId}`).set('Authorization', pmcAuth),
+        () => request(server.app).post(`${endpoint}/workflow`).set('Authorization', authorization).send({ command: 'save', reason: 'No persistible' }),
       ];
       for (const attempt of attempts) expect((await attempt()).status).toBe(500);
       const current = await server.pool.query('SELECT summary, status, workflow_stage FROM meeting_reviews WHERE artifact_id = $1', [artifactId]);
@@ -656,14 +788,15 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
-  it('M-06/P-03: aplica la cadena configurada por tipo cliente', async () => {
+  it('M-06/P-03: una configuración antigua no salta al encargado', async () => {
     const settings = await server.pool.query('SELECT client_workflow FROM meeting_agent_settings WHERE id = TRUE');
     await server.pool.query(`UPDATE meeting_agent_settings SET client_workflow = '["operations"]'::jsonb WHERE id = TRUE`);
     await server.pool.query("UPDATE meeting_reviews SET meeting_kind = 'REUNION_CLIENTE', workflow_stage = 'agent', status = 'draft' WHERE artifact_id = $1", [artifactId]);
+    await server.pool.query("INSERT INTO meeting_artifact_organizers(artifact_id,employee_id,assigned_by) VALUES($1,$2,'QA') ON CONFLICT(artifact_id) DO UPDATE SET employee_id=EXCLUDED.employee_id", [artifactId, employeeId]);
     try {
       const response = await request(server.app).post(`${endpoint}/workflow`).set('Authorization', authorization).send({ command: 'approve' });
       expect(response.status, JSON.stringify(response.body)).toBe(200);
-      expect(response.body.meeting.workflow_stage).toBe('operations');
+      expect(response.body.meeting.workflow_stage).toBe('organizer');
     } finally {
       await server.pool.query('UPDATE meeting_agent_settings SET client_workflow = $1::jsonb WHERE id = TRUE', [JSON.stringify(settings.rows[0].client_workflow)]);
     }
@@ -692,6 +825,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
   });
 
   it('M-04: conserva identidad y rol del autor sin contaminar otras transacciones', async () => {
+    expect((await request(server.app).put(endpoint).set('Authorization', authorization).send({ summary: 'Auditoría independiente' })).status).toBe(200);
     const result = await server.pool.query("SELECT actor_id, actor_role FROM meeting_review_versions WHERE artifact_id = $1 AND stage = 'edición' ORDER BY created_at DESC LIMIT 1", [artifactId]);
     expect(result.rows[0]).toEqual({ actor_id: 'qa', actor_role: 'superadmin' });
     const context = await server.pool.query("SELECT NULLIF(current_setting('lyn.audit_actor_id', TRUE), '') AS actor_id");
@@ -754,7 +888,10 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     expect(forbidden.status).toBe(403);
   });
 
-  it('A-01: devolución usa la etapa realmente revisada tras fusionar cargos', async () => {
+  it('A-01: devuelve una revisión antigua de Dirección al PMC vinculado', async () => {
+    await server.pool.query("INSERT INTO organigrama_cargos(id,nombre) VALUES($1,'PMC') ON CONFLICT(id) DO NOTHING", [employeeId + '-pmc']);
+    await server.pool.query('INSERT INTO organigrama_cargo_asignaciones(id,cargo_id,empleado_id) VALUES($1,$1,$2) ON CONFLICT(id) DO NOTHING', [employeeId + '-pmc', employeeId]);
+    await server.pool.query('UPDATE meeting_reviews SET pmc_employee_id=$2 WHERE artifact_id=$1', [artifactId, employeeId]);
     await server.pool.query('UPDATE organigrama_cargo_asignaciones SET proyecto_id = NULL WHERE empleado_id = $1', [employeeId]);
     await server.pool.query("UPDATE meeting_reviews SET workflow_stage = 'director', status = 'pending', analysis_status = 'completed' WHERE artifact_id = $1", [artifactId]);
     await server.pool.query("INSERT INTO meeting_review_versions (id, artifact_id, actor, stage, detail) VALUES ($1, $2, 'qa', 'director', 'Avance histórico de QA')", [randomUUID(), artifactId]);
@@ -925,7 +1062,7 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
-  it('P-06: altas locales de organigrama y escalado real sin aprobar', async () => {
+  it('P-06: altas locales no habilitan el atajo automático a Dirección', async () => {
     const positionId=`qa-local-role-${artifactId}`;
     const directorId=`qa-local-director-${artifactId}`;
     await server.pool.query("INSERT INTO empleados(id,numero,nombre) VALUES($1,$1,'Director de prueba')",[directorId]);
@@ -937,8 +1074,8 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
       expect((await request(server.app).post('/api/directory/organization/assignments').set('Authorization',authorization).send({cargo_id:positionId,empleado_id:directorId,proyecto_id:projectId})).status).toBe(409);
       await server.pool.query("UPDATE meeting_reviews SET workflow_stage='operations',status='pending',analysis_status='completed',project_id=$2 WHERE artifact_id=$1",[artifactId,projectId]);
       const escalation=await request(server.app).post(`/api/operations/escalations/${artifactId}`).set('Authorization',authorization).send({reason:'Revisión excepcional de QA'});
-      expect(escalation.status).toBe(200);expect(escalation.body.stage).toBe('director');
-      expect((await server.pool.query('SELECT status,manual_revision FROM meeting_reviews WHERE artifact_id=$1',[artifactId])).rows[0]).toEqual({status:'pending',manual_revision:true});
+      expect(escalation.status).toBe(409);expect(escalation.body.error).toContain('destinatario explícito');
+      expect((await server.pool.query('SELECT status,workflow_stage FROM meeting_reviews WHERE artifact_id=$1',[artifactId])).rows[0]).toEqual({status:'pending',workflow_stage:'operations'});
       expect((await request(server.app).post(`/api/operations/escalations/${artifactId}`).set('Authorization',authorization).send({reason:'No saltar el final'})).status).toBe(409);
       expect((await request(server.app).delete(`/api/directory/organization/assignments/${localId}`).set('Authorization',authorization)).status).toBe(200);
       expect((await request(server.app).delete('/api/directory/organization/assignments/original-supabase').set('Authorization',authorization)).status).toBe(409);

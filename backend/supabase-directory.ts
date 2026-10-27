@@ -44,6 +44,7 @@ type SourceOrgPosition = {
   departamento: string | null;
   es_direccion: boolean | null;
   prioridad_responsable_proyecto: number | null;
+  tipo_equipo_proyecto: string | null;
   activo: boolean | null;
   updated_at: string | null;
 };
@@ -57,6 +58,7 @@ type SourceOrgAssignment = {
   proyecto_id: string | null;
   activo: boolean | null;
   updated_at: string | null;
+  asignado_at: string | null;
 };
 
 export type SupabaseDirectoryConfig = {
@@ -201,12 +203,12 @@ async function upsertDirectory(client: PoolClient, profiles: SourceProfile[], pr
   const positionIds = new Set<string>();
   for (const position of orgPositions) {
     await client.query(
-      `INSERT INTO organigrama_cargos (id, nombre, codigo, cargo_padre_id, departamento, es_direccion, prioridad_responsable_proyecto, activo, source_updated_at, synced_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+      `INSERT INTO organigrama_cargos (id, nombre, codigo, cargo_padre_id, departamento, es_direccion, prioridad_responsable_proyecto, activo, source_updated_at, tipo_equipo_proyecto, synced_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
        ON CONFLICT (id) DO UPDATE SET nombre = EXCLUDED.nombre, codigo = EXCLUDED.codigo, cargo_padre_id = EXCLUDED.cargo_padre_id,
          departamento = EXCLUDED.departamento, es_direccion = EXCLUDED.es_direccion, prioridad_responsable_proyecto = EXCLUDED.prioridad_responsable_proyecto,
-         activo = EXCLUDED.activo, source_updated_at = EXCLUDED.source_updated_at, synced_at = NOW()`,
-      [position.id, position.nombre, position.codigo || null, position.cargo_padre_id || null, position.departamento || null, position.es_direccion === true, position.prioridad_responsable_proyecto || null, position.activo !== false, position.updated_at || null],
+         activo = EXCLUDED.activo, source_updated_at = EXCLUDED.source_updated_at, tipo_equipo_proyecto = EXCLUDED.tipo_equipo_proyecto, synced_at = NOW()`,
+      [position.id, position.nombre, position.codigo || null, position.cargo_padre_id || null, position.departamento || null, position.es_direccion === true, position.prioridad_responsable_proyecto || null, position.activo !== false, position.updated_at || null, position.tipo_equipo_proyecto || null],
     );
     positionIds.add(position.id);
   }
@@ -220,11 +222,11 @@ async function upsertDirectory(client: PoolClient, profiles: SourceProfile[], pr
   for (const assignment of orgAssignments) {
     if (!positionIds.has(assignment.cargo_id) || !employeeIds.has(assignment.profile_id)) continue;
     await client.query(
-      `INSERT INTO organigrama_cargo_asignaciones (id, cargo_id, empleado_id, proyecto_id, activo, source_updated_at, synced_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      `INSERT INTO organigrama_cargo_asignaciones (id, cargo_id, empleado_id, proyecto_id, activo, source_updated_at, source_assigned_at, synced_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
        ON CONFLICT (id) DO UPDATE SET cargo_id = EXCLUDED.cargo_id, empleado_id = EXCLUDED.empleado_id, proyecto_id = EXCLUDED.proyecto_id,
-         activo = EXCLUDED.activo, source_updated_at = EXCLUDED.source_updated_at, synced_at = NOW()`,
-      [assignment.id, assignment.cargo_id, assignment.profile_id, assignment.proyecto_id || null, assignment.activo !== false, assignment.updated_at || null],
+         activo = EXCLUDED.activo, source_updated_at = EXCLUDED.source_updated_at, source_assigned_at = EXCLUDED.source_assigned_at, synced_at = NOW()`,
+      [assignment.id, assignment.cargo_id, assignment.profile_id, assignment.proyecto_id || null, assignment.activo !== false, assignment.updated_at || null, assignment.asignado_at || null],
     );
     orgAssignmentIds.add(assignment.id);
   }
@@ -234,19 +236,30 @@ async function upsertDirectory(client: PoolClient, profiles: SourceProfile[], pr
   for (const assignment of assignments) {
     const role = String(assignment.rol_en_proyecto || '').trim();
     const key = [assignment.proyecto_id, assignment.profile_id, role].join('\u0000');
-    if (!uniqueAssignments.has(key)) uniqueAssignments.set(key, { ...assignment, rol_en_proyecto: role });
+    const previous = uniqueAssignments.get(key);
+    if (!previous || Date.parse(assignment.created_at || '') > (Date.parse(previous.created_at || '') || 0)) uniqueAssignments.set(key, { ...assignment, rol_en_proyecto: role });
   }
 
+  const movedAssignments = await client.query<{id:string;created_at:Date}>(
+    `DELETE FROM proyecto_asignaciones stored
+     USING jsonb_to_recordset($1::jsonb) AS incoming(id text,proyecto_id text,empleado_id text,rol_en_proyecto text)
+     WHERE stored.origen='supabase' AND stored.id=incoming.id
+       AND (stored.proyecto_id,stored.empleado_id,stored.rol_en_proyecto)
+         IS DISTINCT FROM (incoming.proyecto_id,incoming.empleado_id,incoming.rol_en_proyecto)
+     RETURNING stored.id,stored.created_at`,
+    [JSON.stringify([...uniqueAssignments.values()].map(assignment=>({id:'supabase:'+assignment.id,proyecto_id:assignment.proyecto_id,empleado_id:assignment.profile_id,rol_en_proyecto:assignment.rol_en_proyecto})))],
+  );
+  const originalCreation = new Map(movedAssignments.rows.map(assignment=>[assignment.id,assignment.created_at]));
   const assignmentIds = new Set<string>();
   for (const assignment of uniqueAssignments.values()) {
     const localAssignmentId = 'supabase:' + assignment.id;
     const result = await client.query<{ id: string }>(
-      `INSERT INTO proyecto_asignaciones (id, proyecto_id, empleado_id, rol_en_proyecto, origen, source_created_at, synced_at)
-       VALUES ($1, $2, $3, $4, 'supabase', $5, NOW())
+      `INSERT INTO proyecto_asignaciones (id, proyecto_id, empleado_id, rol_en_proyecto, origen, source_created_at, synced_at, created_at)
+       VALUES ($1, $2, $3, $4, 'supabase', $5, NOW(), COALESCE($6::timestamptz,NOW()))
        ON CONFLICT (proyecto_id, empleado_id, rol_en_proyecto) DO UPDATE SET
          source_created_at = EXCLUDED.source_created_at, synced_at = NOW()
        RETURNING id`,
-      [localAssignmentId, assignment.proyecto_id, assignment.profile_id, assignment.rol_en_proyecto, assignment.created_at || null],
+      [localAssignmentId, assignment.proyecto_id, assignment.profile_id, assignment.rol_en_proyecto, assignment.created_at || null, originalCreation.get(localAssignmentId) || null],
     );
     assignmentIds.add(result.rows[0].id);
   }
@@ -268,13 +281,15 @@ export async function syncSupabaseDirectory(pool: Pool, config = supabaseDirecto
     fetchAll<SourceProfile>(config, 'profiles', 'id,email,nombre,apellidos,rol,telefono,activo,updated_at'),
     fetchAll<SourceProject>(config, 'proyectos', 'id,nombre,descripcion,cliente_id,interiorista_id,estado,fecha_inicio,fecha_fin_estimada,fecha_fin_real,direccion,ciudad,activo,updated_at'),
     fetchAll<SourceProjectMember>(config, 'proyecto_miembros', 'id,proyecto_id,profile_id,rol_en_proyecto,created_at'),
-    fetchAll<SourceOrgPosition>(config, 'cargos', 'id,nombre,codigo,cargo_padre_id,departamento,es_direccion,prioridad_responsable_proyecto,activo,updated_at'),
+    fetchAll<SourceOrgPosition>(config, 'cargos', 'id,nombre,codigo,cargo_padre_id,departamento,es_direccion,prioridad_responsable_proyecto,tipo_equipo_proyecto,activo,updated_at'),
     fetchAll<SourceOrgRole>(config, 'cargo_roles_predeterminados', 'cargo_id,rol', 'cargo_id.asc'),
-    fetchAll<SourceOrgAssignment>(config, 'cargo_asignaciones', 'id,cargo_id,profile_id,proyecto_id,activo,updated_at'),
+    fetchAll<SourceOrgAssignment>(config, 'cargo_asignaciones', 'id,cargo_id,profile_id,proyecto_id,activo,updated_at,asignado_at'),
   ]);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query("SET LOCAL lock_timeout='10s'");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('lyn:supabase-directory'))");
     const result = await upsertDirectory(client, profiles, projects, assignments, orgPositions, orgRoles, orgAssignments);
     await client.query('COMMIT');
     return result;

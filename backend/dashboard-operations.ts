@@ -68,8 +68,8 @@ export function registerDashboardOperations(app: Express, deps: Dependencies): v
       await client.query("SELECT pg_advisory_xact_lock(hashtext('dashboard-org-assignments'))");
       const existing = await client.query('SELECT id FROM organigrama_cargo_asignaciones WHERE cargo_id=$1 AND empleado_id=$2 AND proyecto_id IS NOT DISTINCT FROM $3::varchar AND activo=TRUE', [cargo_id, empleado_id, proyecto_id || null]);
       if (existing.rows.length) return res.status(409).json({ error: 'La asignación ya existe.' });
-      const created = await client.query(`INSERT INTO organigrama_cargo_asignaciones (id,cargo_id,empleado_id,proyecto_id)
-        SELECT $1,c.id,e.id,$4 FROM organigrama_cargos c CROSS JOIN empleados e
+      const created = await client.query(`INSERT INTO organigrama_cargo_asignaciones (id,cargo_id,empleado_id,proyecto_id,source_assigned_at)
+        SELECT $1,c.id,e.id,$4,NOW() FROM organigrama_cargos c CROSS JOIN empleados e
         WHERE c.id=$2 AND c.activo=TRUE AND e.id=$3 AND e.activo=TRUE
         AND ($4::varchar IS NULL OR EXISTS(SELECT 1 FROM proyectos WHERE id=$4 AND activo=TRUE)) RETURNING *`, [`local:${randomUUID()}`, cargo_id, empleado_id, proyecto_id || null]);
       if (!created.rows.length) return res.status(400).json({ error: 'Cargo, persona y proyecto deben estar activos.' });
@@ -115,7 +115,7 @@ export function registerDashboardOperations(app: Express, deps: Dependencies): v
       if (!current.rows.length) return res.status(409).json({ error: 'La reunión ya no está pendiente de revisión.' });
       const previous = current.rows[0].workflow_stage;
       const next = await deps.nextStage(id, previous);
-      if (!next) return res.status(409).json({ error: 'No hay un siguiente escalón con una persona activa. Revisa el organigrama.' });
+      if (!next) return res.status(409).json({ error: 'El escalado automático está deshabilitado. Completa la revisión en el panel de la reunión; después del PMC se requiere un destinatario explícito.' });
       await client.query("SELECT set_config('lyn.audit_previous_stage',$1,TRUE),set_config('lyn.audit_event_type','escalate',TRUE)", [previous]);
       await client.query('UPDATE meeting_reviews SET workflow_stage=$2, manual_revision=TRUE, updated_at=NOW() WHERE artifact_id=$1', [id,next.stage]);
       await client.query('INSERT INTO meeting_review_versions(id,artifact_id,actor,stage,detail) VALUES($1,$2,$3,$4,$5)', [randomUUID(),id,deps.actor(res),next.stage,`Escalado a ${next.label} sin aprobar. Motivo: ${reason}`]);

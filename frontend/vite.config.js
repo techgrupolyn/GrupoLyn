@@ -26,14 +26,6 @@ export default defineConfig({
     },
   },
   build: {
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          vendor: ['lucide-react'],
-          charts: ['recharts'],
-        },
-      },
-    },
     sourcemap: false,
     minify: 'esbuild',
   },
