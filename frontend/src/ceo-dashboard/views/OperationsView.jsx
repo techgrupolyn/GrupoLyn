@@ -6,7 +6,7 @@ const field = 'rounded border border-[#444] bg-[#101010] px-3 py-2 text-sm text-
 const button = 'rounded border border-amber-200/40 px-3 py-2 text-xs text-amber-100 hover:bg-amber-200/10 disabled:opacity-40';
 const panel = 'rounded border border-[#333] bg-[#141414] p-4';
 const names = { organigrama: 'Organigrama y escalado', leads: 'Leads / Prospectos', clients: 'Clientes', identities: 'Identidades sin resolver', incidents: 'Control de obra / Incidencias' };
-const stages = { delineante: 'Delineante', pmc: 'PMC / Jefe de proyectos', operations: 'Dirección de operaciones', director: 'Director General', agent: 'Agente IA' };
+const stages = { organizer: 'Encargado', assigned: 'Persona asignada', delineante: 'Delineante', pmc: 'PMC / Jefe de proyectos', operations: 'PMC (flujo anterior)', director: 'PMC (flujo anterior)', agent: 'Agente IA' };
 const leadStates = { new: 'Nuevo', contacted: 'Contactado', qualified: 'Cualificado', won: 'Ganado', lost: 'Descartado' };
 const fullName = (person) => [person.nombre, person.apellido].filter(Boolean).join(' ');
 
@@ -30,10 +30,12 @@ export default function OperationsView({ mode = 'organigrama', initialQuery = ''
   const [assignment, setAssignment] = useState({ cargo_id: '', empleado_id: '', proyecto_id: '' });
   const [history, setHistory] = useState(null);
   const fetchData = async () => {
-    const directoryData = await api.directory.overview();
-    const payload = mode === 'organigrama' ? await Promise.all([api.operations.organization(), api.operations.escalations()])
-      : mode === 'clients' ? directoryData.clients : await api.operations[mode]();
-    return { directoryData, payload };
+    const [directoryData, payload] = await Promise.all([
+      api.directory.overview(),
+      mode === 'organigrama' ? Promise.all([api.operations.organization(), api.operations.escalations()])
+        : mode === 'clients' ? Promise.resolve(null) : api.operations[mode](),
+    ]);
+    return { directoryData, payload: mode === 'clients' ? directoryData.clients : payload };
   };
   const applyData = ({ directoryData, payload }) => {
     setDirectory(directoryData);
@@ -68,7 +70,7 @@ export default function OperationsView({ mode = 'organigrama', initialQuery = ''
     {notice && <p role="status" className="text-sm text-emerald-200">{notice}</p>}
     {loading ? <p role="status">Cargando datos…</p> : <>
       {mode === 'organigrama' && <>
-        <div className={panel}><h3 className="font-semibold">Jerarquía global y por proyecto</h3><label className="mt-3 block text-xs">Ámbito <select aria-label="Ámbito del organigrama" className={`${field} ml-2`} value={project} onChange={(event) => setProject(event.target.value)}><option value="all">Todos</option><option value="global">Global</option>{directory.projects.map((item) => <option key={item.id} value={item.id}>{item.nombre}</option>)}</select></label><p className="mt-3 text-xs text-[#aaa]">Delineante → PMC → Dirección de operaciones → Director General. La cadena omite cargos vacíos; el escalado no aprueba el documento.</p>
+        <div className={panel}><h3 className="font-semibold">Jerarquía global y por proyecto</h3><label className="mt-3 block text-xs">Ámbito <select aria-label="Ámbito del organigrama" className={`${field} ml-2`} value={project} onChange={(event) => setProject(event.target.value)}><option value="all">Todos</option><option value="global">Global</option>{directory.projects.map((item) => <option key={item.id} value={item.id}>{item.nombre}</option>)}</select></label><p className="mt-3 text-xs text-[#aaa]">Encargado de la reunión → Delineante → PMC. Sin saltar etapas; el PMC elige si requiere revisión de otra persona.</p>
           <div className="mt-4 grid gap-3 md:grid-cols-2">{organization.positions.filter((position) => position.activo).map((position) => {
             const members = organization.assignments.filter((item) => item.cargo_id === position.id && item.activo && item.employee_active && (project === 'all' || (project === 'global' ? !item.proyecto_id : item.proyecto_id === project || !item.proyecto_id)));
             const parent = organization.positions.find((item) => item.id === position.cargo_padre_id);
@@ -97,18 +99,16 @@ export default function OperationsView({ mode = 'organigrama', initialQuery = ''
           {mode === 'identities' && <p className="mt-2 text-xs text-amber-100">Mención: {row.mentioned_name || 'Sin responsable explícito'} · {row.project_name || 'Sin obra'}</p>}
         </div><div className="flex flex-wrap gap-2">
           {['organigrama', 'identities', 'incidents'].includes(mode) && <button className={button} onClick={() => onOpenMeeting(row.artifact_id || row.id)}>Abrir reunión</button>}
-          <button className={button} onClick={() => { if (mode === 'leads') setLead({ ...row }); else setSelected(row); setReason(''); setPerson(''); }}>{mode === 'organigrama' ? 'Escalar' : mode === 'incidents' ? row.resolved ? 'Reabrir' : 'Resolver' : mode === 'identities' ? 'Vincular persona' : mode === 'leads' ? 'Editar' : 'Ver ficha'}</button>
+          <button className={button} onClick={() => { if (mode === 'organigrama') { onOpenMeeting(row.artifact_id || row.id); return; } if (mode === 'leads') setLead({ ...row }); else setSelected(row); setReason(''); setPerson(''); }}>{mode === 'organigrama' ? 'Revisar asignación' : mode === 'incidents' ? row.resolved ? 'Reabrir' : 'Resolver' : mode === 'identities' ? 'Vincular persona' : mode === 'leads' ? 'Editar' : 'Ver ficha'}</button>
           {['leads', 'incidents'].includes(mode) && <button className={button} onClick={() => showHistory(mode === 'leads' ? 'lead' : 'incident', row.id)}>Historial</button>}
         </div></div>
         {selected?.id === row.id && <div className="mt-4 border-t border-[#333] pt-3">
           {mode === 'clients' ? <><p className="text-sm">{row.email || 'Sin correo'} · {row.telefono || 'Sin teléfono'} · {row.activo ? 'Activo' : 'Inactivo'}</p><h4 className="mt-3 text-xs font-semibold">Proyectos y equipo asignado</h4>{directory.projects.filter((item) => item.cliente_id === row.id).map((item) => <p key={item.id} className="mt-2 text-xs">{item.nombre} · {item.estado || 'Sin estado'}<br/>{(item.asignaciones || []).map((member) => `${member.nombre} (${member.rol || 'Sin rol'})`).join(' · ') || 'Sin equipo vinculado'}</p>)}</>
             : <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); mutate(() => {
-              if (mode === 'organigrama') return api.operations.escalate(row.id, reason);
               if (mode === 'incidents') return api.operations.resolveIncident(row.id, !row.resolved, reason);
               const divider = person.indexOf(':'); return api.meetings.assignResponsible(row.artifact_id, row.id, { kind: person.slice(0, divider), id: person.slice(divider + 1) });
             }); }}>
               {mode === 'identities' ? <label className="grid gap-2 text-xs">Persona del directorio<select required aria-label="Persona del directorio" className={field} value={person} onChange={(event) => setPerson(event.target.value)}><option value="">Seleccionar persona</option>{people.map((item) => <option key={item.key} value={item.key}>{item.name} · {item.role}</option>)}</select></label> : <label className="grid gap-2 text-xs">Motivo<textarea required minLength={5} className={field} value={reason} onChange={(event) => setReason(event.target.value)} /></label>}
-              {mode === 'organigrama' && <p className="text-xs text-amber-100">Pasa al siguiente cargo disponible sin aprobar ni publicar acciones. Quedará registrado en la cadena de cambios.</p>}
               <button disabled={busy} className={button}>Confirmar cambio</button>
             </form>}
           <button className={`${button} mt-3`} onClick={() => setSelected(null)}>Cerrar</button>

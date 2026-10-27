@@ -2,7 +2,7 @@ export type CalendarMeeting = {
   id?: string;
   status?: string;
   organizer?: { email?: string };
-  attachments?: Array<{ fileId?: string }>;
+  attachments?: Array<{ fileId?: string; mimeType?: string }>;
   hangoutLink?: string;
   conferenceData?: { conferenceId?: string };
 };
@@ -26,7 +26,7 @@ export async function calendarEventsForDate(accessToken: string, date: string): 
     timeMin: new Date(day.getTime() - 86400000).toISOString(),
     timeMax: new Date(day.getTime() + 2 * 86400000).toISOString(),
     singleEvents: 'true', maxResults: '2500',
-    fields: 'nextPageToken,items(id,status,organizer(email),attachments(fileId),hangoutLink,conferenceData(conferenceId))',
+    fields: 'nextPageToken,items(id,status,organizer(email),attachments(fileId,mimeType),hangoutLink,conferenceData(conferenceId))',
   });
   const events: CalendarMeeting[] = [];
   const pages = new Set<string>();

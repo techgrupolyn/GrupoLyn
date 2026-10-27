@@ -1,4 +1,5 @@
 import { deleteGeminiFiles, uploadGeminiFile } from './gemini-files.ts';
+import { requestWithDeadline } from './request-deadline.ts';
 
 export type SpecialistRole = 'legal' | 'contabilidad' | 'ventas' | 'soporte' | 'general' | 'interiorista' | 'planimetrista' | 'director';
 
@@ -111,17 +112,16 @@ async function requestGeminiInteraction(
   };
   if (systemInstruction) body.system_instruction = systemInstruction;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
-    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    const raw = await response.text();
+    const { response, raw } = await requestWithDeadline(async (signal) => {
+      const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify(body),
+        signal,
+      });
+      return { response, raw: await response.text() };
+    }, timeoutMs);
     let data: Record<string, unknown> = {};
     try { data = JSON.parse(raw); } catch { /* ignore */ }
 
@@ -141,7 +141,7 @@ async function requestGeminiInteraction(
     if (!cleaned) throw new GeminiError(502, 'La IA devolvió una respuesta vacía. Reintenta sin dar los mensajes por analizados.');
     return { text: cleaned, provider: 'gemini', model: modelId, fallback: false };
   } catch (error) {
-    const requestWasAborted = controller.signal.aborted
+    const requestWasAborted = (error as any)?.name === 'TimeoutError'
       || (error as any)?.name === 'AbortError'
       || /signal is aborted|request aborted|aborted without reason/i.test(String((error as Error)?.message || ''));
     if (requestWasAborted) {
@@ -155,8 +155,6 @@ async function requestGeminiInteraction(
       return localExecution(prompt, historial, systemInstruction, errStatus === 429 || errMessage.includes('fetch failed') || errMessage.includes('network'));
     }
     throw error;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

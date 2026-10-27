@@ -1,25 +1,26 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Bell, Bot, Building2, CalendarDays, FileText, LayoutDashboard, PhoneCall, Settings, ShieldCheck, Sparkles, Tags, UsersRound } from 'lucide-react';
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import ConsultaIAPanel from './components/ConsultaIAPanel';
 import { canAccessNetelipCalls, isConsultationOnlyCeoUser, isMeetingEditorCeoUser, isMeetingLimitedCeoUser } from './CeoLogin';
 import api from './api';
-import BackofficeView from './views/BackofficeView';
-import BusinessView from './views/BusinessView';
-import GroupsView from './views/GroupsView';
-import LabelsView from './views/LabelsView';
-import MeetingsView from './views/MeetingsView';
-import MeetingManagementView from './views/MeetingManagementView';
-import MyWorkView from './views/MyWorkView';
 import MeetingImportIssue from './components/MeetingImportIssue';
-import SettingsView from './views/SettingsView';
-import OperationsView from './views/OperationsView';
-import NetelipCallsView from './views/NetelipCallsView';
 import { normalizeSettingsTab, readDashboardRoute, shouldShowMeetingsMigrationNotice } from './routing';
-import SpecialistsView from './views/SpecialistsView';
-import TemplatesView from './views/TemplatesView';
+import useVisiblePolling from './useVisiblePolling';
+import { importWithChunkRecovery } from '../chunkRecovery';
 
-const CHART_COLORS = ['#BFBFBF', '#F2F2F2', '#737373', '#4A4A4A', '#2E2E2E'];
+const ConsultaIAPanel = lazy(() => importWithChunkRecovery(() => import('./components/ConsultaIAPanel')));
+const BackofficeView = lazy(() => importWithChunkRecovery(() => import('./views/BackofficeView')));
+const BusinessView = lazy(() => importWithChunkRecovery(() => import('./views/BusinessView')));
+const GroupsView = lazy(() => importWithChunkRecovery(() => import('./views/GroupsView')));
+const LabelsView = lazy(() => importWithChunkRecovery(() => import('./views/LabelsView')));
+const MeetingManagementView = lazy(() => importWithChunkRecovery(() => import('./views/MeetingManagementView')));
+const NetelipCallsView = lazy(() => importWithChunkRecovery(() => import('./views/NetelipCallsView')));
+const MyWorkView = lazy(() => importWithChunkRecovery(() => import('./views/MyWorkView')));
+const SettingsView = lazy(() => importWithChunkRecovery(() => import('./views/SettingsView')));
+const OperationsView = lazy(() => importWithChunkRecovery(() => import('./views/OperationsView')));
+const SpecialistsView = lazy(() => importWithChunkRecovery(() => import('./views/SpecialistsView')));
+const TemplatesView = lazy(() => importWithChunkRecovery(() => import('./views/TemplatesView')));
+const TypeChart = lazy(() => importWithChunkRecovery(() => import('./components/TypeChart')));
 
 const NAV_SECTIONS = [
   { label: 'General', items: [{ key: 'dashboard', label: 'Resumen ejecutivo', icon: LayoutDashboard, accent: 'amber' }, { key: 'work', label: 'Mis pendientes', icon: Bell, accent: 'amber' }, { key: 'ai', label: 'Consultas IA', icon: Sparkles, accent: 'violet' }] },
@@ -68,12 +69,6 @@ function MetricCard({ label, value, subtext, trend }) {
       <div className="mt-1.5 flex items-center gap-2"><span className="h-1 w-8 overflow-hidden rounded bg-[#2E2E2E]"><span className="block h-full w-3/4 bg-[#BFBFBF]" /></span><p className="text-[11px] text-[#737373]">{trend || subtext}</p></div>
     </div>
   );
-}
-
-function TypeChart({ byType }) {
-  const data = (byType || []).map((item, index) => ({ tipo: item.tipo || 'N/A', cantidad: Number(item.cantidad) || 0, color: CHART_COLORS[index % CHART_COLORS.length] }));
-  if (!data.length) return <div className="flex h-48 items-center justify-center text-xs text-[#737373]">Sin datos para mostrar</div>;
-  return <div className="h-56 w-full"><ResponsiveContainer width="100%" height="100%"><BarChart data={data} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}><XAxis dataKey="tipo" axisLine={false} tickLine={false} tick={{ fill: '#737373', fontSize: 10 }} dy={8} /><Tooltip cursor={{ fill: '#0D0D0D' }} contentStyle={{ backgroundColor: '#141414', border: '1px solid #2E2E2E', borderRadius: 4, color: '#F2F2F2', fontSize: 12 }} labelStyle={{ color: '#F2F2F2', fontSize: 11 }} /><Bar dataKey="cantidad" radius={[2, 2, 0, 0]}>{data.map((entry, index) => <Cell key={`${entry.tipo}-${index}`} fill={entry.color} stroke="none" />)}</Bar></BarChart></ResponsiveContainer></div>;
 }
 
 function ChatCard({ chat }) {
@@ -133,6 +128,8 @@ export default function CEOApp({ user, onLogout }) {
   const [settingsTab, setSettingsTab] = useState(initialRoute.settingsTab);
   const [work, setWork] = useState({ items: [], unread: 0, total: 0, actions: 0, reviews: 0 });
   const [workLoading, setWorkLoading] = useState(false);
+  const workRequest = useRef(0);
+  const workPending = useRef(false);
   const [workOpen, setWorkOpen] = useState(false);
   const [openMeetingId, setOpenMeetingId] = useState('');
   const [contactQuery, setContactQuery] = useState('');
@@ -173,11 +170,18 @@ export default function CEOApp({ user, onLogout }) {
     mainRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   }, [view, settingsTab]);
 
-  const loadWork = async () => {
-    if (consultationOnly) return;
-    setWorkLoading(true);
-    try { setWork((await api.meetings.workItems()) || { items: [], unread: 0, total: 0, actions: 0, reviews: 0 }); } catch { setWork({ items: [], unread: 0, total: 0, actions: 0, reviews: 0 }); } finally { setWorkLoading(false); }
-  };
+  const loadWork = useCallback(async (background = false) => {
+    if (consultationOnly || (background && workPending.current)) return;
+    const requestId = ++workRequest.current;
+    workPending.current = true;
+    if (!background) setWorkLoading(true);
+    try {
+      const result = await api.meetings.workItems();
+      if (requestId === workRequest.current) setWork(result || { items: [], unread: 0, total: 0, actions: 0, reviews: 0 });
+    } catch {} finally {
+      if (requestId === workRequest.current) { workPending.current = false; setWorkLoading(false); }
+    }
+  }, [consultationOnly, user?.id, user?.usuario]);
 
   const markWorkRead = async (keys) => {
     if (!keys?.length) return;
@@ -198,9 +202,16 @@ export default function CEOApp({ user, onLogout }) {
   };
 
   useEffect(() => { if (!consultationOnly && !meetingLimited && view === 'dashboard') loadMetrics(); }, [consultationOnly, meetingLimited, view]);
-  useEffect(() => { if (consultationOnly) return undefined; void loadWork(); const timer = window.setInterval(() => { void loadWork(); }, 30_000); return () => window.clearInterval(timer); }, [consultationOnly]);
+  useEffect(() => {
+    setWork({ items: [], unread: 0, total: 0, actions: 0, reviews: 0 });
+    void loadWork();
+    return () => { workRequest.current += 1; workPending.current = false; };
+  }, [loadWork]);
+  const pollWork = useCallback(() => loadWork(true), [loadWork]);
+  useVisiblePolling(pollWork, 30_000, !consultationOnly);
 
-  const renderView = () => {
+  const renderView = () => <Suspense fallback={<p role="status" className="p-6 text-sm text-[#BFBFBF]">Cargando sección…</p>}>{renderLoadedView()}</Suspense>;
+  const renderLoadedView = () => {
     if (consultationOnly) return <ConsultaIAPanel />;
     switch (view) {
       case 'groups': return <GroupsView />;

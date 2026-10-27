@@ -27,6 +27,24 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  projectMeetings: {
+    recording: (id) => request(`/project-meetings/${encodeURIComponent(id)}/recording`),
+    resolution: (page = 1) => request(`/project-meetings/resolution?page=${page}`),
+    resolutionDetail: (id) => request(`/project-meetings/resolution/${encodeURIComponent(id)}`),
+    linkProjects: (id, body) => request(`/project-meetings/resolution/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
+    reviewerProjects: () => request('/project-meetings/reviewers'),
+    reviewers: (id) => request(`/project-meetings/reviewers/${encodeURIComponent(id)}`),
+    saveReviewers: (id, body) => request(`/project-meetings/reviewers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
+    mode: () => request('/project-meetings/mode'),
+    list: (filters = {}) => request(`/project-meetings?${new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== '' && value != null))}`),
+    get: (id) => request(`/project-meetings/${encodeURIComponent(id)}`),
+    workflow: (id, body) => request(`/project-meetings/${encodeURIComponent(id)}/workflow`, { method: 'POST', body: JSON.stringify(body) }),
+    saveAction: (id, actionId, body) => request(`/project-meetings/${encodeURIComponent(id)}/actions${actionId ? `/${encodeURIComponent(actionId)}` : ''}`, { method: actionId ? 'PUT' : 'POST', body: JSON.stringify(body) }),
+    deleteAction: (id, actionId, reason) => request(`/project-meetings/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`, { method: 'DELETE', body: JSON.stringify({ reason }) }),
+    escalate: (id, actionId, escalated) => request(`/project-meetings/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}/escalation`, { method: 'PUT', body: JSON.stringify({ escalated }) }),
+    manageAdditionalResponsible: (id, actionId, body) => request(`/project-meetings/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}/responsibles`, { method: 'PUT', body: JSON.stringify(body) }),
+    removeAdditionalResponsible: (id, actionId, body) => request(`/project-meetings/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}/responsibles`, { method: 'DELETE', body: JSON.stringify(body) }),
+  },
   operations: {
     organization: () => request('/directory/organization'),
     assign: (body) => request('/directory/organization/assignments', { method: 'POST', body: JSON.stringify(body) }),
@@ -124,6 +142,7 @@ export const api = {
     filterOptions: () => request('/netelip/calls/filter-options'),
   },
   meetings: {
+    recording: (id) => request(`/meetings/${encodeURIComponent(id)}/recording`),
     setOrganizer: (artifactId, employeeId) => request(`/meetings/${encodeURIComponent(artifactId)}/organizer`, { method: 'PUT', body: JSON.stringify({ employee_id: employeeId }) }),
     detectOrganizer: (artifactId) => request(`/meetings/${encodeURIComponent(artifactId)}/organizer/detect`, { method: 'POST' }),
     list: ({ page = 1, pageSize = 25, q = '', filter = 'all', dateFrom = '', dateTo = '', recentDays = '', sort = 'recent', projectId = '', pmc = '', contactId = '', role = '' } = {}) => {
@@ -154,7 +173,7 @@ export const api = {
     manageAdditionalResponsible: (artifactId, actionId, payload) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}/responsibles`, { method: 'PUT', body: JSON.stringify(payload) }),
     removeAdditionalResponsible: (artifactId, actionId, person) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}/responsibles/${encodeURIComponent(person.kind)}/${encodeURIComponent(person.id)}`, { method: 'DELETE' }),
     deleteAction: (artifactId, actionId) => request(`/meetings/${encodeURIComponent(artifactId)}/actions/${encodeURIComponent(actionId)}`, { method: 'DELETE' }),
-    workflow: (artifactId, command, reason = '') => request(`/meetings/${encodeURIComponent(artifactId)}/workflow`, { method: 'POST', body: JSON.stringify({ command, reason }) }),
+    workflow: (artifactId, command, reason = '', recipientId = '') => request(`/meetings/${encodeURIComponent(artifactId)}/workflow`, { method: 'POST', body: JSON.stringify({ command, reason, recipient_id: recipientId || null }) }),
     configuration: () => request('/meetings/configuration'),
     updateConfiguration: (payload) => request('/meetings/configuration', { method: 'PUT', body: JSON.stringify(payload) }),
   },

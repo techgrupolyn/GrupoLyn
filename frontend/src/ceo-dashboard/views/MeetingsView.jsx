@@ -11,10 +11,10 @@ const ARTIFACT_TYPES = [
 ];
 
 const REVIEW_STAGES = [
+  { key: 'organizer', label: 'Encargado de la reunión' },
   { key: 'delineante', label: 'Delineante' },
   { key: 'pmc', label: 'PMC / Jefe de proyectos' },
-  { key: 'operations', label: 'Dirección de operaciones' },
-  { key: 'director', label: 'Director general' },
+
 ];
 
 function formatDate(value) {
@@ -200,14 +200,6 @@ export default function MeetingsView({ mode = 'operations' }) {
     }
   };
 
-  const toggleWorkflowStage = (field, stage) => {
-    setMeetingConfiguration((current) => {
-      const existing = Array.isArray(current?.[field]) ? current[field] : [];
-      const next = existing.includes(stage) ? existing.filter((item) => item !== stage) : [...existing, stage];
-      return { ...current, [field]: REVIEW_STAGES.map((item) => item.key).filter((item) => next.includes(item)) };
-    });
-  };
-
   const saveMeetingConfiguration = async (event) => {
     event.preventDefault();
     if (!meetingConfiguration) return;
@@ -358,7 +350,7 @@ export default function MeetingsView({ mode = 'operations' }) {
         {isConfiguration && meetingConfiguration && <form onSubmit={saveMeetingConfiguration} className="mt-5 rounded-md border border-[#2E2E2E] bg-[#141414] p-5">
           <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-mono text-[10px] uppercase tracking-[0.13em] text-[#737373]">Reglas del agente</p><p className="mt-1 text-xs text-[#737373]">Estas reglas se aplican en análisis nuevos y en el enrutamiento de cada tipo de reunión.</p></div><button type="submit" disabled={configurationSaving} className="ceo-button-primary rounded bg-[#BFBFBF] px-3 py-2 text-xs font-semibold text-black disabled:opacity-40">{configurationSaving ? 'Guardando…' : 'Guardar reglas'}</button></div>
           <label className="mt-5 block text-xs text-[#BFBFBF]">Convención de nombrado<textarea value={meetingConfiguration.naming_convention || ''} onChange={(event) => setMeetingConfiguration((current) => ({ ...current, naming_convention: event.target.value }))} rows="2" className="mt-2 w-full rounded border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-xs text-[#F2F2F2] outline-none focus:border-[#737373]" /></label>
-          <div className="mt-5 grid gap-4 lg:grid-cols-2">{[{ field: 'committee_workflow', title: 'Cadena · Comité de obra' }, { field: 'client_workflow', title: 'Cadena · Reunión con cliente' }].map((workflow) => <fieldset key={workflow.field} className="rounded border border-[#2E2E2E] bg-[#0D0D0D] p-4"><legend className="px-1 text-xs font-medium text-[#F2F2F2]">{workflow.title}</legend><p className="mb-3 text-[11px] text-[#737373]">Se omiten automáticamente los escalones sin responsables activos.</p><div className="space-y-2">{REVIEW_STAGES.map((stage) => <label key={stage.key} className="flex items-center gap-2 text-xs text-[#BFBFBF]"><input type="checkbox" checked={Boolean(meetingConfiguration[workflow.field]?.includes(stage.key))} onChange={() => toggleWorkflowStage(workflow.field, stage.key)} />{stage.label}</label>)}</div></fieldset>)}</div>
+          <div className="mt-5 grid gap-4 lg:grid-cols-2">{[{ field: 'committee_workflow', title: 'Cadena · Comité de obra' }, { field: 'client_workflow', title: 'Cadena · Reunión con cliente' }].map((workflow) => <fieldset key={workflow.field} className="rounded border border-[#2E2E2E] bg-[#0D0D0D] p-4"><legend className="px-1 text-xs font-medium text-[#F2F2F2]">{workflow.title}</legend><p className="mb-3 text-[11px] text-[#737373]">Cadena obligatoria, sin saltar etapas. Después, el PMC puede aprobar o asignar una revisión a una persona concreta.</p><div className="space-y-2">{REVIEW_STAGES.map((stage) => <label key={stage.key} className="flex items-center gap-2 text-xs text-[#BFBFBF]"><input type="checkbox" checked disabled />{stage.label}</label>)}</div></fieldset>)}</div>
           <label className="mt-5 block text-xs text-[#BFBFBF]">Aviso de grabación<textarea value={meetingConfiguration.recording_notice || ''} onChange={(event) => setMeetingConfiguration((current) => ({ ...current, recording_notice: event.target.value }))} rows="3" className="mt-2 w-full rounded border border-[#2E2E2E] bg-[#0D0D0D] p-3 text-xs text-[#F2F2F2] outline-none focus:border-[#737373]" /></label>
         </form>}
 

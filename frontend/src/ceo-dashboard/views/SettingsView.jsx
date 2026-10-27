@@ -44,7 +44,9 @@ export function WhatsAppSettingsPanel() {
     let cancelled = false;
     setConnectionStatus(null);
     setConnectionError('');
-    if (managedAccountId) {
+    if (managedAccount && !managedAccount.activo) {
+      setConnectionStatus({ account_id: managedAccountId, state: 'inactive', connected: false });
+    } else if (managedAccountId) {
       api.whatsappAccounts.status(managedAccountId).then((status) => {
         if (status?.account_id !== managedAccountId || typeof status.connected !== 'boolean') throw new Error('El servidor devolvió un estado de conexión inválido.');
         if (!cancelled) setConnectionStatus(status);
@@ -53,7 +55,7 @@ export function WhatsAppSettingsPanel() {
       });
     }
     return () => { cancelled = true; };
-  }, [managedAccountId, connectionRefresh]);
+  }, [managedAccountId, managedAccount?.activo, connectionRefresh]);
 
   const disconnectAccount = async (account) => {
     if (disconnectingAccountId || !currentStatus?.connected || account.id !== managedAccountId) return;
@@ -89,7 +91,7 @@ export function WhatsAppSettingsPanel() {
       const next = data;
       setAccounts(next);
       setConnectionRefresh((current) => current + 1);
-      setManagedAccountId((current) => next.some((account) => account.id === current) ? current : next[0]?.id || '');
+      setManagedAccountId((current) => next.some((account) => account.id === current) ? current : next.find((account) => account.activo)?.id || next[0]?.id || '');
       setSelectedAccountId((current) => next.some((account) => account.id === current && account.activo) ? current : next.find((account) => account.activo)?.id || '');
     } catch (error) {
       setAccountsLoadError(error?.body || error?.message || 'No se pudieron cargar las cuentas de WhatsApp.');
@@ -236,11 +238,11 @@ export function WhatsAppSettingsPanel() {
           </select>
           {managedAccount && <div className="mt-3 rounded-md border border-[#2E2E2E] p-3 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className={currentStatus?.connected ? 'text-emerald-300' : 'text-[#BFBFBF]'}>{connectionError ? 'Estado no disponible' : !currentStatus ? 'Consultando conexión…' : currentStatus.connected ? 'Conectada' : currentStatus.state === 'connecting' ? 'Pendiente de vincular' : 'Desvinculada'}</span>
+              <span className={currentStatus?.connected ? 'text-emerald-300' : 'text-[#BFBFBF]'}>{!managedAccount.activo ? 'Desactivada' : connectionError ? 'Estado no disponible' : !currentStatus ? 'Consultando conexión…' : currentStatus.connected ? 'Conectada' : currentStatus.state === 'connecting' ? 'Pendiente de vincular' : 'Desvinculada'}</span>
               {currentStatus?.connected && <button type="button" aria-label={`Desvincular ${managedAccount.nombre}`} disabled={Boolean(disconnectingAccountId) || accountsLoading || Boolean(accountsLoadError)} onClick={() => disconnectAccount(managedAccount)} className="rounded-md border border-red-900 px-3 py-2 text-xs text-red-200 hover:bg-red-950/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 disabled:cursor-not-allowed disabled:opacity-40">{disconnectingAccountId === managedAccountId ? 'Desvinculando…' : 'Desvincular'}</button>}
             </div>
             <p className="mt-2 text-[#737373]">{managedAccount.chats_count || 0} chats guardados · {managedAccount.activo ? 'Cuenta habilitada' : 'Cuenta inactiva'}</p>
-            {currentStatus && !currentStatus.connected && <p className="mt-2 text-[#BFBFBF]">Historial conservado. Escanea un nuevo QR desde la extensión de esta cuenta para volver a vincularla.</p>}
+            {managedAccount.activo && currentStatus && !currentStatus.connected && <p className="mt-2 text-[#BFBFBF]">Historial conservado. Escanea un nuevo QR desde la extensión de esta cuenta para volver a vincularla.</p>}
             {connectionError && <p role="alert" className="mt-2 text-red-200">{connectionError}</p>}
           </div>}
           {accountNotice && <p role="status" className="mt-4 rounded-md border border-emerald-900 bg-emerald-950/30 p-3 text-xs text-emerald-200">{accountNotice}</p>}

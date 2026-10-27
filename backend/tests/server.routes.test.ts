@@ -8,6 +8,12 @@ const client = request(app);
 afterAll(async () => { await pool.end(); });
 
 describe('Server - protección de APIs de extensión', () => {
+  it('mantiene cerrada por defecto la integración de evidencia telefónica', async () => {
+    const res = await client.post('/api/integrations/club-lyn/phone-evidence').send({ phone: '+34600123456' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ code: 'not_found' });
+    expect(res.headers['cache-control']).toBe('no-store');
+  });
   it('rechaza el bypass local en producción incluso si está habilitado por error', async () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('ALLOW_UNAUTHENTICATED_LOCAL_EXTENSION', 'true');

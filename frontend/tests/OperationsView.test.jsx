@@ -26,6 +26,14 @@ describe('P-06 paneles operativos', () => {
     await waitFor(()=>expect(api.operations.saveLead).toHaveBeenCalledWith(expect.any(String),expect.objectContaining({name:'Prospecto nuevo',status:'new'})));
     expect(await screen.findByRole('status')).toHaveTextContent('Cambios guardados');
   });
+  it('consulta operaciones sin esperar a que termine el directorio', async () => {
+    let finishDirectory;
+    api.directory.overview.mockImplementationOnce(() => new Promise((resolve) => { finishDirectory = resolve; }));
+    render(<OperationsView mode="leads" />);
+    expect(api.operations.leads).toHaveBeenCalledTimes(1);
+    finishDirectory({ employees: [], clients: [], projects: [] });
+    expect(await screen.findByRole('button', { name: 'Nuevo prospecto' })).toBeVisible();
+  });
   it('permite asignación local y distingue el ámbito del proyecto',async()=>{
     render(<OperationsView />);
     await screen.findByText('Jerarquía global y por proyecto');
@@ -34,13 +42,13 @@ describe('P-06 paneles operativos', () => {
     fireEvent.click(screen.getByRole('button',{name:'Añadir asignación local'}));
     await waitFor(()=>expect(api.operations.assign).toHaveBeenCalledWith({cargo_id:'role',empleado_id:'employee',proyecto_id:''}));
   });
-  it('escala con motivo sin usar aprobar',async()=>{
+  it('abre el flujo de revisión en vez de saltar automáticamente a Dirección',async()=>{
     api.operations.escalations.mockResolvedValue([{id:'meeting',name:'Reunión QA',workflow_stage:'pmc',waiting_hours:8}]);
-    render(<OperationsView />);
-    fireEvent.click(await screen.findByRole('button',{name:'Escalar'}));
-    fireEvent.change(screen.getByLabelText('Motivo'),{target:{value:'Necesita Dirección'}});
-    fireEvent.click(screen.getByRole('button',{name:'Confirmar cambio'}));
-    await waitFor(()=>expect(api.operations.escalate).toHaveBeenCalledWith('meeting','Necesita Dirección'));
+    const onOpenMeeting = vi.fn();
+    render(<OperationsView onOpenMeeting={onOpenMeeting} />);
+    fireEvent.click(await screen.findByRole('button',{name:'Revisar asignación'}));
+    expect(onOpenMeeting).toHaveBeenCalledWith('meeting');
+    expect(api.operations.escalate).not.toHaveBeenCalled();
   });
   it('resuelve una identidad con el endpoint auditado de responsables',async()=>{
     api.operations.identities.mockResolvedValue([{id:'action',artifact_id:'meeting',title:'Consultar presupuesto'}]);
