@@ -95,3 +95,5 @@ Para desplegar varias cuentas de WhatsApp en una plataforma centralizada, sigue 
 ## Seguridad
 
 Consulta [docs/SECURITY.md](docs/SECURITY.md) antes de publicar la extensión o desplegar una instancia.
+## Despliegue del Dashboard General
+Antes de actualizar producción, sigue la [guía de despliegue](docs/DESPLIEGUE_DASHBOARD_GENERAL.md): preparación, comandos, comprobaciones y reversión.
