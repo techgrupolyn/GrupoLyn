@@ -8,6 +8,8 @@ import {
 import { maskPhone, toE164 } from '../netelip/phone.ts';
 import { parseReportDate, reconcile, reportKey } from '../netelip/processing.ts';
 import { madridDay, partiesFromRecording, parsePropfind, pickRecording } from '../netelip/vdrive.ts';
+import { buildEngine, GeminiEngine, parseGeminiTranscript, TranscriptionError } from '../netelip/transcription.ts';
+import type { VdriveClient } from '../netelip/vdrive.ts';
 import { canAccessNetelipCalls, canReadTranscripts } from '../netelip/routes.ts';
 
 const BASE = {
@@ -281,5 +283,58 @@ describe('Netelip · conciliación sin motor de transcripción', () => {
   it('con motor, sigue buscando transcripciones atascadas', async () => {
     const { pool } = fakePool();
     expect((await reconcile(pool, new Date(), true)).stale_transcriptions).toBe(3);
+  });
+});
+
+describe('Netelip · motor Gemini', () => {
+  const AVISO = 'Le informamos de que esta llamada puede ser grabada y transcrita con el fin de mejorar la calidad del servicio';
+  // vDrive falso: el motor reutiliza la misma descarga que Whisper (sin URL del aviso, va a vDrive).
+  const vdrive = { download: async () => Buffer.from('ID3-audio') } as unknown as VdriveClient;
+  const ok = (text: string) => async () => ({ text, provider: 'gemini' as const, model: 'm', fallback: false });
+
+  it('convierte la respuesta en segmentos con agente y cliente', () => {
+    const t = parseGeminiTranscript(JSON.stringify({ language: 'es', segments: [
+      { start: 3, end: 5, speaker: 'Agente', text: 'Buenos días, le llamo de Grupo LYN.' },
+      { start: 5, end: 7, speaker: 'cliente', text: 'Hola, dígame.' },
+      { start: 7, end: 8, speaker: 'otro', text: 'Vale.' },
+    ] }));
+    expect(t.engine).toBe('gemini');
+    expect(t.segments?.map((s) => s.speaker)).toEqual(['agente', 'cliente', null]);
+    expect(t.text).toBe('Buenos días, le llamo de Grupo LYN. Hola, dígame. Vale.');
+  });
+
+  it('descarta el aviso y los segmentos que solo dicen «Grupo LYN» (NET-03)', () => {
+    const t = parseGeminiTranscript(JSON.stringify({ segments: [
+      { start: 0, end: 6, speaker: null, text: 'Le informamos de que esta llamada puede ser grabada y transcrita.' },
+      { start: 9, end: 10, speaker: 'agente', text: 'Grupo LYN.' },
+    ] }), AVISO);
+    expect(t.text).toBe('');
+    expect(t.segments).toBeNull();
+  });
+
+  it('rechaza respuestas que no son JSON o no traen segments', () => {
+    expect(() => parseGeminiTranscript('Lo siento, no puedo')).toThrow(TranscriptionError);
+    expect(() => parseGeminiTranscript('{"text":"hola"}')).toThrow(TranscriptionError);
+  });
+
+  it('envía el audio descargado a Gemini y devuelve la transcripción', async () => {
+    let sent: { type: string; mimeType: string; base64: string } | undefined;
+    const engine = new GeminiEngine(vdrive, (async (_prompt: string, media: Array<{ type: string; mimeType: string; base64: string }>) => {
+      sent = media[0];
+      return ok(JSON.stringify({ segments: [{ start: 1, end: 2, speaker: 'cliente', text: 'Hola' }] }))();
+    }) as never);
+    const t = await engine.transcribe({ externalId: '1', downloadUrl: null, audioRef: '/APIVoice/Record/2026-10-27/a_1.mp3' });
+    expect(sent).toEqual({ type: 'audio', mimeType: 'audio/mpeg', base64: Buffer.from('ID3-audio').toString('base64') });
+    expect(t.text).toBe('Hola');
+  });
+
+  it('nunca guarda la respuesta local de reserva: falla para que se reintente', async () => {
+    const engine = new GeminiEngine(vdrive, (async () => ({ text: 'modo local', provider: 'local-fallback', model: 'x', fallback: true, retryable: true })) as never);
+    await expect(engine.transcribe({ externalId: '1', downloadUrl: null, audioRef: '/a.mp3' })).rejects.toThrow(/Gemini no disponible/);
+  });
+
+  it('se selecciona con NETELIP_TRANSCRIPTION_ENGINE=gemini', () => {
+    expect(buildEngine({ NETELIP_TRANSCRIPTION_ENGINE: 'gemini' } as NodeJS.ProcessEnv)?.name).toBe('gemini');
+    expect(buildEngine({ NETELIP_TRANSCRIPTION_ENGINE: 'none' } as NodeJS.ProcessEnv)).toBeNull();
   });
 });
