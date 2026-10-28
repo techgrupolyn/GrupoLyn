@@ -60,6 +60,8 @@ Consulta `docs/RESET_Y_DATOS.md` antes de borrar datos.
 
 El Dashboard puede conectarse por OAuth a una o varias carpetas de Google Drive con permisos de solo lectura. Importa metadatos de grabaciones y extrae transcripciones de Google Docs o archivos de texto compatibles; los vídeos y audios se conservan como referencias y no se envían a IA automáticamente. Consulta `docs/GOOGLE_DRIVE_REUNIONES.md` antes de configurar las credenciales.
 
+El Agente de Protocolos tiene una integración local separada y desactivada por defecto. Consulta `docs/AGENTE_PROTOCOLOS_MVP.md` para la carpeta autorizada, requisitos de extracción, controles de privacidad y validaciones pendientes antes de activarlo.
+
 ## Extensión
 
 Carga `extension` como extensión sin empaquetar en Chrome, Edge o Brave. Para usarla contra producción, abre sus opciones y configura la URL HTTPS pública, por ejemplo `https://app.example.com`.

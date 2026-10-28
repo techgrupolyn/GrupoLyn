@@ -9,6 +9,7 @@ import useVisiblePolling from './useVisiblePolling';
 import { importWithChunkRecovery } from '../chunkRecovery';
 
 const ConsultaIAPanel = lazy(() => importWithChunkRecovery(() => import('./components/ConsultaIAPanel')));
+const ProtocolosView = lazy(() => importWithChunkRecovery(() => import('./views/ProtocolosView')));
 const BackofficeView = lazy(() => importWithChunkRecovery(() => import('./views/BackofficeView')));
 const BusinessView = lazy(() => importWithChunkRecovery(() => import('./views/BusinessView')));
 const GroupsView = lazy(() => importWithChunkRecovery(() => import('./views/GroupsView')));
@@ -28,6 +29,7 @@ const NAV_SECTIONS = [
   { label: 'Netelip', items: [{ key: 'netelip', label: 'Historial de llamadas', icon: PhoneCall, accent: 'emerald' }] },
   { label: 'Operaciones', items: [{ key: 'organigrama', label: 'Organigrama y escalado', icon: UsersRound, accent: 'amber' }, { key: 'incidents', label: 'Control de obra / Incidencias', icon: ShieldCheck, accent: 'rose' }] },
   { label: 'Agente de reuniones', items: [{ key: 'meetings', label: 'Gestión de reuniones', icon: CalendarDays, accent: 'rose', badge: 'Nuevo' }] },
+  { label: 'Agente de protocolos', items: [{ key: 'protocolos', label: 'Consultar protocolos', icon: FileText, accent: 'violet' }] },
   { label: 'Superagente WhatsApp', items: [{ key: 'groups', label: 'Grupos', icon: UsersRound, accent: 'emerald' }, { key: 'labels', label: 'Etiquetas', icon: Tags, accent: 'amber' }, { key: 'templates', label: 'Plantillas', icon: FileText, accent: 'amber' }, { key: 'business', label: 'Business', icon: Building2, accent: 'emerald' }] },
   { label: 'Administración', items: [{ key: 'specialists', label: 'Especialistas', icon: Bot, accent: 'violet' }, { key: 'backoffice', label: 'Backoffice', icon: ShieldCheck, accent: 'amber' }, { key: 'settings', label: 'Configuración', icon: Settings, accent: 'slate' }] },
 ];
@@ -35,6 +37,7 @@ const NAV_SECTIONS = [
 const LIMITED_NAV_SECTIONS = [
   { label: 'General', items: [{ key: 'work', label: 'Mis pendientes', icon: Bell, accent: 'amber' }, { key: 'ai', label: 'Consultas IA', icon: Sparkles, accent: 'violet' }] },
   { label: 'Agente de reuniones', items: [{ key: 'meetings', label: 'Mis reuniones', icon: CalendarDays, accent: 'rose' }] },
+  { label: 'Agente de protocolos', items: [{ key: 'protocolos', label: 'Consultar protocolos', icon: FileText, accent: 'violet' }] },
 ];
 const VIEW_TITLES = {
   organigrama: 'Organigrama y escalado', leads: 'Leads / Prospectos', clients: 'Clientes', identities: 'Identidades sin resolver', incidents: 'Control de obra / Incidencias', netelip: 'Historial de llamadas',
@@ -42,6 +45,7 @@ const VIEW_TITLES = {
   work: 'Mis pendientes',
   ai: 'Consultas IA',
   meetings: 'Gestión de reuniones',
+  protocolos: 'Agente de protocolos',
   groups: 'Grupos',
   labels: 'Etiquetas',
   business: 'Catálogo Business',
@@ -151,7 +155,7 @@ export default function CEOApp({ user, onLogout }) {
   useEffect(() => {
     if (consultationOnly && view !== 'ai') setView('ai');
     // Netelip sin permiso no redirige: la vista muestra el aviso de que no tiene permisos (Q09).
-    if (meetingLimited && !['ai', 'meetings', 'work', 'netelip'].includes(view)) setView('meetings');
+    if (meetingLimited && !['ai', 'meetings', 'work', 'netelip', 'protocolos'].includes(view)) setView('meetings');
   }, [consultationOnly, meetingLimited, view]);
   useEffect(() => {
     const handlePopState = () => {
@@ -217,6 +221,7 @@ export default function CEOApp({ user, onLogout }) {
       case 'groups': return <GroupsView />;
       case 'work': return <MyWorkView work={work} loading={workLoading} onOpen={openWorkItem} onMarkRead={markWorkRead} />;
       case 'meetings': return <>{!meetingLimited && showMeetingsMigrationNotice && <div className="ceo-page px-4 pt-4 sm:px-6 xl:px-8"><div className="flex flex-col gap-3 rounded-md border border-amber-300/25 bg-amber-300/5 p-4 text-xs text-[#BFBFBF] sm:flex-row sm:items-center sm:justify-between"><p>La configuración de Google Drive ahora está en <button type="button" onClick={() => { setSettingsTab('meetings'); setView('settings'); }} className="font-semibold text-amber-300 hover:text-amber-200">Configuración › Agente de reuniones</button>.</p><button type="button" onClick={dismissMeetingsMigrationNotice} className="shrink-0 text-[#737373] hover:text-[#F2F2F2]">Entendido</button></div></div>}<MeetingManagementView limitedAccess={meetingLimited} canEdit={meetingEditor} openMeetingId={openMeetingId} onMeetingOpened={() => setOpenMeetingId('')} /></>;
+      case 'protocolos': return <ProtocolosView />;
       case 'labels': return <LabelsView />;
       case 'business': return <BusinessView />;
       case 'settings': return <SettingsView activeTab={settingsTab} onTabChange={setSettingsTab} onOpenMeeting={(id) => { setOpenMeetingId(id); setView('meetings'); }} />;
