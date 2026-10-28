@@ -17,7 +17,7 @@ import { iterateGoogleDriveFolderFiles, type GoogleDriveFile } from './google-dr
 import { createMeetingRecordingService, ensureMeetingRecordingSchema, recordingState } from './meeting-recordings.ts';
 import { meetingDirectoryContext, syncSupabaseDirectory, supabaseDirectoryConfigFromEnv, type MeetingDirectoryCandidate } from './supabase-directory.ts';
 import { authenticateWithSupabasePassword, authenticateWithSupabaseAccessToken, isSupabaseAuthConfigured, supabaseAuthConfigFromEnv, SupabaseAuthServiceError, type SupabaseAuthenticatedUser } from './supabase-auth.ts';
-import { createClubSsoRouter } from './club-sso.ts';
+import { createClubSsoRouter, ssoOrigin } from './club-sso.ts';
 import { createPhoneEvidenceLookup, createPhoneEvidenceRouter, phoneEvidenceConfigFromEnv } from './phone-evidence.ts';
 import { createPhonePrefixInference } from './phone-prefix.ts';
 import { Readable } from 'stream';
@@ -165,6 +165,8 @@ const allowedOrigins = new Set(
     .map((origin) => origin.trim())
     .filter(Boolean),
 );
+const clubSsoOrigin = ssoOrigin(process.env.CLUB_LYN_SSO_ORIGIN);
+if (clubSsoOrigin) allowedOrigins.add(clubSsoOrigin);
 function isAllowedExtensionOrigin(origin?: string): boolean {
   if (!origin) return false;
   return configuredExtensionOrigins.has(origin) || (
@@ -8817,13 +8819,24 @@ const isTestEnv = process.env.NODE_ENV === 'test';
 let protocolSyncPromise: Promise<unknown> | null = null;
 const protocolQueryLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'Demasiadas consultas de protocolos. Espera un minuto.' } });
 function requireProtocolUser(req: Request, res: Response, next: NextFunction): void {
-  requireCeoSession(req, res, () => {
-    if (!isCeoMeetingAccessRole((res.locals.ceoSession as CeoSession).rol)) {
-      res.status(403).json({ error: 'Solo el equipo interno puede consultar protocolos' });
-      return;
-    }
-    next();
-  });
+  const session = readCeoSession(req);
+  if (session) {
+    if (!isCeoMeetingAccessRole(session.rol)) return void res.status(403).json({ error: 'Solo el equipo interno puede consultar protocolos' });
+    res.locals.ceoSession = session;
+    return void next();
+  }
+  if (req.get('Origin') !== clubSsoOrigin || !clubSsoOrigin) return void res.status(401).json({ error: 'Sesión inválida o vencida' });
+  const authorization = req.get('Authorization') || '';
+  if (!authorization.startsWith('Bearer ')) return void res.status(401).json({ error: 'Inicia sesión en Club LYN' });
+  void authenticateWithSupabaseAccessToken(authorization.slice(7), SUPABASE_AUTH_CONFIG)
+    .then(async (remoteUser) => {
+      if (!remoteUser) return void res.status(401).json({ error: 'La sesión de Club LYN ha caducado' });
+      const user = await resolveSupabaseIdentity(remoteUser);
+      if (!user || !isCeoMeetingAccessRole(user.rol)) return void res.status(403).json({ error: 'Solo el equipo interno puede consultar protocolos' });
+      res.locals.ceoSession = { id: user.id, usuario: user.usuario, nombre: user.nombre || undefined, rol: user.rol } satisfies CeoSession;
+      next();
+    })
+    .catch(() => res.status(502).json({ error: 'No se pudo verificar el acceso a Club LYN' }));
 }
 function requireProtocolLogReader(req: Request, res: Response, next: NextFunction): void {
   requireProtocolUser(req, res, () => {
