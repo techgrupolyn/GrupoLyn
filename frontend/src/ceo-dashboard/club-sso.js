@@ -1,6 +1,8 @@
 export function beginClubSso({ host = window, clubOrigin, onError, fetcher = fetch, cryptoApi = crypto }) {
   const opener = host.opener;
   const state = new URLSearchParams(host.location.search).get('state');
+  const requestedView = new URLSearchParams(host.location.search).get('view');
+  const destinationView = requestedView === 'protocolos' ? 'protocolos' : 'meetings';
   let stopped = false;
   let receiving = false;
   let interval;
@@ -39,7 +41,7 @@ export function beginClubSso({ host = window, clubOrigin, onError, fetcher = fet
       opener.postMessage({ type: 'lyn-club-sso-complete', state }, clubOrigin);
       stop();
       host.opener = null;
-      host.location.replace('/?view=meetings');
+      host.location.replace(`/?view=${destinationView}`);
     } catch (error) {
       fail(error.message || 'No se pudo conectar con el gestor');
     }

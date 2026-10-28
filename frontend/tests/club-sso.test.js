@@ -7,12 +7,12 @@ const state = 'a'.repeat(32);
 const stops = [];
 afterEach(() => { stops.splice(0).forEach((stop) => stop()); vi.useRealTimers(); });
 
-function setup(response = { ok: true, json: async () => ({ usuario: { id: 7, rol: 'employee:pmc' }, token: 'local-session' }) }) {
+function setup(response = { ok: true, json: async () => ({ usuario: { id: 7, rol: 'employee:pmc' }, token: 'local-session' }) }, view = 'meetings') {
   let listener;
   const opener = { postMessage: vi.fn() };
   const host = {
     opener,
-    location: { search: `?club_sso=1&state=${state}`, replace: vi.fn() },
+    location: { search: `?club_sso=1&state=${state}&view=${view}`, replace: vi.fn() },
     localStorage: { setItem: vi.fn() },
     addEventListener: vi.fn((_name, handler) => { listener = handler; }),
     removeEventListener: vi.fn(),
@@ -38,6 +38,14 @@ describe('Dashboard Club LYN handoff', () => {
     expect(test.host.localStorage.setItem).toHaveBeenCalledWith('ceo_token', 'local-session');
     expect(test.host.location.replace).toHaveBeenCalledWith('/?view=meetings');
     expect(test.host.opener).toBeNull();
+  });
+  it('conserva Protocolos como destino y no permite vistas arbitrarias', async () => {
+    const protocol = setup(undefined, 'protocolos');
+    await protocol.receive();
+    expect(protocol.host.location.replace).toHaveBeenCalledWith('/?view=protocolos');
+    const unknown = setup(undefined, 'settings');
+    await unknown.receive();
+    expect(unknown.host.location.replace).toHaveBeenCalledWith('/?view=meetings');
   });
   it('ignores foreign origins, wrong windows and wrong state', async () => {
     const test = setup();

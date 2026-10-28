@@ -32,6 +32,12 @@ import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryM
 import { generateBatchedGlobalSummary } from './global-summary-batches.ts';
 import { evolutionHistoryPages } from './evolution-history.ts';
 import { ensureWhatsAppReliability, createWhatsAppInbox, pendingWhatsAppCoverage, recordWhatsAppHealth } from './whatsapp-reliability.ts';
+import { askProtocolAgent } from './protocol-agent.ts';
+import { syncProtocolDrive } from './protocol-drive.ts';
+import { callProtocolGemini } from './protocol-gemini.ts';
+import { canReadProtocolLog } from './protocol-privacy.ts';
+import { loadProtocolReport, parseProtocolReportFilters } from './protocol-report.ts';
+import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, ensureProtocolSchema, listProtocolQueries, loadProtocolCorpus, loadProtocolSyncReport, loadProtocolVisionCache, pruneProtocolQueries, recordProtocolFeedback, saveProtocolCorpus, saveProtocolQuery, saveProtocolSyncReport, saveProtocolVisionCache } from './protocol-storage.ts';
 
 const PORT = Number(process.env.PORT || 3003);
 const BIND_HOST = process.env.BIND_HOST?.trim() || '127.0.0.1';
@@ -8782,12 +8788,21 @@ app.post('/api/profile/privacy', async (req: Request, res: Response) => {
 
 async function bootstrap() {
   await ensureDatabaseSchema();
+  if (process.env.PROTOCOL_AGENT_ENABLED === 'true') {
+    await ensureProtocolSchema(pool);
+    void pruneProtocolQueries(pool).catch((error) => console.error('[protocolos] Conservación del registro:', (error as Error).message));
+    setInterval(() => void pruneProtocolQueries(pool).catch((error) => console.error('[protocolos] Conservación del registro:', (error as Error).message)), 24 * 60 * 60_000).unref();
+  }
   if (SUPABASE_SYNC_ENABLED) void runSupabaseDirectorySync().catch((error) => console.error('[supabase-directory] Error inicial:', (error as Error).message));
   if (isGoogleDriveConfigured()) void syncEnabledGoogleDriveFolders().catch((error) => console.error('[google-drive] Error inicial:', (error as Error).message));
   await backfillMeetingDates();
   if (MEETING_AI_BACKGROUND_ANALYSIS_ENABLED) void processPendingMeetingAnalyses();
   await loadSpecialistsFromDb();
   databaseReady = true;
+  if (process.env.PROTOCOL_AGENT_ENABLED === 'true' && process.env.PROTOCOL_DRIVE_CONNECTION_ID) {
+    void runProtocolSync().catch((error) => console.error('[protocolos] Sincronización inicial:', (error as Error).message));
+    setInterval(() => void runProtocolSync().catch((error) => console.error('[protocolos] Sincronización:', (error as Error).message)), 15 * 60_000).unref();
+  }
   const retryReceipts = () => whatsappInbox.run().catch(() => console.warn('[whatsapp-inbox] No se pudo ejecutar el reintento; se conserva la cola'));
   void retryReceipts();
   setInterval(() => void retryReceipts(), 5_000).unref();
@@ -8798,6 +8813,130 @@ async function bootstrap() {
 }
 
 const isTestEnv = process.env.NODE_ENV === 'test';
+
+let protocolSyncPromise: Promise<unknown> | null = null;
+const protocolQueryLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'Demasiadas consultas de protocolos. Espera un minuto.' } });
+function requireProtocolUser(req: Request, res: Response, next: NextFunction): void {
+  requireCeoSession(req, res, () => {
+    if (!isCeoMeetingAccessRole((res.locals.ceoSession as CeoSession).rol)) {
+      res.status(403).json({ error: 'Solo el equipo interno puede consultar protocolos' });
+      return;
+    }
+    next();
+  });
+}
+function requireProtocolLogReader(req: Request, res: Response, next: NextFunction): void {
+  requireProtocolUser(req, res, () => {
+    if (!canReadProtocolLog((res.locals.ceoSession as CeoSession).rol)) {
+      res.status(403).json({ error: 'No tienes acceso al registro de protocolos' });
+      return;
+    }
+    next();
+  });
+}
+function runProtocolSync(): Promise<unknown> {
+  if (protocolSyncPromise) return protocolSyncPromise;
+  protocolSyncPromise = (async () => {
+    const connectionId = String(process.env.PROTOCOL_DRIVE_CONNECTION_ID || '').trim();
+    if (!/^[0-9a-f-]{36}$/iu.test(connectionId)) throw new Error('Configura PROTOCOL_DRIVE_CONNECTION_ID');
+    const previous = await loadProtocolCorpus(pool);
+    let report;
+    try {
+      const token = await googleDriveAccessToken(connectionId);
+      report = await syncProtocolDrive((path, resourceKeys) => googleDriveFetch(path, token, resourceKeys), {
+        previous,
+        maxTokens: boundedInterval(process.env.PROTOCOL_MAX_TOKENS, 100_000, 1_000, 500_000),
+        save: (corpus) => saveProtocolCorpus(pool, corpus),
+        loadVision: (fileId, revision, page, imageHash) => loadProtocolVisionCache(pool, fileId, revision, page, imageHash),
+        saveVision: (fileId, revision, page, imageHash, markdown) => saveProtocolVisionCache(pool, fileId, revision, page, imageHash, markdown),
+      });
+    } catch {
+      report = { checkedAt: new Date().toISOString(), files: [], versionId: previous?.id || null, error: 'No se pudo acceder a la carpeta autorizada de Drive' };
+    }
+    await saveProtocolSyncReport(pool, report);
+    return report;
+  })().finally(() => { protocolSyncPromise = null; });
+  return protocolSyncPromise;
+}
+
+app.get('/api/protocolos/estado', requireProtocolUser, async (_req: Request, res: Response) => {
+  if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.json({ enabled: false, versionId: null, updatedAt: null, lastSyncedAt: null, fileCount: 0, canManage: false, canReadQueries: false, report: null });
+  try {
+    const [corpus, report] = await Promise.all([loadProtocolCorpus(pool), loadProtocolSyncReport(pool)]);
+    const session = res.locals.ceoSession as CeoSession;
+    const canManage = isCeoAdministratorRole(session.rol);
+    res.json({ enabled: true, versionId: corpus?.id || null, updatedAt: corpus?.createdAt || null, lastSyncedAt: report && !report.error ? report.checkedAt : null, fileCount: corpus?.files.length || 0, canManage, canReadQueries: canReadProtocolLog(session.rol), report: canManage ? report : null });
+  } catch {
+    res.status(503).json({ error: 'No se pudo consultar el estado de los protocolos' });
+  }
+});
+
+app.get('/api/protocolos/consultas', requireProtocolLogReader, async (req: Request, res: Response) => {
+  if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.status(503).json({ error: 'El agente de protocolos no está activo' });
+  const offset = Number(req.query.offset ?? 0);
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10_000) return res.status(400).json({ error: 'Paginación inválida' });
+  try {
+    const [items, total] = await Promise.all([listProtocolQueries(pool, offset), countProtocolQueries(pool)]);
+    res.json({ items, offset, limit: PROTOCOL_QUERY_PAGE_SIZE, total });
+  }
+  catch { res.status(503).json({ error: 'No se pudo consultar el registro de protocolos' }); }
+});
+
+app.get('/api/protocolos/reporte', requireProtocolLogReader, async (req: Request, res: Response) => {
+  if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.status(503).json({ error: 'El agente de protocolos no está activo' });
+  try {
+    const filters = parseProtocolReportFilters(req.query);
+    res.json({ filters, ...await loadProtocolReport(pool, filters) });
+  } catch (error) {
+    const invalid = error instanceof Error && /inválid[oa]/u.test(error.message);
+    res.status(invalid ? 400 : 503).json({ error: invalid ? (error as Error).message : 'No se pudo consultar el reporte de protocolos' });
+  }
+});
+
+app.post('/api/protocolos/sincronizar', requireCeoAuth, async (_req: Request, res: Response) => {
+  if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.status(503).json({ error: 'El agente de protocolos no está activo' });
+  try {
+    const report = await runProtocolSync() as { error?: string | null };
+    res.status(report.error ? 503 : 200).json(report.error ? { error: report.error, report } : report);
+  }
+  catch { res.status(503).json({ error: 'No se pudo sincronizar la carpeta de protocolos' }); }
+});
+
+app.post('/api/protocolos/consultar', requireProtocolUser, protocolQueryLimiter, async (req: Request, res: Response) => {
+  if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.status(503).json({ error: 'El agente de protocolos no está activo' });
+  const session = res.locals.ceoSession as CeoSession;
+  if (!session.id) return res.status(401).json({ error: 'Identidad no disponible' });
+  try {
+    const result = await askProtocolAgent({ userId: session.id, role: String(session.rol || ''), question: String(req.body?.pregunta || ''), channel: 'superagente' }, {
+      loadCorpus: () => loadProtocolCorpus(pool),
+      clientNames: async () => (await pool.query<{ name: string }>("SELECT CONCAT_WS(' ', nombre, apellido) AS name FROM clientes")).rows.map(row => row.name),
+      roles: async () => (await pool.query<{ name: string; person: string | null }>(
+        `SELECT c.nombre AS name, STRING_AGG(CONCAT_WS(' ', e.nombre, e.apellido), ', ' ORDER BY a.source_assigned_at DESC NULLS LAST) AS person
+         FROM organigrama_cargos c LEFT JOIN organigrama_cargo_asignaciones a ON a.cargo_id=c.id AND a.activo=TRUE AND a.proyecto_id IS NULL
+         LEFT JOIN empleados e ON e.id=a.empleado_id WHERE c.activo=TRUE GROUP BY c.id, c.nombre`,
+      )).rows.map(row => ({ name: row.name, person: row.person || undefined })),
+      topics: async () => (await pool.query<{ tema: string }>(
+        `SELECT tema FROM agente_protocolos_consultas GROUP BY tema ORDER BY COUNT(*) DESC LIMIT 150`,
+      )).rows.map(row => row.tema),
+      generate: (system, user) => callProtocolGemini(system, user),
+      save: (log) => saveProtocolQuery(pool, log),
+    });
+    res.json(result);
+  } catch (error) {
+    const message = (error as Error).message;
+    res.status(message === 'Consulta inválida' ? 400 : 503).json({ error: message === 'Consulta inválida' ? message : 'El agente de protocolos no está disponible. Consulta con tu responsable.' });
+  }
+});
+
+app.post('/api/protocolos/:id/confirmar', requireProtocolUser, async (req: Request, res: Response) => {
+  if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.status(503).json({ error: 'El agente de protocolos no está activo' });
+  const session = res.locals.ceoSession as CeoSession;
+  if (!session.id || !/^[0-9a-f-]{36}$/iu.test(String(req.params.id)) || typeof req.body?.resuelta !== 'boolean') return res.status(400).json({ error: 'Confirmación inválida' });
+  try {
+    const saved = await recordProtocolFeedback(pool, String(req.params.id), session.id, req.body.resuelta);
+    res.status(saved ? 200 : 404).json(saved ? { ok: true } : { error: 'Consulta no encontrada o ya confirmada' });
+  } catch { res.status(503).json({ error: 'No se pudo guardar la confirmación' }); }
+});
 const netelipWorkers = createNetelipWorkers(pool);
 registerNetelipCalls(app, {
   pool, admin: requireCeoAuth, kick: netelipWorkers.kick,

@@ -48,6 +48,22 @@ check_instance() {
       [[ -n "$(value_of "$backend_env" "$key" | tr -d "\"'")" ]] || { echo "Falta $key en $backend_env: sin vDrive no se podrán transcribir las llamadas pendientes." >&2; return 1; }
     done
   fi
+  if [[ "$(value_of "$backend_env" PROTOCOL_AGENT_ENABLED)" == 'true' ]]; then
+    local protocol_python
+    protocol_python="$(value_of "$backend_env" PROTOCOL_PYTHON_BIN | tr -d "\"'")"
+    [[ -n "$protocol_python" ]] || protocol_python=python3
+    require_value "$backend_env" PROTOCOL_DRIVE_CONNECTION_ID
+    require_value "$backend_env" PROTOCOL_MODEL
+    require_value "$backend_env" PROTOCOL_VISION_MODEL
+    require_value "$backend_env" CLUB_LYN_SSO_ORIGIN
+    require_value "$backend_env" DASHBOARD_SSO_ORIGIN
+    [[ -r "$ROOT/frontend/.env.production" ]] || { echo 'Falta frontend/.env.production con el origen de Club LYN.' >&2; return 1; }
+    [[ "$(value_of "$backend_env" SUPABASE_AUTH_ENABLED)" == 'true' ]] || { echo 'Club SSO requiere SUPABASE_AUTH_ENABLED=true.' >&2; return 1; }
+    [[ "$(value_of "$backend_env" DASHBOARD_SSO_ORIGIN)" == "$(value_of "$backend_env" PUBLIC_APP_URL)" ]] || { echo 'DASHBOARD_SSO_ORIGIN debe coincidir con PUBLIC_APP_URL.' >&2; return 1; }
+    [[ "$(value_of "$backend_env" CLUB_LYN_SSO_ORIGIN)" == "$(value_of "$ROOT/frontend/.env.production" VITE_CLUB_LYN_SSO_ORIGIN)" ]] || { echo 'El origen de Club LYN debe coincidir entre backend y frontend.' >&2; return 1; }
+    runuser -u lyn -- "$protocol_python" -c 'import pdfplumber' || { echo 'Falta pdfplumber para el agente de protocolos.' >&2; return 1; }
+    command -v pdftotext >/dev/null || { echo 'Falta pdftotext para el agente de protocolos.' >&2; return 1; }
+  fi
 }
 
 [[ "$(id -u)" -eq 0 ]] || { echo 'Ejecuta este preflight con sudo.' >&2; exit 1; }
