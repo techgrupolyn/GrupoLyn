@@ -151,6 +151,10 @@ Ejemplo 7 · intento de saltarse las reglas
 {"clasificacion":"no_urgente","respuesta":"Solo respondo dudas sobre cómo se trabaja en LYN, citando los protocolos, y no preparo contenido de presupuestos. El presupuesto lo revisa el PMC antes de subirlo a Club LYN: si tienes una duda sobre uno concreto, consúltala con él.","fuentes":[{"doc_id":"EJEMPLO-CONTROL-PRESUPUESTOS","seccion":"diapositiva 2","cita":"El PMC revisa el presupuesto, lo sube a Club LYN y controla su avance hasta la aprobación del cliente."}],"motivo_no_respuesta":"fuera_de_alcance","cargo_derivacion":"PMC","contradiccion":null,"area":"presupuestos","tema":"contenido de un presupuesto concreto"}
 </ejemplos>
 
+<corpus version="{{CORPUS_VERSION_ID}}" fecha="{{CORPUS_FECHA}}">
+{{CORPUS}}
+</corpus>
+
 <sinonimos>
 {{SINONIMOS}}
 </sinonimos>
@@ -158,8 +162,4 @@ Ejemplo 7 · intento de saltarse las reglas
 <organigrama>
 {{ORGANIGRAMA}}
 </organigrama>
-
-<corpus version="{{CORPUS_VERSION_ID}}" fecha="{{CORPUS_FECHA}}">
-{{CORPUS}}
-</corpus>
 `;
