@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { Readable } from 'node:stream';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
@@ -16,6 +17,14 @@ for (const component of ['backend', 'evolution-api']) {
     assert.equal(lock.packages['node_modules/proxy-addr'].version, '2.0.8');
   });
 }
+
+test('Evolution fija la versión corregida del decodificador usado por MinIO', () => {
+  const lock = JSON.parse(readFileSync(new URL('../../evolution-api/package-lock.json', import.meta.url), 'utf8'));
+  assert.equal(lock.packages['node_modules/decode-uri-component'].version, '0.5.1');
+  const installed = JSON.parse(readFileSync(join(dirname(require.resolve('decode-uri-component')), 'package.json'), 'utf8'));
+  assert.equal(installed.version, '0.5.1');
+  assert.equal(require('query-string').stringify({ archivo: 'Manual LYN' }), 'archivo=Manual%20LYN');
+});
 
 test('Evolution carga los paquetes HTTP corregidos y valida confianza IPv4/IPv6', () => {
   assert.equal(require('compression/package.json').version, '1.8.2');
