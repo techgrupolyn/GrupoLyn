@@ -35,12 +35,14 @@ describe('registro de protocolos', () => {
     expect(query.mock.calls[0][1]).not.toContain('Nombre real');
   });
 
-  it('reutiliza una transcripción solo si coinciden archivo, revisión, página e imagen', async () => {
+  it('reutiliza una transcripción solo si coinciden archivo, página e imagen', async () => {
     const query = vi.fn().mockResolvedValueOnce({ rows: [{ markdown: '| Fase | PMC |' }] }).mockResolvedValue({ rowCount: 1 });
     const pool = { query } as unknown as Pool;
     const value = await loadProtocolVisionCache(pool, 'doc', 'rev-1', 'página 2', 'a'.repeat(64));
     expect(value).toBe('| Fase | PMC |');
     expect(query.mock.calls[0][1]).toEqual(['doc', 'rev-1', 'página 2', 'a'.repeat(64)]);
+    expect(query.mock.calls[0][0]).toContain('archivo_id=$1 AND pagina=$3 AND imagen_sha256=$4');
+    expect(query.mock.calls[0][0]).not.toContain('AND revision=$2');
     await saveProtocolVisionCache(pool, 'doc', 'rev-1', 'página 2', 'a'.repeat(64), value!);
     expect(query.mock.calls[1][1]).toEqual(['doc', 'rev-1', 'página 2', 'a'.repeat(64), value]);
   });
