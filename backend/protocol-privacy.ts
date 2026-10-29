@@ -29,7 +29,27 @@ export function containsUnmaskedPersonalData(text: string): boolean {
 
 export function canReadProtocolLog(role: unknown): boolean {
   const normalized = String(role || '').normalize('NFD').replace(/[\u0300-\u036f]/gu, '').trim().toLowerCase().replace(/[\s/-]+/gu, '_');
-  return ['superadmin', 'employee:director', 'employee:director_general', 'employee:director_de_operaciones', 'employee:direccion_de_operaciones'].includes(normalized);
+  return ['superadmin', 'admin', 'employee:director', 'employee:director_general', 'employee:director_de_operaciones', 'employee:direccion_de_operaciones'].includes(normalized);
+}
+
+export async function hasClubAdminRole(
+  query: (sql: string, params: [number]) => Promise<{ rows: Array<{ allowed: boolean }> }>,
+  sessionId: number | undefined,
+): Promise<boolean> {
+  if (!Number.isSafeInteger(sessionId) || !sessionId || sessionId <= 0) return false;
+  const result = await query(`
+    SELECT EXISTS (
+      SELECT 1 FROM usuarios account
+      JOIN LATERAL (
+        SELECT id FROM empleados
+        WHERE LOWER(email) = LOWER(account.email) AND activo = TRUE
+        ORDER BY id LIMIT 1
+      ) employee ON TRUE
+      JOIN usuario_rol assignment ON assignment.empleado_id = employee.id
+      WHERE account.id = $1 AND account.auth_provider = 'supabase' AND account.activo = TRUE
+        AND assignment.rol_id IN ('admin', 'superadmin')
+    ) AS allowed`, [sessionId]);
+  return result.rows[0]?.allowed === true;
 }
 
 export function canReadProtocolReport(role: unknown): boolean {

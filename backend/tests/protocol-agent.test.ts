@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { askProtocolAgent, type ProtocolLog } from '../protocol-agent.ts';
 import { createProtocolCorpus, protocolFileAllowed } from '../protocol-corpus.ts';
-import { canReadProtocolLog, containsUnmaskedPersonalData, maskProtocolQuestion } from '../protocol-privacy.ts';
+import { canReadProtocolLog, containsUnmaskedPersonalData, hasClubAdminRole, maskProtocolQuestion } from '../protocol-privacy.ts';
 import { callProtocolGemini } from '../protocol-gemini.ts';
 import { syntheticCorpus } from './protocol-qa-cases.ts';
 
@@ -170,8 +170,18 @@ describe('agente de protocolos', () => {
     expect(canReadProtocolLog('employee:director_general')).toBe(true);
     expect(canReadProtocolLog('employee:direccion_de_operaciones')).toBe(true);
     expect(canReadProtocolLog('superadmin')).toBe(true);
-    expect(canReadProtocolLog('admin')).toBe(false);
+    expect(canReadProtocolLog('admin')).toBe(true);
     expect(canReadProtocolLog('employee:pmc_proyectos')).toBe(false);
+  });
+
+  it('comprueba el rol administrativo de Club en el servidor y no acepta un identificador inválido', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ allowed: true }] });
+    expect(await hasClubAdminRole(query, 7)).toBe(true);
+    expect(query.mock.calls[0][1]).toEqual([7]);
+    expect(query.mock.calls[0][0]).toContain("account.auth_provider = 'supabase'");
+    expect(query.mock.calls[0][0]).toContain("assignment.rol_id IN ('admin', 'superadmin')");
+    expect(await hasClubAdminRole(query, undefined)).toBe(false);
+    expect(query).toHaveBeenCalledTimes(1);
   });
 
   it('no envía al modelo un documento con datos personales de clientes', async () => {
