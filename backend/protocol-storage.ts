@@ -60,7 +60,7 @@ export async function ensureProtocolSchema(pool: Pool): Promise<void> {
 
 export async function loadProtocolVisionCache(pool: Pool, fileId: string, revision: string, page: string, imageHash: string): Promise<string | null> {
   const result = await pool.query<{ markdown: string }>(
-    'SELECT markdown FROM agente_protocolos_vision_cache WHERE archivo_id=$1 AND revision=$2 AND pagina=$3 AND imagen_sha256=$4',
+    'SELECT markdown FROM agente_protocolos_vision_cache WHERE archivo_id=$1 AND pagina=$3 AND imagen_sha256=$4 ORDER BY (revision=$2) DESC, verificado_en DESC LIMIT 1',
     [fileId, revision, page, imageHash],
   );
   return result.rows[0]?.markdown || null;
