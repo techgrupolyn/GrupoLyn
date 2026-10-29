@@ -59,6 +59,6 @@ export async function loadProtocolReport(pool: Pool, filters: ProtocolReportFilt
       COUNT(*) FILTER (WHERE resuelta_por_usuario IS FALSE)::int AS usuario_dijo_no,
       ARRAY(SELECT DISTINCT cargo FROM unanswered item WHERE item.tema = resumen.tema ORDER BY cargo) AS cargos,
       ARRAY(SELECT pregunta FROM unanswered item WHERE item.tema = resumen.tema ORDER BY creado_en DESC, id DESC LIMIT 3) AS ejemplos
-    FROM unanswered AS resumen GROUP BY tema ORDER BY consultas DESC, tema ASC`, parameters);
+    FROM unanswered AS resumen GROUP BY tema ORDER BY consultas DESC, tema ASC`, parameters.slice(0, 4));
   return { popular: popular.rows, unanswered: unanswered.rows };
 }

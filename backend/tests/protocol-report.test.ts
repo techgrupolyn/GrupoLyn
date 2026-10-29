@@ -30,5 +30,6 @@ describe('reporte de consultas de protocolos', () => {
     expect(query.mock.calls[1][0]).toContain("motivo_no_respuesta IN ('sin_protocolo', 'fuera_de_alcance', 'tema_sensible')");
     expect(query.mock.calls[1][0]).toContain('resuelta_por_usuario IS FALSE');
     expect(query.mock.calls[1][0]).not.toContain('HAVING COUNT(*) >= $5');
+    expect(query.mock.calls[1][1]).toEqual(['2026-10-22T00:00:00Z', '2026-10-29T00:00:00.000Z', 'obra', 'PMC']);
   });
 });
