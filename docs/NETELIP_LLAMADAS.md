@@ -50,6 +50,7 @@ Llamada ─► Netelip API Voice ─► /webhook/netelip/<token>/control   (avis
 | `NETELIP_AVISO_FILE` | `/etc/lyn/netelip/aviso.mp3` (locución definitiva, 0640 root:lyn) |
 | `NETELIP_AVISO_ANNOUNCE` | `remote\|https://<dominio>/webhook/netelip/<token>/aviso.mp3` |
 | `NETELIP_OUTBOUND_CALLERID` | `Grupo LYN;34XXXXXXXXX` (número asignado a la cuenta). El nombre no suele llegar a los móviles, solo el número. En el QA del 22/10/2026, con `34910054498` el móvil mostró +34 910 05 92 15: falta que Netelip confirme qué número presenta (pregunta 16 a soporte) |
+| `NETELIP_OUTBOUND_CALLERIDS` | JSON extensión → `nombre;número`, p. ej. `'{"109":"Grupo LYN;34865456130"}'`. Cada extensión presenta su número y, si el cliente devuelve la llamada, vuelve a ella. Las extensiones sin entrada usan `NETELIP_OUTBOUND_CALLERID` |
 | `NETELIP_CONTROL_ROUTES` / `NETELIP_CONTROL_DEFAULT_EXTENSION` | Número entrante → extensión, según el inventario del runbook |
 | `NETELIP_TRANSCRIPTION_ENGINE` | `none` hasta que se decida P3; después, `gemini` o `local_whisper` (ver «Transcripción») |
 | `NETELIP_VDRIVE_USER` / `NETELIP_VDRIVE_APP_PASSWORD` | **Obligatorias** (el preflight no deja desplegar sin ellas). Usuario de vDrive y contraseña de aplicación de Nextcloud, nunca la del panel. Con ellas se descarga el audio de las llamadas pendientes cuando se active el motor |
