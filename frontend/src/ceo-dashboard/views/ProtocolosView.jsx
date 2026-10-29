@@ -82,6 +82,6 @@ export default function ProtocolosView() {
       {result.derivationRole && <p className="text-xs text-[#BFBFBF]">A quién acudir: {result.derivationRole}{result.derivationPerson ? ` · ${result.derivationPerson}` : ''}</p>}
       <div className="border-t border-[#2E2E2E] pt-4"><p className="mb-3 text-sm text-[#F2F2F2]">¿Te ha resuelto la duda?</p>{feedback === null ? <div className="flex gap-2"><button type="button" onClick={() => confirm(true)} className="rounded border border-[#737373] px-4 py-2 text-xs">Sí</button><button type="button" onClick={() => confirm(false)} className="rounded border border-[#737373] px-4 py-2 text-xs">No</button></div> : <p className="text-xs text-[#BFBFBF]">Gracias por confirmar tu respuesta.</p>}</div>
     </article>}
-    {status?.canReadQueries && <ProtocolosAdminPanel refreshToken={`${result?.id || ''}:${feedback}`} />}
+    {(status?.canReadReport || status?.canReadQueries) && <ProtocolosAdminPanel refreshToken={`${result?.id || ''}:${feedback}`} canReadHistory={Boolean(status?.canReadQueries)} />}
   </section>;
 }
