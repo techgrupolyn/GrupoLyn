@@ -66,14 +66,23 @@ describe('agente de protocolos', () => {
 
   it('envía el corpus íntegro al modelo con un prefijo estable', async () => {
     const services = dependencies([modelAnswer]);
-    services.loadCorpus = async () => createProtocolCorpus([...corpus.files, {
+    const fullCorpus = createProtocolCorpus([...corpus.files, {
       id: 'documento-2', name: 'Control de materiales', mimeType: 'application/pdf', modifiedTime: '2026-10-25T00:00:00Z',
       revision: 'rev-1', warnings: [], sections: [{ ref: 'página 4', text: 'Cada pedido tiene un responsable.' }],
     }], 1000);
+    services.loadCorpus = async () => fullCorpus;
     await askProtocolAgent({ userId: 1, role: 'PMC', question: '¿Quién revisa el presupuesto?', channel: 'superagente' }, services);
     const system = services.generate.mock.calls[0][0];
     expect(system).toContain('El PMC revisa el presupuesto');
     expect(system).toContain('Cada pedido tiene un responsable');
+    expect(system.indexOf('Cada pedido tiene un responsable')).toBeLessThan(system.lastIndexOf('<organigrama>'));
+    const otherServices = dependencies([modelAnswer]);
+    otherServices.loadCorpus = services.loadCorpus;
+    otherServices.roles = async () => [{ name: 'PMC', person: 'Otra persona' }];
+    await askProtocolAgent({ userId: 2, role: 'PMC', question: '¿Quién revisa el presupuesto?', channel: 'superagente' }, otherServices);
+    const otherSystem = otherServices.generate.mock.calls[0][0];
+    const corpusEnd = system.indexOf('</corpus>') + '</corpus>'.length;
+    expect(otherSystem.slice(0, corpusEnd)).toBe(system.slice(0, corpusEnd));
   });
 
   it('interpreta una descripción indirecta sin exigir palabras exactas del protocolo', async () => {
