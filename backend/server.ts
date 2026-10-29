@@ -35,7 +35,7 @@ import { ensureWhatsAppReliability, createWhatsAppInbox, pendingWhatsAppCoverage
 import { askProtocolAgent } from './protocol-agent.ts';
 import { syncProtocolDrive } from './protocol-drive.ts';
 import { callProtocolGemini } from './protocol-gemini.ts';
-import { canReadProtocolLog } from './protocol-privacy.ts';
+import { canReadProtocolLog, canReadProtocolReport } from './protocol-privacy.ts';
 import { loadProtocolReport, parseProtocolReportFilters } from './protocol-report.ts';
 import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, ensureProtocolSchema, listProtocolQueries, loadProtocolCorpus, loadProtocolSyncReport, loadProtocolVisionCache, pruneProtocolQueries, recordProtocolFeedback, saveProtocolCorpus, saveProtocolQuery, saveProtocolSyncReport, saveProtocolVisionCache } from './protocol-storage.ts';
 
@@ -8857,6 +8857,15 @@ function requireProtocolLogReader(req: Request, res: Response, next: NextFunctio
     next();
   });
 }
+function requireProtocolReportReader(req: Request, res: Response, next: NextFunction): void {
+  requireProtocolUser(req, res, () => {
+    if (!canReadProtocolReport((res.locals.ceoSession as CeoSession).rol)) {
+      res.status(403).json({ error: 'No tienes acceso al reporte de protocolos' });
+      return;
+    }
+    next();
+  });
+}
 function runProtocolSync(): Promise<unknown> {
   if (protocolSyncPromise) return protocolSyncPromise;
   protocolSyncPromise = (async () => {
@@ -8883,12 +8892,12 @@ function runProtocolSync(): Promise<unknown> {
 }
 
 app.get('/api/protocolos/estado', requireProtocolUser, async (_req: Request, res: Response) => {
-  if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.json({ enabled: false, versionId: null, updatedAt: null, lastSyncedAt: null, fileCount: 0, canManage: false, canReadQueries: false, report: null });
+  if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.json({ enabled: false, versionId: null, updatedAt: null, lastSyncedAt: null, fileCount: 0, canManage: false, canReadQueries: false, canReadReport: false, report: null });
   try {
     const [corpus, report] = await Promise.all([loadProtocolCorpus(pool), loadProtocolSyncReport(pool)]);
     const session = res.locals.ceoSession as CeoSession;
     const canManage = isCeoAdministratorRole(session.rol);
-    res.json({ enabled: true, versionId: corpus?.id || null, updatedAt: corpus?.createdAt || null, lastSyncedAt: report && !report.error ? report.checkedAt : null, fileCount: corpus?.files.length || 0, canManage, canReadQueries: canReadProtocolLog(session.rol), report: canManage ? report : null });
+    res.json({ enabled: true, versionId: corpus?.id || null, updatedAt: corpus?.createdAt || null, lastSyncedAt: report && !report.error ? report.checkedAt : null, fileCount: corpus?.files.length || 0, canManage, canReadQueries: canReadProtocolLog(session.rol), canReadReport: canReadProtocolReport(session.rol), report: canManage ? report : null });
   } catch {
     res.status(503).json({ error: 'No se pudo consultar el estado de los protocolos' });
   }
@@ -8905,7 +8914,7 @@ app.get('/api/protocolos/consultas', requireProtocolLogReader, async (req: Reque
   catch { res.status(503).json({ error: 'No se pudo consultar el registro de protocolos' }); }
 });
 
-app.get('/api/protocolos/reporte', requireProtocolLogReader, async (req: Request, res: Response) => {
+app.get('/api/protocolos/reporte', requireProtocolReportReader, async (req: Request, res: Response) => {
   if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.status(503).json({ error: 'El agente de protocolos no está activo' });
   try {
     const filters = parseProtocolReportFilters(req.query);

@@ -31,3 +31,8 @@ export function canReadProtocolLog(role: unknown): boolean {
   const normalized = String(role || '').normalize('NFD').replace(/[\u0300-\u036f]/gu, '').trim().toLowerCase().replace(/[\s/-]+/gu, '_');
   return ['superadmin', 'employee:director', 'employee:director_general', 'employee:director_de_operaciones', 'employee:direccion_de_operaciones'].includes(normalized);
 }
+
+export function canReadProtocolReport(role: unknown): boolean {
+  const normalized = String(role || '').normalize('NFD').replace(/[\u0300-\u036f]/gu, '').trim().toLowerCase().replace(/[\s/-]+/gu, '_');
+  return canReadProtocolLog(role) || normalized === 'employee:gerente_tecnico';
+}

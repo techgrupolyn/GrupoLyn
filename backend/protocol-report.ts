@@ -25,7 +25,7 @@ export function parseProtocolReportFilters(query: Record<string, unknown>, now =
   return { from, to, area, role, minCount };
 }
 
-export async function loadProtocolReport(pool: Pool, filters: ProtocolReportFilters): Promise<{ popular: Record<string, unknown>[]; unanswered: Record<string, unknown>[] }> {
+export async function loadProtocolReport(pool: Pool, filters: ProtocolReportFilters): Promise<{ popular: Record<string, unknown>[]; unanswered: Record<string, unknown>[]; total: number }> {
   const upper = new Date(`${filters.to}T00:00:00Z`);
   upper.setUTCDate(upper.getUTCDate() + 1);
   const parameters = [`${filters.from}T00:00:00Z`, upper.toISOString(), filters.area, filters.role, filters.minCount];
@@ -36,18 +36,18 @@ export async function loadProtocolReport(pool: Pool, filters: ProtocolReportFilt
       AND ($4::text IS NULL OR cargo = $4)
       AND clasificacion <> 'aclaracion'
   )`;
-  const popular = await pool.query(`${filtered}
+  const [popular, unanswered, total] = await Promise.all([pool.query(`${filtered}
     SELECT tema, COUNT(*)::int AS consultas, COUNT(DISTINCT usuario_id)::int AS usuarios,
       ROUND(100.0 * COUNT(*) FILTER (WHERE resuelta_por_usuario IS TRUE) /
         NULLIF(COUNT(*) FILTER (WHERE resuelta_por_usuario IS NOT NULL), 0), 1) AS porcentaje_resueltas,
       MAX(creado_en) AS ultima_consulta,
+      ARRAY(SELECT pregunta FROM filtered item WHERE item.tema = resumen.tema ORDER BY creado_en DESC, id DESC LIMIT 3) AS ejemplos,
       (SELECT COALESCE(fuente.value->>'name', fuente.value->>'doc_id')
        FROM filtered item CROSS JOIN LATERAL jsonb_array_elements(item.fuentes) AS fuente(value)
        WHERE item.tema = resumen.tema
        GROUP BY 1 ORDER BY COUNT(*) DESC, 1 ASC LIMIT 1) AS documento_mas_citado
     FROM filtered AS resumen GROUP BY tema HAVING COUNT(*) >= $5
-    ORDER BY consultas DESC, tema ASC`, parameters);
-  const unanswered = await pool.query(`${filtered}, unanswered AS (
+    ORDER BY consultas DESC, tema ASC`, parameters), pool.query(`${filtered}, unanswered AS (
     SELECT * FROM filtered WHERE motivo_no_respuesta IN ('sin_protocolo', 'fuera_de_alcance', 'tema_sensible')
       OR validacion = 'rechazada' OR resuelta_por_usuario IS FALSE
   )
@@ -59,6 +59,7 @@ export async function loadProtocolReport(pool: Pool, filters: ProtocolReportFilt
       COUNT(*) FILTER (WHERE resuelta_por_usuario IS FALSE)::int AS usuario_dijo_no,
       ARRAY(SELECT DISTINCT cargo FROM unanswered item WHERE item.tema = resumen.tema ORDER BY cargo) AS cargos,
       ARRAY(SELECT pregunta FROM unanswered item WHERE item.tema = resumen.tema ORDER BY creado_en DESC, id DESC LIMIT 3) AS ejemplos
-    FROM unanswered AS resumen GROUP BY tema ORDER BY consultas DESC, tema ASC`, parameters.slice(0, 4));
-  return { popular: popular.rows, unanswered: unanswered.rows };
+    FROM unanswered AS resumen GROUP BY tema ORDER BY consultas DESC, tema ASC`, parameters.slice(0, 4)),
+  pool.query<{ total: number }>(`${filtered} SELECT COUNT(*)::int AS total FROM filtered`, parameters.slice(0, 4))]);
+  return { popular: popular.rows, unanswered: unanswered.rows, total: total.rows[0]?.total || 0 };
 }
