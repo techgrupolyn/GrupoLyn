@@ -1801,6 +1801,12 @@ function isCeoMeetingEditRoute(method: string, path: string): boolean {
   return /^\/meetings(?:\/|$)/.test(path) || path === '/directory';
 }
 
+function isProtocolAgentRoute(method: string, path: string): boolean {
+  if (method === 'GET') return ['/protocolos/estado', '/protocolos/consultas', '/protocolos/reporte'].includes(path);
+  if (method !== 'POST') return false;
+  return ['/protocolos/consultar', '/protocolos/sincronizar'].includes(path) || /^\/protocolos\/[0-9a-f-]{36}\/confirmar$/iu.test(path);
+}
+
 function isLocalExtensionDevelopmentRequest(req: Request): boolean {
   if (!['development', ''].includes(String(process.env.NODE_ENV || '').trim().toLowerCase())) return false;
   if (String(process.env.ALLOW_UNAUTHENTICATED_LOCAL_EXTENSION || '').trim().toLowerCase() !== 'true') return false;
@@ -1811,6 +1817,10 @@ function isLocalExtensionDevelopmentRequest(req: Request): boolean {
 
 function requireApiAccess(req: Request, res: Response, next: NextFunction): void {
   if (isPublicApiRoute(req.path)) {
+    next();
+    return;
+  }
+  if (isProtocolAgentRoute(req.method, req.path)) {
     next();
     return;
   }

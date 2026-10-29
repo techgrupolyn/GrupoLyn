@@ -17,6 +17,27 @@ describe('Server - rutas adicionales protegidas', () => {
 });
 
 describe('Server - seguridad CEO', () => {
+  it('delega la autenticación de Protocolos a sus rutas sin abrir el historial ni la sincronización', async () => {
+    const token = 'Bearer invalid-synthetic-token';
+    for (const path of ['/api/protocolos/estado', '/api/protocolos/consultas', '/api/protocolos/reporte']) {
+      const anonymous = await client.get(path);
+      expect(anonymous.status).toBe(401);
+      const response = await client.get(path).set('Authorization', token);
+      expect(response.status).toBe(401);
+      expect(response.body.error).toBe('Sesión inválida o vencida');
+    }
+    for (const path of ['/api/protocolos/consultar', '/api/protocolos/00000000-0000-0000-0000-000000000001/confirmar']) {
+      const anonymous = await client.post(path).send({});
+      expect(anonymous.status).toBe(401);
+      const response = await client.post(path).set('Authorization', token).send({});
+      expect(response.status).toBe(401);
+      expect(response.body.error).toBe('Sesión inválida o vencida');
+    }
+    const sync = await client.post('/api/protocolos/sincronizar').set('Authorization', token).send({});
+    expect(sync.status).toBe(401);
+    expect(sync.body.error).toBe('Sesión de CEO inválida o vencida');
+  });
+
   it('limita el rol público a consultas y lo excluye de permisos administrativos', () => {
     expect(isCeoConsultationRoute('/ceo/ask')).toBe(true);
     expect(isCeoConsultationRoute('/ceo/metrics')).toBe(false);
