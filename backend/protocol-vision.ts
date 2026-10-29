@@ -1,6 +1,6 @@
 import type { ProtocolFile } from './protocol-corpus.ts';
 
-export type ProtocolVisionPage = { ref: string; image: string; textLayer: string };
+export type ProtocolVisionPage = { ref: string; image: string; textLayer: string; kind?: 'scanned' };
 
 function tableCells(line: string): string[] {
   return line.split(/(?<!\\)\|/u).slice(1, -1);

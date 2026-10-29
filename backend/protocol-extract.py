@@ -111,7 +111,10 @@ def pdf_sections(data):
                 page = pages[number - 1] if number <= len(pages) else ""
                 lines = [line.rstrip() for line in page.splitlines() if line.strip()]
                 if not lines:
-                    warnings.append(f"página {number}: sin capa de texto; excluida")
+                    image = io.BytesIO()
+                    pdf_page.to_image(resolution=200).original.convert("RGB").save(image, format="JPEG", quality=80)
+                    vision_pages.append({"ref": f"página {number}", "image": base64.b64encode(image.getvalue()).decode("ascii"), "textLayer": "", "kind": "scanned"})
+                    warnings.append(f"página {number}: sin capa de texto; pendiente de verificación visual")
                     continue
                 found_tables = pdf_page.find_tables()
                 if len(found_tables) != 1 or len(found_tables[0].columns) < 8:
