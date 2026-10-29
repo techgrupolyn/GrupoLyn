@@ -20,7 +20,7 @@ export type ProtocolSyncReport = {
 
 const folderId = '14oB0TKbGyvEDMti2JgjXIep54-ZcMbc_';
 const googleMime = 'application/vnd.google-apps.';
-const extractionVersion = 3;
+const extractionVersion = 4;
 const extractorPath = fileURLToPath(new URL('./protocol-extract.py', import.meta.url));
 
 function extractionFormat(file: DriveEntry): { kind: string; exportMime?: string } | null {
@@ -120,11 +120,23 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
         const bytes = Buffer.from(await response.arrayBuffer());
         if (bytes.length > 30 * 1024 * 1024) throw new Error('Archivo demasiado grande');
         const extracted = await (options.extract || extractFile)(format.kind, bytes, options.pythonBin || process.env.PROTOCOL_PYTHON_BIN || 'python3');
+        for (const page of extracted.visionPages?.filter(page => page.kind === 'scanned') || []) {
+          const imageHash = createHash('sha256').update(Buffer.from(page.image, 'base64')).digest('hex');
+          const reviewedText = await options.loadVision?.(entry.id, revision, page.ref, imageHash);
+          if (!reviewedText?.trim() || containsUnmaskedPersonalData(reviewedText)) {
+            throw new Error(`${page.ref}: falta una transcripción visual verificada; se conserva el corpus anterior`);
+          }
+          const pageNumber = Number(/^página (\d+)$/u.exec(page.ref)?.[1]);
+          const insertionIndex = extracted.sections.findIndex(section => Number(/^página (\d+)$/u.exec(section.ref)?.[1]) > pageNumber);
+          extracted.sections.splice(insertionIndex < 0 ? extracted.sections.length : insertionIndex, 0, { ref: page.ref, text: reviewedText.trim() });
+          extracted.warnings = extracted.warnings.filter(warning => warning !== `${page.ref}: sin capa de texto; pendiente de verificación visual`);
+          extracted.warnings.push(`${page.ref}: transcripción visual verificada`);
+        }
         if (extracted.sections.length && extracted.warnings.some(warning => /página \d+: (?:sin capa de texto|tabla con palabras no verificadas)|se alcanzó el límite de \d+ filas/iu.test(warning))) {
           throw new Error('El documento contiene páginas u hojas omitidas; se conserva el corpus anterior');
         }
-        if (format.kind === 'pdf' && extracted.visionPages?.length) {
-          for (const page of extracted.visionPages) {
+        if (format.kind === 'pdf' && extracted.visionPages?.some(page => page.kind !== 'scanned')) {
+          for (const page of extracted.visionPages.filter(page => page.kind !== 'scanned')) {
             let generated: string | null = null;
             const image = Buffer.from(page.image, 'base64');
             const imageHash = createHash('sha256').update(image).digest('hex');
