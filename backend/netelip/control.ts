@@ -30,6 +30,7 @@ export type ControlConfig = {
   inboundRoutes: Record<string, string>; // número (cifras) → extensión o «pstn:<número>»
   defaultExtension: string | null;
   outboundCallerId: string | null;     // «nombre;número» con un número asignado a la cuenta
+  outboundCallerIds: Record<string, string>; // extensión → «nombre;número»; sin entrada, outboundCallerId
   recordAudio: 'mono' | 'stereo';      // estéreo: un canal por interlocutor (separa agente y cliente)
   recordNoconnect: boolean;            // graba desde el comando, no desde que conecta la llamada
   ringSeconds: number;
@@ -39,6 +40,8 @@ export type ControlConfig = {
 export function controlConfigFromEnv(env: NodeJS.ProcessEnv): ControlConfig {
   let routes: Record<string, string> = {};
   try { routes = JSON.parse(env.NETELIP_CONTROL_ROUTES || '{}'); } catch { routes = {}; }
+  let callerIds: Record<string, string> = {};
+  try { callerIds = JSON.parse(env.NETELIP_OUTBOUND_CALLERIDS || '{}'); } catch { callerIds = {}; }
   return {
     avisoText: String(env.NETELIP_AVISO_TEXT || '').trim(),
     voice: env.NETELIP_AVISO_VOICE || 'Silvia',
@@ -46,6 +49,7 @@ export function controlConfigFromEnv(env: NodeJS.ProcessEnv): ControlConfig {
     inboundRoutes: routes,
     defaultExtension: env.NETELIP_CONTROL_DEFAULT_EXTENSION || null,
     outboundCallerId: env.NETELIP_OUTBOUND_CALLERID || null,
+    outboundCallerIds: callerIds,
     // 15/10/2026: `,stereo` no generó la grabación de la conversación (solo la del aviso). Por defecto, mono.
     recordAudio: env.NETELIP_RECORD_AUDIO === 'stereo' ? 'stereo' : 'mono',
     recordNoconnect: env.NETELIP_RECORD_NOCONNECT === '1',
@@ -151,7 +155,11 @@ export function nextCommand(req: Record<string, unknown>, state: CallState, cfg:
 
   // Inicio de la llamada.
   if (!command) {
-    if (state.outbound) return reply(cfg.outboundCallerId ? cmd('callerid', cfg.outboundCallerId, 'callerid') : startOutbound());
+    if (state.outbound) {
+      // Cada extensión presenta su número: si el cliente devuelve la llamada, vuelve a quien llamó.
+      const callerId = cfg.outboundCallerIds[src] || cfg.outboundCallerId;
+      return reply(callerId ? cmd('callerid', callerId, 'callerid') : startOutbound());
+    }
     if (!route(cfg, dst)) return reply(cmd('hangup', '', 'no_route'));
     if (!cfg.avisoText) return reply(dialInbound(cfg, dst, false));
     return reply(cmd('speak', `netelip;${cfg.voice};${cfg.avisoText}`, 'aviso'));

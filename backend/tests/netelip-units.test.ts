@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { matchPhone, type DirectoryIndex } from '../netelip/contacts.ts';
-import { nextCommand, type CallState, type ControlConfig } from '../netelip/control.ts';
+import { controlConfigFromEnv, nextCommand, type CallState, type ControlConfig } from '../netelip/control.ts';
 import {
   bodyFields, callRecordingPayload, direction, eventFromPayload, IgnoredEvent, InvalidEvent, ipAllowed, isInternal,
   NETELIP_TRUSTED_NETWORKS, parseWhatsAppCall, startedAt, tokenMatches,
@@ -130,7 +130,7 @@ describe('Netelip · seguridad del receptor', () => {
 });
 
 describe('Netelip · controlador de API Voice', () => {
-  const cfg: ControlConfig = { avisoText: 'Esta llamada será grabada.', voice: 'Silvia', avisoAnnounce: 'remote|https://x/aviso.mp3', inboundRoutes: { '910000000': '201' }, defaultExtension: null, outboundCallerId: null, recordAudio: 'mono', recordNoconnect: false, ringSeconds: 30, maxCallSeconds: 3600 };
+  const cfg: ControlConfig = { avisoText: 'Esta llamada será grabada.', voice: 'Silvia', avisoAnnounce: 'remote|https://x/aviso.mp3', inboundRoutes: { '910000000': '201' }, defaultExtension: null, outboundCallerId: null, outboundCallerIds: {}, recordAudio: 'mono', recordNoconnect: false, ringSeconds: 30, maxCallSeconds: 3600 };
   const call = { ID: '1791201600.9', src: '600111222', dst: '910000000' };
 
   it('entrante: aviso → grabación → conexión, y evento al contestar', () => {
@@ -224,6 +224,17 @@ describe('Netelip · controlador de API Voice', () => {
     expect(nextCommand(out, state, withCid).response).toEqual({ command: 'callerid', options: 'Grupo LYN;34910000000', userfield: 'callerid' });
     expect(nextCommand({ ...out, command: 'callerid', userfield: 'callerid', statuscode: '200' }, state, withCid).response.command).toBe('record');
     expect(nextCommand({ ...out, command: 'record', userfield: 'record', description: 'OK' }, state, withCid).response).toMatchObject({ command: 'dial', userfield: 'dial' });
+  });
+
+  it('saliente: cada extensión presenta su número y las demás el general', () => {
+    const perExt = { ...cfg, outboundCallerId: 'Grupo LYN;34865608343', outboundCallerIds: { '109': 'Grupo LYN;34865456130' } };
+    expect(nextCommand({ ID: 'o3', src: '109', dst: '600111222' }, {}, perExt).response.options).toBe('Grupo LYN;34865456130');
+    expect(nextCommand({ ID: 'o4', src: '113', dst: '600111222' }, {}, perExt).response.options).toBe('Grupo LYN;34865608343');
+  });
+
+  it('lee el número por extensión del entorno e ignora un JSON inválido', () => {
+    expect(controlConfigFromEnv({ NETELIP_OUTBOUND_CALLERIDS: '{"115":"Grupo LYN;34865456102"}' }).outboundCallerIds).toEqual({ '115': 'Grupo LYN;34865456102' });
+    expect(controlConfigFromEnv({ NETELIP_OUTBOUND_CALLERIDS: '{115' }).outboundCallerIds).toEqual({});
   });
 });
 
