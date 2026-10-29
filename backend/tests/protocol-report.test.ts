@@ -10,7 +10,7 @@ describe('reporte de consultas de protocolos', () => {
     expect(canReadProtocolReport('employee:director')).toBe(true);
     expect(canReadProtocolReport('superadmin')).toBe(true);
     expect(canReadProtocolReport('employee:interiorista')).toBe(false);
-    expect(canReadProtocolReport('admin')).toBe(false);
+    expect(canReadProtocolReport('admin')).toBe(true);
   });
 
   it('usa siete días y umbral tres por defecto', () => {

@@ -35,7 +35,7 @@ import { ensureWhatsAppReliability, createWhatsAppInbox, pendingWhatsAppCoverage
 import { askProtocolAgent } from './protocol-agent.ts';
 import { syncProtocolDrive } from './protocol-drive.ts';
 import { callProtocolGemini } from './protocol-gemini.ts';
-import { canReadProtocolLog, canReadProtocolReport } from './protocol-privacy.ts';
+import { canReadProtocolLog, canReadProtocolReport, hasClubAdminRole } from './protocol-privacy.ts';
 import { loadProtocolReport, parseProtocolReportFilters } from './protocol-report.ts';
 import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, ensureProtocolSchema, listProtocolQueries, loadProtocolCorpus, loadProtocolSyncReport, loadProtocolVisionCache, pruneProtocolQueries, recordProtocolFeedback, saveProtocolCorpus, saveProtocolQuery, saveProtocolSyncReport, saveProtocolVisionCache } from './protocol-storage.ts';
 
@@ -8829,11 +8829,17 @@ const isTestEnv = process.env.NODE_ENV === 'test';
 let protocolSyncPromise: Promise<unknown> | null = null;
 const protocolQueryLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'Demasiadas consultas de protocolos. Espera un minuto.' } });
 function requireProtocolUser(req: Request, res: Response, next: NextFunction): void {
+  const authorize = (user: CeoSession): void => {
+    res.locals.ceoSession = user;
+    if (req.method !== 'GET' || canReadProtocolLog(user.rol)) return void next();
+    void hasClubAdminRole((sql, params) => pool.query<{ allowed: boolean }>(sql, params), user.id)
+      .then((allowed) => { res.locals.protocolClubAdmin = allowed; next(); })
+      .catch(() => res.status(503).json({ error: 'No se pudieron verificar los permisos de Protocolos' }));
+  };
   const session = readCeoSession(req);
   if (session) {
     if (!isCeoMeetingAccessRole(session.rol)) return void res.status(403).json({ error: 'Solo el equipo interno puede consultar protocolos' });
-    res.locals.ceoSession = session;
-    return void next();
+    return void authorize(session);
   }
   if (req.get('Origin') !== clubSsoOrigin || !clubSsoOrigin) return void res.status(401).json({ error: 'Sesión inválida o vencida' });
   const authorization = req.get('Authorization') || '';
@@ -8843,14 +8849,13 @@ function requireProtocolUser(req: Request, res: Response, next: NextFunction): v
       if (!remoteUser) return void res.status(401).json({ error: 'La sesión de Club LYN ha caducado' });
       const user = await resolveSupabaseIdentity(remoteUser);
       if (!user || !isCeoMeetingAccessRole(user.rol)) return void res.status(403).json({ error: 'Solo el equipo interno puede consultar protocolos' });
-      res.locals.ceoSession = { id: user.id, usuario: user.usuario, nombre: user.nombre || undefined, rol: user.rol } satisfies CeoSession;
-      next();
+      authorize({ id: user.id, usuario: user.usuario, nombre: user.nombre || undefined, rol: user.rol } satisfies CeoSession);
     })
     .catch(() => res.status(502).json({ error: 'No se pudo verificar el acceso a Club LYN' }));
 }
 function requireProtocolLogReader(req: Request, res: Response, next: NextFunction): void {
   requireProtocolUser(req, res, () => {
-    if (!canReadProtocolLog((res.locals.ceoSession as CeoSession).rol)) {
+    if (!canReadProtocolLog((res.locals.ceoSession as CeoSession).rol) && !res.locals.protocolClubAdmin) {
       res.status(403).json({ error: 'No tienes acceso al registro de protocolos' });
       return;
     }
@@ -8859,7 +8864,7 @@ function requireProtocolLogReader(req: Request, res: Response, next: NextFunctio
 }
 function requireProtocolReportReader(req: Request, res: Response, next: NextFunction): void {
   requireProtocolUser(req, res, () => {
-    if (!canReadProtocolReport((res.locals.ceoSession as CeoSession).rol)) {
+    if (!canReadProtocolReport((res.locals.ceoSession as CeoSession).rol) && !res.locals.protocolClubAdmin) {
       res.status(403).json({ error: 'No tienes acceso al reporte de protocolos' });
       return;
     }
@@ -8897,7 +8902,7 @@ app.get('/api/protocolos/estado', requireProtocolUser, async (_req: Request, res
     const [corpus, report] = await Promise.all([loadProtocolCorpus(pool), loadProtocolSyncReport(pool)]);
     const session = res.locals.ceoSession as CeoSession;
     const canManage = isCeoAdministratorRole(session.rol);
-    res.json({ enabled: true, versionId: corpus?.id || null, updatedAt: corpus?.createdAt || null, lastSyncedAt: report && !report.error ? report.checkedAt : null, fileCount: corpus?.files.length || 0, canManage, canReadQueries: canReadProtocolLog(session.rol), canReadReport: canReadProtocolReport(session.rol), report: canManage ? report : null });
+    res.json({ enabled: true, versionId: corpus?.id || null, updatedAt: corpus?.createdAt || null, lastSyncedAt: report && !report.error ? report.checkedAt : null, fileCount: corpus?.files.length || 0, canManage, canReadQueries: canReadProtocolLog(session.rol) || Boolean(res.locals.protocolClubAdmin), canReadReport: canReadProtocolReport(session.rol) || Boolean(res.locals.protocolClubAdmin), report: canManage ? report : null });
   } catch {
     res.status(503).json({ error: 'No se pudo consultar el estado de los protocolos' });
   }
