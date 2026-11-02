@@ -6,6 +6,7 @@ import { createProtocolCorpus, type ProtocolCorpus } from './protocol-corpus.ts'
 import { containsUnmaskedPersonalData } from './protocol-privacy.ts';
 import { transcribeProtocolTable } from './protocol-gemini.ts';
 import { applyProtocolVision, protocolTableColumnCount, type ProtocolVisionPage } from './protocol-vision.ts';
+import { projectAssignmentsSheetId } from './protocol-assignments.ts';
 
 type DriveEntry = { id: string; name: string; mimeType: string; modifiedTime?: string; version?: string; md5Checksum?: string; parents?: string[]; resourceKey?: string };
 type DrivePage = { files?: DriveEntry[]; nextPageToken?: string; incompleteSearch?: boolean };
@@ -35,7 +36,7 @@ function extractionFormat(file: DriveEntry): { kind: string; exportMime?: string
   return null;
 }
 
-async function listProtocolFiles(request: DriveRequest): Promise<DriveEntry[]> {
+async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: string): Promise<DriveEntry[]> {
   const files: DriveEntry[] = [];
   let pageToken = '';
   const tokens = new Set<string>();
@@ -51,6 +52,15 @@ async function listProtocolFiles(request: DriveRequest): Promise<DriveEntry[]> {
     files.push(...(page.files || []).filter(file => file.parents?.includes(folderId)));
     pageToken = page.nextPageToken || '';
   } while (pageToken);
+  if (assignmentsSheetId) {
+    if (assignmentsSheetId !== projectAssignmentsSheetId) throw new Error('Hoja de asignaciones no autorizada');
+    const params = new URLSearchParams({ fields: 'id,name,mimeType,modifiedTime,version,md5Checksum,trashed,resourceKey', supportsAllDrives: 'true' });
+    const response = await request(`/files/${encodeURIComponent(assignmentsSheetId)}?${params}`);
+    if (!response.ok) throw new Error(`Google Drive respondió ${response.status}`);
+    const sheet = await response.json() as DriveEntry & { trashed?: boolean };
+    if (sheet.id !== assignmentsSheetId || sheet.trashed || sheet.mimeType !== `${googleMime}spreadsheet`) throw new Error('Hoja de asignaciones no válida');
+    files.push(sheet);
+  }
   return files;
 }
 
@@ -80,6 +90,7 @@ async function extractFile(kind: string, data: Buffer, pythonBin: string): Promi
 
 export async function syncProtocolDrive(request: DriveRequest, options: {
   maxTokens: number;
+  assignmentsSheetId?: string;
   pythonBin?: string;
   extract?: typeof extractFile;
   previous?: ProtocolCorpus | null;
@@ -90,7 +101,7 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
 }): Promise<ProtocolSyncReport> {
   const report: ProtocolSyncReport = { checkedAt: new Date().toISOString(), files: [], versionId: options.previous?.id || null, error: null };
   try {
-    const entries = await listProtocolFiles(request);
+    const entries = await listProtocolFiles(request, options.assignmentsSheetId);
     const accepted: ProtocolFile[] = [];
     let driveFailure = false;
     let dependencyFailure = false;
@@ -99,7 +110,8 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
     const normalizedNames = new Map<string, string>();
     for (const entry of entries) {
       if (entry.mimeType === `${googleMime}folder` || entry.name.trim().toLowerCase() === '_obsoletos') continue;
-      const format = extractionFormat(entry);
+      const assignmentSheet = entry.id === options.assignmentsSheetId;
+      const format = assignmentSheet ? { kind: 'assignments', exportMime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } : extractionFormat(entry);
       if (!format) {
         report.files.push({ id: entry.id, name: entry.name, status: 'excluido', sections: 0, tables: 0, tokens: 0, warnings: ['Formato no soportado'] });
         continue;
@@ -165,7 +177,7 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
             if (vision.warnings.length) throw new Error(vision.warnings.join('; '));
           }
         }
-        if (extracted.sections.some(section => containsUnmaskedPersonalData(section.text))) throw new Error('Documento con datos personales detectables; se excluye');
+        if (!assignmentSheet && extracted.sections.some(section => containsUnmaskedPersonalData(section.text))) throw new Error('Documento con datos personales detectables; se excluye');
         if (!extracted.sections.length) {
           report.files.push({ id: entry.id, name: entry.name, status: 'excluido', sections: 0, tables: 0, tokens: 0, warnings: extracted.warnings.length ? extracted.warnings : ['Sin texto verificable'] });
           continue;

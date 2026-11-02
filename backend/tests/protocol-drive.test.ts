@@ -5,6 +5,30 @@ import { syncProtocolDrive } from '../protocol-drive.ts';
 const folderId = '14oB0TKbGyvEDMti2JgjXIep54-ZcMbc_';
 
 describe('sincronización de protocolos', () => {
+  it('incluye la hoja externa autorizada sin moverla a la carpeta de protocolos', async () => {
+    const save = vi.fn(async () => undefined);
+    const sheetId = '1H43otMwHAzD724u-e2s8czAoNLnxCW95kOUm3bNhG3w';
+    const request = vi.fn(async (path: string) => {
+      if (path.startsWith('/files?')) return Response.json({ files: [{ id: 'doc-1', name: 'Normas', mimeType: 'text/plain', version: '1', parents: [folderId] }] });
+      if (path.startsWith(`/files/${sheetId}?`)) return Response.json({ id: sheetId, name: 'Reparto de obras', mimeType: 'application/vnd.google-apps.spreadsheet', version: '2', trashed: false });
+      return new Response(Buffer.from('contenido'));
+    });
+    const extract = vi.fn(async (kind: string) => ({ sections: [{ ref: kind === 'assignments' ? 'PM DELINEANTE!B11' : 'texto', text: kind === 'assignments' ? 'Obra: Mar jonica; PMC: Lunilse' : 'Normas del equipo' }], warnings: [] }));
+    const report = await syncProtocolDrive(request, { maxTokens: 1000, assignmentsSheetId: sheetId, save, extract });
+    expect(report.error).toBeNull();
+    expect(report.files).toHaveLength(2);
+    expect(extract.mock.calls.map(call => call[0])).toContain('assignments');
+    expect(save.mock.calls[0][0].files.find(file => file.id === sheetId)?.sections[0].text).toContain('Mar jonica');
+  });
+
+  it('conserva el corpus anterior si la hoja externa no se puede leer', async () => {
+    const save = vi.fn(async () => undefined);
+    const request = vi.fn(async (path: string) => path.startsWith('/files?') ? Response.json({ files: [] }) : new Response(null, { status: 404 }));
+    const report = await syncProtocolDrive(request, { maxTokens: 1000, assignmentsSheetId: '1H43otMwHAzD724u-e2s8czAoNLnxCW95kOUm3bNhG3w', save });
+    expect(report.error).toContain('Google Drive respondió 404');
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['pdf', 'application/pdf', 'página 2: sin capa de texto; excluida'],
     ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'hoja 1: se alcanzó el límite de 500 filas'],

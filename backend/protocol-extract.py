@@ -184,6 +184,78 @@ def xlsx_sections(data):
     return sections, warnings
 
 
+def assignment_sections(data):
+    sections = []
+    warnings = []
+    with safe_archive(data) as archive:
+        names = archive.namelist()
+        workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+        sheet_names = [sheet.attrib.get("name", "").strip() for sheet in workbook.iter() if sheet.tag.endswith("}sheet")]
+        shared = []
+        if "xl/sharedStrings.xml" in names:
+            root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+            shared = ["".join(text_nodes(item, "}t")) for item in root]
+        sheets = {}
+        for number, path in numbered(names, "xl/worksheets/sheet"):
+            root = ET.fromstring(archive.read(path))
+            cells = {}
+            for cell in root.iter():
+                if not cell.tag.endswith("}c"):
+                    continue
+                coordinate = cell.attrib.get("r", "")
+                value = next((node.text or "" for node in cell if node.tag.endswith("}v")), "")
+                if cell.attrib.get("t") == "s" and value.isdigit() and int(value) < len(shared):
+                    value = shared[int(value)]
+                elif cell.attrib.get("t") == "inlineStr":
+                    value = " ".join(text_nodes(cell, "}t"))
+                cells[coordinate] = " ".join(value.split())
+            sheets[number] = cells
+
+        named_sheets = {name: sheets.get(index, {}) for index, name in enumerate(sheet_names, 1)}
+        main = named_sheets.get("PM DELINEANTE", {})
+        interior = named_sheets.get("INTERIORISTAS", {})
+        if not main or not interior or "(PM)" not in main.get("B9", "") or "(Interiorista)" not in interior.get("A3", ""):
+            raise ValueError("La estructura de las hojas de PMC o interioristas cambió")
+        statuses = {main.get(f"A{row}"): main.get(f"B{row}") for row in range(2, 8)}
+        for row in range(11, 501):
+            for project_column, load_column, person_column, header_column in (("B", "A", "D", "B"), ("I", "H", "K", "I")):
+                project = main.get(f"{project_column}{row}", "")
+                if not project:
+                    continue
+                owner = main.get(f"{header_column}9", "").replace(" (PM)", "").strip()
+                if not owner:
+                    warnings.append(f"{project_column}{row}: PMC sin identificar")
+                    continue
+                load = main.get(f"{load_column}{row}", "")
+                status = statuses.get(load, "")
+                details = [f"Obra: {project}", f"PMC: {owner}"]
+                if main.get(f"{person_column}{row}"):
+                    details.append(f"Delineante: {main[f'{person_column}{row}']}")
+                if status:
+                    details.append(f"Situación: {status}")
+                sections.append({"ref": f"PM DELINEANTE!{project_column}{row}", "text": "; ".join(details)})
+            project = main.get(f"P{row}", "")
+            if project:
+                owner = main.get("P9", "").replace(" (Delineante)", "").strip()
+                if owner:
+                    sections.append({"ref": f"PM DELINEANTE!P{row}", "text": f"Obra: {project}; Delineante: {owner}"})
+            project = main.get(f"R{row}", "")
+            state = main.get(f"U{row}", "")
+            if project and state:
+                sections.append({"ref": f"PM DELINEANTE!R{row}", "text": f"Obra: {project}; Estado: {state}"})
+        for row in range(5, 501):
+            for project_column in ("A", "D", "G", "J", "M"):
+                project = interior.get(f"{project_column}{row}", "")
+                if not project:
+                    continue
+                owner = interior.get(f"{project_column}3", "").replace(" (Interiorista)", "").strip()
+                if owner:
+                    sections.append({"ref": f"INTERIORISTAS!{project_column}{row}", "text": f"Obra: {project}; Interiorista: {owner}"})
+        if not sections:
+            raise ValueError("No se encontraron asignaciones de obra")
+    return sections, warnings
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     kind = sys.argv[1]
@@ -199,6 +271,8 @@ def main():
         sections, warnings, vision_pages = pdf_sections(data)
     elif kind == "xlsx":
         sections, warnings = xlsx_sections(data)
+    elif kind == "assignments":
+        sections, warnings = assignment_sections(data)
     elif kind == "text":
         text = data.decode("utf-8-sig")
         sections, warnings = ([{"ref": "texto", "text": text}] if text.strip() else []), []
