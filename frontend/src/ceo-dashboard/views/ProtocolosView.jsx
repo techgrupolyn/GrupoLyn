@@ -2,6 +2,16 @@ import { useEffect, useState } from 'react';
 import api from '../api';
 import ProtocolosAdminPanel from './ProtocolosAdminPanel';
 
+const projectSheetId = '1H43otMwHAzD724u-e2s8czAoNLnxCW95kOUm3bNhG3w';
+const projectSheetTabs = { 'PM DELINEANTE': '940712510', INTERIORISTAS: '1638569767' };
+
+function sourceUrl(source) {
+  if (source.doc_id !== projectSheetId) return `https://drive.google.com/file/d/${encodeURIComponent(source.doc_id)}/view`;
+  const [tab, cell] = source.seccion.split('!');
+  const gid = projectSheetTabs[tab];
+  return `https://docs.google.com/spreadsheets/d/${projectSheetId}/edit${gid ? `?gid=${gid}&range=${encodeURIComponent(cell)}` : ''}`;
+}
+
 export default function ProtocolosView() {
   const isPreview = window.location.pathname === '/protocolos-preview.html';
   const [status, setStatus] = useState(null);
@@ -77,7 +87,7 @@ export default function ProtocolosView() {
     {result && <article className="space-y-5 rounded border border-[#2E2E2E] bg-[#141414] p-5">
       <p className={`text-xs font-semibold uppercase tracking-wider ${result.classification === 'urgente' ? 'text-red-300' : 'text-[#BFBFBF]'}`}>{result.classification.replace('_', ' ')}</p>
       <p className="whitespace-pre-wrap text-sm leading-relaxed text-[#F2F2F2]">{result.answer}</p>
-      {result.sources?.length > 0 && <div><h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#BFBFBF]">Fuentes</h3><ul className="space-y-2">{result.sources.map((source, index) => <li key={`${source.doc_id}-${source.seccion}-${index}`} className="rounded border border-[#2E2E2E] p-3 text-xs text-[#BFBFBF]">{source.doc_id.startsWith('local:') ? <span className="font-medium text-amber-200">{source.name} · {source.seccion}</span> : <a href={`https://drive.google.com/file/d/${encodeURIComponent(source.doc_id)}/view`} target="_blank" rel="noopener noreferrer" className="font-medium text-amber-200 underline">{source.name} · {source.seccion}</a>}{source.modifiedTime && <span className="ml-2 text-[#737373]">{new Date(source.modifiedTime).toLocaleDateString('es-ES')}</span>}<p className="mt-1">“{source.cita}”</p></li>)}</ul></div>}
+      {result.sources?.length > 0 && <div><h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#BFBFBF]">Fuentes</h3><ul className="space-y-2">{result.sources.map((source, index) => <li key={`${source.doc_id}-${source.seccion}-${index}`} className="rounded border border-[#2E2E2E] p-3 text-xs text-[#BFBFBF]">{source.doc_id.startsWith('local:') ? <span className="font-medium text-amber-200">{source.name} · {source.seccion}</span> : <a href={sourceUrl(source)} target="_blank" rel="noopener noreferrer" className="font-medium text-amber-200 underline">{source.name} · {source.seccion}</a>}{source.modifiedTime && <span className="ml-2 text-[#737373]">{new Date(source.modifiedTime).toLocaleDateString('es-ES')}</span>}<p className="mt-1">“{source.cita}”</p></li>)}</ul></div>}
       {result.contradiction && <p className="text-xs text-amber-200">Hay instrucciones contradictorias en dos documentos. Consulta con el responsable antes de actuar.</p>}
       {result.derivationRole && <p className="text-xs text-[#BFBFBF]">A quién acudir: {result.derivationRole}{result.derivationPerson ? ` · ${result.derivationPerson}` : ''}</p>}
       <div className="border-t border-[#2E2E2E] pt-4"><p className="mb-3 text-sm text-[#F2F2F2]">¿Te ha resuelto la duda?</p>{feedback === null ? <div className="flex gap-2"><button type="button" onClick={() => confirm(true)} className="rounded border border-[#737373] px-4 py-2 text-xs">Sí</button><button type="button" onClick={() => confirm(false)} className="rounded border border-[#737373] px-4 py-2 text-xs">No</button></div> : <p className="text-xs text-[#BFBFBF]">Gracias por confirmar tu respuesta.</p>}</div>

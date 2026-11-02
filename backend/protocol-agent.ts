@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { validateProtocolAnswer, type ProtocolAnswer } from './protocol-answer-validation.ts';
 import { protocolCorpusPrompt, type ProtocolCorpus } from './protocol-corpus.ts';
 import { containsUnmaskedPersonalData, maskProtocolQuestion } from './protocol-privacy.ts';
 import { PROTOCOL_SYSTEM_PROMPT_V2 } from './protocol-prompt.ts';
+import { findProjectAssignment, projectAssignmentsSheetId } from './protocol-assignments.ts';
 
 export type ProtocolQuery = {
   userId: number;
@@ -69,6 +70,14 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
   if (!Number.isSafeInteger(query.userId) || query.userId < 1 || !query.role.trim() || !query.question.trim() || query.question.length > 2000 || query.channel !== 'superagente') throw new Error('Consulta inválida');
   const [corpus, names, roles, topics] = await Promise.all([dependencies.loadCorpus(), dependencies.clientNames(), dependencies.roles(), dependencies.topics?.() || Promise.resolve([])]);
   if (!corpus) throw new Error('El corpus de protocolos aún no está disponible');
+  const modelFiles = corpus.files.filter(file => file.id !== projectAssignmentsSheetId);
+  const modelCorpus = {
+    ...corpus,
+    id: createHash('sha256').update(JSON.stringify(modelFiles.map(file => [file.id, file.revision, file.sections]))).digest('hex'),
+    createdAt: modelFiles.map(file => file.modifiedTime).sort().at(-1) || corpus.createdAt,
+    files: modelFiles,
+    documents: modelFiles.map(file => ({ id: file.id, sections: file.sections })),
+  };
   const masked = maskProtocolQuestion(query.question.trim(), { clientNames: names });
   if (containsUnmaskedPersonalData(masked)) throw new Error('No se puede enviar la consulta porque contiene datos personales sin enmascarar');
   const roleName = fallbackRole(roles);
@@ -83,10 +92,25 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
     return buildResult(log);
   }
 
+  const assignmentsFile = corpus.files.find(file => file.id === projectAssignmentsSheetId);
+  const assignment = assignmentsFile && findProjectAssignment(masked, assignmentsFile);
+  if (assignment && assignmentsFile) {
+    const sources = assignment.sections.map(section => ({ doc_id: assignmentsFile.id, name: assignmentsFile.name, modifiedTime: assignmentsFile.modifiedTime, revision: assignmentsFile.revision, seccion: section.ref, cita: section.text }));
+    const log: ProtocolLog = { ...common, answer: assignment.answer, classification: assignment.complete ? 'resuelta' : 'no_urgente', reason: assignment.complete ? null : 'sin_protocolo', area: 'responsables_y_escalado', topic: assignment.topic, sources, derivationRole: assignment.complete ? null : roleName, contradiction: null, validation: 'ok', model: null, inputTokens: null, outputTokens: null, latencyMs: (dependencies.now || Date.now)() - start, error: null };
+    await dependencies.save(log);
+    return buildResult(log);
+  }
+  if (!modelFiles.length) {
+    const answer = unansweredText('sin_protocolo', roleName || 'tu responsable');
+    const log: ProtocolLog = { ...common, answer, classification: 'no_urgente', reason: 'sin_protocolo', area: 'otro', topic: 'consulta sin respuesta', sources: [], derivationRole: roleName, contradiction: null, validation: 'ok', model: null, inputTokens: null, outputTokens: null, latencyMs: (dependencies.now || Date.now)() - start, error: null };
+    await dependencies.save(log);
+    return buildResult(log);
+  }
+
   const controlQuote = 'puede mover los niveles 2 y 3 si mantiene las fechas del nivel 1, las dependencias, los materiales y los compromisos con otros responsables';
   const manualQuote = 'Solo Alex puede moverlos PMC solo notifica desviación';
-  const control = corpus.files.flatMap(file => file.sections.map(section => ({ file, section }))).find(item => item.section.text.includes(controlQuote));
-  const manual = corpus.files.flatMap(file => file.sections.map(section => ({ file, section }))).find(item => item.section.text.replace(/\s+/gu, ' ').includes(manualQuote));
+  const control = modelFiles.flatMap(file => file.sections.map(section => ({ file, section }))).find(item => item.section.text.includes(controlQuote));
+  const manual = modelFiles.flatMap(file => file.sections.map(section => ({ file, section }))).find(item => item.section.text.replace(/\s+/gu, ' ').includes(manualQuote));
   const conflictingDates = Boolean(control && manual && control.file.id !== manual.file.id);
   if (control && manual && conflictingDates && /\b(?:nivel(?:es)?\s*[23]|n[23])\b/iu.test(masked) && /mover|cambiar|reprogramar|fecha|plazo/iu.test(masked)) {
       const derivationRole = roles.find(role => /operaciones/iu.test(role.name))?.name || fallbackRole(roles);
@@ -97,7 +121,7 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
       const answer = `Los protocolos no coinciden sobre quién puede cambiar los plazos de los niveles 2 y 3: «${control.file.name}» permite al PMC moverlos bajo condiciones; «${manual.file.name}» indica que solo Alex puede moverlos. Confírmalo con ${derivationRole || 'el responsable'} antes de cambiar la fecha.`;
       const contradiction = { doc_a: control.file.id, doc_b: manual.file.id, descripcion: 'Quién puede mover los plazos de los niveles 2 y 3 de obra' };
       if (containsUnmaskedPersonalData(answer) || maskProtocolQuestion(answer, { clientNames: names }) !== answer) throw new Error('La respuesta contiene datos personales');
-      validateProtocolAnswer({ clasificacion: 'no_urgente', respuesta: answer, fuentes: sources.map(({ doc_id, seccion, cita }) => ({ doc_id, seccion, cita })), motivo_no_respuesta: null, cargo_derivacion: derivationRole, contradiccion: contradiction, area: 'responsables_y_escalado', tema: 'cambio de plazos en obra' }, corpus.documents, { roles: roles.map(role => role.name) });
+      validateProtocolAnswer({ clasificacion: 'no_urgente', respuesta: answer, fuentes: sources.map(({ doc_id, seccion, cita }) => ({ doc_id, seccion, cita })), motivo_no_respuesta: null, cargo_derivacion: derivationRole, contradiccion: contradiction, area: 'responsables_y_escalado', tema: 'cambio de plazos en obra' }, modelCorpus.documents, { roles: roles.map(role => role.name) });
       const log: ProtocolLog = { ...common, answer, classification: 'no_urgente', reason: null, area: 'responsables_y_escalado', topic: 'cambio de plazos en obra', sources, derivationRole, contradiction, validation: 'ok', model: null, inputTokens: null, outputTokens: null, latencyMs: (dependencies.now || Date.now)() - start, error: null };
       await dependencies.save(log);
       return buildResult(log);
@@ -107,9 +131,9 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
   const system = PROTOCOL_SYSTEM_PROMPT_V2
     .replace('{{SINONIMOS}}', 'Incidencia = Alerta (Club LYN); PM = PMC; ClickUp en documentos antiguos = Club LYN para la gestión de tareas.')
     .replace('{{ORGANIGRAMA}}', roles.map(role => `${xml(role.name)}: ${xml(role.person || 'sin asignar')}`).join('\n'))
-    .replace('<corpus version="{{CORPUS_VERSION_ID}}" fecha="{{CORPUS_FECHA}}">\n{{CORPUS}}\n</corpus>', protocolCorpusPrompt(corpus));
+    .replace('<corpus version="{{CORPUS_VERSION_ID}}" fecha="{{CORPUS_FECHA}}">\n{{CORPUS}}\n</corpus>', protocolCorpusPrompt(modelCorpus));
   const user = `<usuario cargo="${xml(query.role)}" />\n<fecha_hora zona="Europe/Madrid">${new Intl.DateTimeFormat('es-ES', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Madrid' }).format(new Date())}</fecha_hora>\n<temas_existentes>${topics.map(xml).join('\n')}</temas_existentes>\n<pregunta>${xml(masked)}</pregunta>`;
-  if (containsUnmaskedPersonalData(user) || maskProtocolQuestion(user, { clientNames: names }) !== user || corpus.files.some(file => containsUnmaskedPersonalData(file.name) || maskProtocolQuestion(file.name, { clientNames: names }) !== file.name || file.sections.some(section => containsUnmaskedPersonalData(section.text) || maskProtocolQuestion(section.text, { clientNames: names }) !== section.text))) throw new Error('El contexto contiene datos personales sin enmascarar');
+  if (containsUnmaskedPersonalData(user) || maskProtocolQuestion(user, { clientNames: names }) !== user || modelFiles.some(file => containsUnmaskedPersonalData(file.name) || maskProtocolQuestion(file.name, { clientNames: names }) !== file.name || file.sections.some(section => containsUnmaskedPersonalData(section.text) || maskProtocolQuestion(section.text, { clientNames: names }) !== section.text))) throw new Error('El contexto contiene datos personales sin enmascarar');
   let lastError = 'Respuesta no verificable';
   let modelUnavailable = false;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -118,7 +142,7 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
     try {
       generation = await dependencies.generate(system, attempt ? `${user}\nLa respuesta anterior no pasó la validación (${lastError}). Corrige el JSON: cada cita debe ser literal, tener entre 5 y 25 palabras y corresponder al documento y sección indicados. El cargo_derivacion debe ser uno de: ${roles.map(role => xml(role.name)).join(', ')}.` : user);
       const candidate: unknown = JSON.parse(generation.text);
-      validateProtocolAnswer(candidate, corpus.documents, { roles: roles.map(role => role.name) });
+      validateProtocolAnswer(candidate, modelCorpus.documents, { roles: roles.map(role => role.name) });
       parsed = candidate;
       if (conflictingDates && parsed.contradiccion === null && /(?:mover|mueve|cambiar|cambia|reprogramar).{0,100}(?:nivel(?:es)?\s*[23]|tarea(?:s)?\s+de\s+nivel\s*[23])/iu.test(parsed.respuesta)) throw new Error('Hay protocolos contradictorios sobre mover tareas de nivel 2 o 3; no presentes una sola versión como definitiva');
       const topic = normalizeTopic(parsed.tema);
@@ -131,7 +155,7 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
       continue;
     }
     const sources = parsed.fuentes.map(source => {
-      const file = corpus.files.find(item => item.id === source.doc_id)!;
+      const file = modelFiles.find(item => item.id === source.doc_id)!;
       return { ...source, name: file.name, modifiedTime: file.modifiedTime, revision: file.revision };
     });
     const answer = parsed.motivo_no_respuesta === null ? parsed.respuesta : unansweredText(parsed.motivo_no_respuesta, parsed.cargo_derivacion!);
