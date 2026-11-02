@@ -97,6 +97,7 @@ export async function resolveMeetingRecording(source: RecordingSource, files: Re
 export function createMeetingRecordingService(pool: Pick<Pool, 'query'>, dependencies: {
   token: (connectionId: string) => Promise<string>;
   drive: (path: string, token: string) => Promise<Response>;
+  alternateTokens?: (connectionId: string) => Promise<string[]>;
   events?: typeof calendarEventsForDate;
   changed?: (artifactId: string) => void;
 }) {
@@ -120,7 +121,18 @@ export function createMeetingRecordingService(pool: Pick<Pool, 'query'>, depende
         ? await (dependencies.events || calendarEventsForDate)(token, source.meeting_date) : [];
       const getFile = async (fileId: string) => {
         const params = new URLSearchParams({ fields: 'id,name,mimeType,trashed', supportsAllDrives: 'true' });
-        return (await dependencies.drive(`/files/${encodeURIComponent(fileId)}?${params}`, token)).json() as Promise<RecordingFile>;
+        const path = `/files/${encodeURIComponent(fileId)}?${params}`;
+        try {
+          return await (await dependencies.drive(path, token)).json() as RecordingFile;
+        } catch (error) {
+          if (!/Google Drive respondió (403|404)$/.test((error as Error).message)) throw error;
+          for (const alternativeToken of await dependencies.alternateTokens?.(source.connection_id) || []) {
+            try {
+              return await (await dependencies.drive(path, alternativeToken)).json() as RecordingFile;
+            } catch { continue; }
+          }
+          throw error;
+        }
       };
       let state = await resolveMeetingRecording(source, videos.rows, events, getFile, explicitIds);
       if (state.recording_status === 'none') {
