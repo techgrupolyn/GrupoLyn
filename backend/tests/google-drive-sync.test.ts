@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { iterateGoogleDriveFolderFiles, type GoogleDriveFile } from '../google-drive-sync.ts';
+import { createMultiAccountDriveRequest, iterateGoogleDriveFolderFiles, type GoogleDriveFile } from '../google-drive-sync.ts';
 
 const folder = (id: string): GoogleDriveFile => ({ id, name: id, mimeType: 'application/vnd.google-apps.folder' });
 const document = (id: string): GoogleDriveFile => ({ id, name: id, mimeType: 'application/vnd.google-apps.document' });
@@ -12,6 +12,43 @@ const collect = async (request: (path: string, keys?: string) => Promise<Respons
 };
 
 describe('Recorrido completo de Google Drive', () => {
+  it('resuelve destinos inaccesibles con otra cuenta y reutiliza esa cuenta para leerlos', async () => {
+    const primary = vi.fn().mockResolvedValueOnce(json(folder('root')))
+      .mockResolvedValueOnce(json({ files: [shortcut('link', 'video')] }))
+      .mockRejectedValueOnce(new Error('Google Drive respondió 404'));
+    const alternative = vi.fn().mockResolvedValueOnce(json({ id: 'video', name: 'video.mp4', mimeType: 'video/mp4' }))
+      .mockResolvedValueOnce(new Response('contenido'));
+    const request = createMultiAccountDriveRequest(primary, [alternative]);
+    expect((await collect(request)).map((file) => file.id)).toEqual(['video']);
+    expect((await request('/files/video?alt=media')).status).toBe(200);
+    expect(primary).toHaveBeenCalledTimes(3);
+    expect(alternative).toHaveBeenCalledTimes(2);
+  });
+
+  it('no prueba otras cuentas para archivos ordinarios ni para fallos ajenos a permisos', async () => {
+    const alternative = vi.fn();
+    const missing = createMultiAccountDriveRequest(vi.fn().mockRejectedValue(new Error('Google Drive respondió 404')), [alternative]);
+    await expect(missing('/files/document')).rejects.toThrow('404');
+    const outage = createMultiAccountDriveRequest(vi.fn().mockRejectedValue(new Error('Google Drive respondió 500')), [alternative]);
+    await expect(outage('/files/video', undefined, true)).rejects.toThrow('500');
+    expect(alternative).not.toHaveBeenCalled();
+  });
+
+  it('lista una carpeta destino con la cuenta que pudo abrir el acceso directo', async () => {
+    const primary = vi.fn().mockResolvedValueOnce(json(shortcut('root', 'shared-folder')))
+      .mockRejectedValueOnce(new Error('Google Drive respondió 404'));
+    const alternative = vi.fn().mockResolvedValueOnce(json(folder('shared-folder')))
+      .mockResolvedValueOnce(json({ files: [folder('nested'), document('inside')] }))
+      .mockResolvedValueOnce(json({ files: [document('deeper')] }))
+      .mockResolvedValueOnce(new Response('contenido'));
+    const request = createMultiAccountDriveRequest(primary, [alternative]);
+    const files = await collect(request);
+    expect(files.map((file) => file.id)).toEqual(['inside', 'deeper']);
+    expect((await request('/files/inside?alt=media')).status).toBe(200);
+    expect(primary).toHaveBeenCalledTimes(2);
+    expect(alternative).toHaveBeenCalledTimes(4);
+  });
+
   it('recorre más de 1000 archivos, páginas vacías y subcarpetas sin truncar', async () => {
     const request = vi.fn().mockResolvedValueOnce(json(folder('root')))
       .mockResolvedValueOnce(json({ files: Array.from({ length: 1000 }, (_, index) => document(`file-${index}`)), nextPageToken: 'second' }))
@@ -45,6 +82,7 @@ describe('Recorrido completo de Google Drive', () => {
     expect(params.get('driveId')).toBe('shared-drive');
     expect(request.mock.calls[1][1]).toBe('root/root-key');
     expect(request.mock.calls[2][1]).toBe('doc/doc-key');
+    expect(request.mock.calls[2][2]).toBe(true);
   });
 
   it('señala búsqueda incompleta sin perder los archivos que sí puede importar', async () => {

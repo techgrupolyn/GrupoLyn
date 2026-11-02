@@ -15,11 +15,44 @@ export type GoogleDriveFile = {
 };
 
 type DrivePage = { files?: GoogleDriveFile[]; nextPageToken?: string; incompleteSearch?: boolean };
-type DriveRequest = (path: string, resourceKeys?: string) => Promise<Response>;
+type DriveRequest = (path: string, resourceKeys?: string, shortcutTarget?: boolean) => Promise<Response>;
+type AccountRequest = (path: string, resourceKeys?: string) => Promise<Response>;
 type WalkOptions = { pageSize: number; enabled: () => Promise<boolean>; onIssue: (message: string) => void };
 const folderMime = 'application/vnd.google-apps.folder';
 const shortcutMime = 'application/vnd.google-apps.shortcut';
 const fileFields = 'id,name,mimeType,modifiedTime,createdTime,size,md5Checksum,webViewLink,parents,description,driveId,resourceKey,shortcutDetails(targetId,targetResourceKey)';
+
+export function createMultiAccountDriveRequest(primary: AccountRequest, alternatives: AccountRequest[]): DriveRequest {
+  const targets = new Map<string, AccountRequest>();
+  const rememberChildren = async (response: Response, account: AccountRequest, path: string): Promise<Response> => {
+    if (path.startsWith('/files?')) {
+      const page = await response.clone().json() as DrivePage;
+      for (const file of page.files || []) if (file.id) targets.set(file.id, account);
+    }
+    return response;
+  };
+  return async (path, resourceKeys, shortcutTarget = false) => {
+    const fileMatch = /^\/files\/([^/?]+)/.exec(path);
+    const fileId = fileMatch ? decodeURIComponent(fileMatch[1]) : null;
+    const parentQuery = path.startsWith('/files?') ? new URLSearchParams(path.split('?')[1]).get('q') : null;
+    const parentId = /^'([^']+)' in parents/.exec(parentQuery || '')?.[1];
+    const account = (fileId && targets.get(fileId)) || (parentId && targets.get(parentId));
+    if (account) return rememberChildren(await account(path, resourceKeys), account, path);
+    try {
+      return await primary(path, resourceKeys);
+    } catch (error) {
+      if (!shortcutTarget || !fileId || !/Google Drive respondió (403|404)$/.test((error as Error).message)) throw error;
+      for (const alternative of alternatives) {
+        try {
+          const response = await alternative(path, resourceKeys);
+          targets.set(fileId, alternative);
+          return rememberChildren(response, alternative, path);
+        } catch { continue; }
+      }
+      throw error;
+    }
+  };
+}
 
 export async function* iterateGoogleDriveFolderFiles(folderId: string, request: DriveRequest, options: WalkOptions): AsyncGenerator<GoogleDriveFile> {
   const visitedFolders = new Set<string>();
@@ -38,7 +71,7 @@ export async function* iterateGoogleDriveFolderFiles(folderId: string, request: 
       if (!target) throw new Error(`Acceso directo sin destino: ${file.id}`);
       const key = file.shortcutDetails?.targetResourceKey;
       if (!metadata.has(target)) {
-        const response = await request(`/files/${encodeURIComponent(target)}?${new URLSearchParams({ fields: fileFields, supportsAllDrives: 'true' })}`, key ? `${target}/${key}` : undefined);
+        const response = await request(`/files/${encodeURIComponent(target)}?${new URLSearchParams({ fields: fileFields, supportsAllDrives: 'true' })}`, key ? `${target}/${key}` : undefined, true);
         const resolved = await response.json() as GoogleDriveFile;
         if (resolved.id !== target || !resolved.mimeType) throw new Error(`Metadatos de destino inválidos: ${target}`);
         metadata.set(target, { ...resolved, resourceKey: resolved.resourceKey || key });

@@ -985,6 +985,39 @@ describe.skipIf(!databaseUrl)('QA reuniones contra PostgreSQL aislado', () => {
     }
   });
 
+  it('dos cuentas que ven el mismo archivo conservan una sola reunión importada', async () => {
+    const secondConnection = randomUUID();
+    const secondFolder = randomUUID();
+    const sharedFile = `qa-shared-${randomUUID()}`;
+    await server.pool.query(`INSERT INTO google_drive_connections (id, google_email, access_token_encrypted, refresh_token_encrypted, expires_at, created_by) SELECT $1, $2, access_token_encrypted, refresh_token_encrypted, expires_at, 'qa' FROM google_drive_connections WHERE id=$3`, [secondConnection, `${secondConnection}@example.test`, connectionId]);
+    await server.pool.query(`INSERT INTO google_drive_folders (id, connection_id, google_folder_id, label, created_by) VALUES ($1::uuid, $2, $1::text, 'Segunda cuenta QA', 'qa')`, [secondFolder, secondConnection]);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith(`/files/${folderId}`) || url.pathname.endsWith(`/files/${secondFolder}`)) {
+        return new Response(JSON.stringify({ id: url.pathname.split('/').at(-1), mimeType: 'application/vnd.google-apps.folder' }));
+      }
+      if (url.pathname.endsWith('/files')) {
+        return new Response(JSON.stringify({ files: [{ id: sharedFile, name: 'Grabación compartida QA.mp4', mimeType: 'video/mp4', modifiedTime: '2026-10-01T12:00:00Z' }] }));
+      }
+      throw new Error(`Solicitud inesperada: ${url.pathname}`);
+    });
+    try {
+      const first = await request(server.app).post(`/api/google-drive/folders/${folderId}/sync`).set('Authorization', authorization).send({});
+      const second = await request(server.app).post(`/api/google-drive/folders/${secondFolder}/sync`).set('Authorization', authorization).send({});
+      expect(first.status, JSON.stringify(first.body)).toBe(200);
+      expect(second.status, JSON.stringify(second.body)).toBe(200);
+      expect(first.body.imported).toBe(1);
+      expect(second.body.imported).toBe(0);
+      const artifacts = await server.pool.query('SELECT id FROM google_drive_artifacts WHERE google_file_id=$1', [sharedFile]);
+      expect(artifacts.rows).toHaveLength(1);
+    } finally {
+      fetchMock.mockRestore();
+      await server.pool.query('DELETE FROM google_drive_artifacts WHERE google_file_id=$1', [sharedFile]);
+      await server.pool.query('DELETE FROM google_drive_folders WHERE id=$1', [secondFolder]);
+      await server.pool.query('DELETE FROM google_drive_connections WHERE id=$1', [secondConnection]);
+    }
+  });
+
   it('la migración puede ejecutarse de nuevo sin perder avisos ni versiones', async () => {
     const versions = await server.pool.query('SELECT count(*) FROM meeting_review_versions WHERE artifact_id = $1', [artifactId]);
     await server.ensureDatabaseSchema();

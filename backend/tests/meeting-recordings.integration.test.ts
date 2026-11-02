@@ -68,6 +68,21 @@ describe.skipIf(!databaseUrl)('Grabaciones en PostgreSQL QA local', () => {
       expect(drive.mock.calls.every(([path]) => path.startsWith('/files/') && !path.includes('permissions') && !path.includes('alt=media'))).toBe(true);
     } finally { warning.mockRestore(); }
   });
+  it('verifica un vídeo con la segunda cuenta cuando la primera recibe 404', async () => {
+    await client.query("UPDATE meeting_reviews SET recording_file_id=NULL,recording_status='pending',recording_checked_at=NULL");
+    await client.query("INSERT INTO google_drive_artifacts VALUES('video','video123456','Dana (2026-10-19 08:30 GMT-04:00) – Recording.mp4','connection','folder','recording','video/mp4') ON CONFLICT (id) DO NOTHING");
+    const alternateTokens = vi.fn().mockResolvedValue(['other-token']);
+    const crossAccountDrive = vi.fn(async (path: string, accessToken: string) => {
+      if (!path.includes('/files/video123456?')) throw new Error(`Ruta inesperada: ${path}`);
+      if (accessToken === 'test-token') throw new Error('Google Drive respondió 404');
+      return new Response(JSON.stringify({ id: 'video123456', mimeType: 'video/mp4', name: 'Vídeo' }));
+    });
+    const crossAccountService = createMeetingRecordingService(client, { token, drive: crossAccountDrive, events, alternateTokens });
+    await crossAccountService.refresh('notes');
+    expect((await client.query('SELECT recording_file_id,recording_status FROM meeting_reviews')).rows[0]).toEqual({ recording_file_id: 'video123456', recording_status: 'available' });
+    expect(alternateTokens).toHaveBeenCalledWith('connection');
+    expect(crossAccountDrive.mock.calls.map((call) => call[1])).toEqual(['test-token', 'other-token']);
+  });
   it('guarda el enlace explícito del documento aunque difieran los títulos de notas y vídeo', async () => {
     await client.query("UPDATE meeting_reviews SET recording_file_id=NULL,recording_status='pending',recording_checked_at=NULL; UPDATE google_drive_artifacts SET mime_type='application/vnd.google-apps.document',name='Reunión iniciada a las 2026/10/19 08:30 GMT-04:00 - Notas de Gemini' WHERE id='notes'");
     events.mockClear();
