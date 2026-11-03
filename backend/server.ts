@@ -37,7 +37,7 @@ import { syncProtocolDrive } from './protocol-drive.ts';
 import { callProtocolGemini } from './protocol-gemini.ts';
 import { canReadProtocolLog, canReadProtocolReport, hasClubAdminRole } from './protocol-privacy.ts';
 import { loadProtocolReport, parseProtocolReportFilters } from './protocol-report.ts';
-import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, ensureProtocolSchema, listProtocolQueries, loadProtocolCorpus, loadProtocolSyncReport, loadProtocolVisionCache, pruneProtocolQueries, recordProtocolFeedback, saveProtocolCorpus, saveProtocolQuery, saveProtocolSyncReport, saveProtocolVisionCache } from './protocol-storage.ts';
+import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, ensureProtocolSchema, listProtocolQueries, loadLastSuccessfulProtocolSync, loadProtocolCorpus, loadProtocolSyncReport, loadProtocolVisionCache, pruneProtocolQueries, recordProtocolFeedback, saveProtocolCorpus, saveProtocolQuery, saveProtocolSyncReport, saveProtocolVisionCache } from './protocol-storage.ts';
 
 const PORT = Number(process.env.PORT || 3003);
 const BIND_HOST = process.env.BIND_HOST?.trim() || '127.0.0.1';
@@ -8944,10 +8944,10 @@ function runProtocolSync(): Promise<unknown> {
 app.get('/api/protocolos/estado', requireProtocolUser, async (_req: Request, res: Response) => {
   if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.json({ enabled: false, versionId: null, updatedAt: null, lastSyncedAt: null, fileCount: 0, canManage: false, canReadQueries: false, canReadReport: false, report: null });
   try {
-    const [corpus, report] = await Promise.all([loadProtocolCorpus(pool), loadProtocolSyncReport(pool)]);
+    const [corpus, report, lastSyncedAt] = await Promise.all([loadProtocolCorpus(pool), loadProtocolSyncReport(pool), loadLastSuccessfulProtocolSync(pool)]);
     const session = res.locals.ceoSession as CeoSession;
     const canManage = isCeoAdministratorRole(session.rol);
-    res.json({ enabled: true, versionId: corpus?.id || null, updatedAt: corpus?.createdAt || null, lastSyncedAt: report && !report.error ? report.checkedAt : null, fileCount: corpus?.files.length || 0, canManage, canReadQueries: canReadProtocolLog(session.rol) || Boolean(res.locals.protocolClubAdmin), canReadReport: canReadProtocolReport(session.rol) || Boolean(res.locals.protocolClubAdmin), report: canManage ? report : null });
+    res.json({ enabled: true, versionId: corpus?.id || null, updatedAt: corpus?.createdAt || null, lastSyncedAt, fileCount: corpus?.files.length || 0, canManage, canReadQueries: canReadProtocolLog(session.rol) || Boolean(res.locals.protocolClubAdmin), canReadReport: canReadProtocolReport(session.rol) || Boolean(res.locals.protocolClubAdmin), report: canManage ? report : null });
   } catch {
     res.status(503).json({ error: 'No se pudo consultar el estado de los protocolos' });
   }

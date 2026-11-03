@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
 import type { ProtocolLog } from '../protocol-agent.ts';
-import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, listProtocolQueries, loadProtocolVisionCache, pruneProtocolQueries, saveProtocolQuery, saveProtocolVisionCache } from '../protocol-storage.ts';
+import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, listProtocolQueries, loadLastSuccessfulProtocolSync, loadProtocolVisionCache, pruneProtocolQueries, saveProtocolQuery, saveProtocolVisionCache } from '../protocol-storage.ts';
 
 describe('registro de protocolos', () => {
+  it('recupera la última sincronización correcta aunque el intento más reciente haya fallado', async () => {
+    const checkedAt = new Date('2026-11-02T08:00:00Z');
+    const query = vi.fn().mockResolvedValue({ rows: [{ checked_at: checkedAt }] });
+    expect(await loadLastSuccessfulProtocolSync({ query } as unknown as Pool)).toBe(checkedAt.toISOString());
+    expect(query.mock.calls[0][0]).toContain("informe->>'error' IS NULL");
+    expect(query.mock.calls[0][0]).toContain('ORDER BY id DESC LIMIT 1');
+  });
+
   it('pagina de diez en diez y devuelve el total del historial', async () => {
     const query = vi.fn().mockResolvedValueOnce({ rows: [{ id: 'consulta-11' }] }).mockResolvedValueOnce({ rows: [{ total: '23' }] });
     const pool = { query } as unknown as Pool;

@@ -141,6 +141,22 @@ describe('agente de protocolos', () => {
     expect(result.answer).toContain('No encuentro una respuesta');
     expect(result.answer).not.toContain('500');
     expect(services.logs[0].answer).toBe(result.answer);
+    expect(services.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('reintenta una omisión cuando una frase del corpus coincide claramente con la pregunta', async () => {
+    const quoted = 'Atención al Cliente organiza las reuniones quincenales en obra con el cliente y controla los compromisos acordados.';
+    const services = dependencies([
+      JSON.stringify({ clasificacion: 'no_urgente', respuesta: 'No encuentro una respuesta.', fuentes: [], motivo_no_respuesta: 'sin_protocolo', cargo_derivacion: 'PMC', contradiccion: null, area: 'revisiones_y_reuniones', tema: 'reuniones con cliente' }),
+      JSON.stringify({ clasificacion: 'resuelta', respuesta: 'Atención al Cliente organiza las reuniones quincenales en obra con el cliente.', fuentes: [{ doc_id: 'reuniones', seccion: 'página 1', cita: 'Atención al Cliente organiza las reuniones quincenales' }], motivo_no_respuesta: null, cargo_derivacion: null, contradiccion: null, area: 'revisiones_y_reuniones', tema: 'reuniones con cliente' }),
+    ]);
+    services.loadCorpus = async () => createProtocolCorpus([{ id: 'reuniones', name: 'Manual de Responsables', mimeType: 'application/pdf', modifiedTime: '2026-11-02T00:00:00Z', revision: '1', warnings: [], sections: [{ ref: 'página 1', text: quoted }] }], 1000);
+    const result = await askProtocolAgent({ userId: 1, role: 'PMC', question: '¿Quién organiza las reuniones quincenales en obra con el cliente?', channel: 'superagente' }, services);
+    expect(result.classification).toBe('resuelta');
+    expect(result.validation).toBe('reintento');
+    expect(services.generate).toHaveBeenCalledTimes(2);
+    expect(services.generate.mock.calls[1][1]).toContain('Manual de Responsables');
+    expect(services.logs).toHaveLength(1);
   });
 
   it('atiende el riesgo de seguridad sin esperar al modelo', async () => {

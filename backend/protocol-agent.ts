@@ -54,6 +54,22 @@ function fallbackRole(roles: Array<{ name: string; person?: string }>): string |
   return roles.find(role => role.name.toLowerCase() === 'pmc')?.name || roles.find(role => /direcci[oó]n/iu.test(role.name))?.name || roles[0]?.name || null;
 }
 
+function directProtocolEvidence(question: string, corpus: ProtocolCorpus): string | null {
+  const words = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/gu, '').toLowerCase().match(/[a-z]{4,}/gu) || [];
+  const terms = [...new Set(words(question).filter(word => !['como', 'cual', 'quien', 'donde', 'cuando', 'para', 'esta', 'este', 'obra', 'cliente'].includes(word)))];
+  if (terms.length < 3) return null;
+  for (const file of corpus.files) {
+    for (const section of file.sections) {
+      for (const sentence of section.text.split(/(?<=[.!?])\s+|\n/gu)) {
+        const found = new Set(words(sentence));
+        if (terms.filter(term => found.has(term)).length < Math.max(3, Math.ceil(terms.length * 0.6))) continue;
+        return `${file.name}, ${section.ref}: «${sentence.trim().slice(0, 300)}»`;
+      }
+    }
+  }
+  return null;
+}
+
 function safetyRisk(question: string): boolean {
   return /olor a gas|fuga de gas|hay fuego|se incendia|incendio en|electrocuci[oó]n|descarga el[eé]ctrica|cable con corriente|persona herida|persona lesionada|alguien se ha ca[ií]do|persona se cay[oó]|ca[ií]da de una persona|riesgo de derrumbe|estructura se cae|fuga de agua|inundaci[oó]n activa/iu.test(question);
 }
@@ -144,6 +160,13 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
       const candidate: unknown = JSON.parse(generation.text);
       validateProtocolAnswer(candidate, modelCorpus.documents, { roles: roles.map(role => role.name) });
       parsed = candidate;
+      if (attempt === 0 && parsed.motivo_no_respuesta === 'sin_protocolo') {
+        const evidence = directProtocolEvidence(masked, modelCorpus);
+        if (evidence) {
+          lastError = `Hay una posible coincidencia literal en ${evidence}. Comprueba si realmente responde la pregunta y cita solo texto verificable; si no, conserva sin_protocolo`;
+          continue;
+        }
+      }
       if (conflictingDates && parsed.contradiccion === null && /(?:mover|mueve|cambiar|cambia|reprogramar).{0,100}(?:nivel(?:es)?\s*[23]|tarea(?:s)?\s+de\s+nivel\s*[23])/iu.test(parsed.respuesta)) throw new Error('Hay protocolos contradictorios sobre mover tareas de nivel 2 o 3; no presentes una sola versión como definitiva');
       const topic = normalizeTopic(parsed.tema);
       if (topic.split(' ').length < 2 || /\d/gu.test(topic) || maskProtocolQuestion(topic, { clientNames: names }) !== topic) throw new Error('Tema no normalizado');

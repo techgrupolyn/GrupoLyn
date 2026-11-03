@@ -84,6 +84,15 @@ export async function loadProtocolSyncReport(pool: Pool): Promise<ProtocolSyncRe
   return result.rows[0]?.informe || null;
 }
 
+export async function loadLastSuccessfulProtocolSync(pool: Pool): Promise<string | null> {
+  const result = await pool.query<{ checked_at: Date }>(
+    `SELECT comprobado_en AS checked_at FROM agente_protocolos_syncs
+     WHERE informe->>'error' IS NULL AND informe->>'versionId' IS NOT NULL
+     ORDER BY id DESC LIMIT 1`,
+  );
+  return result.rows[0]?.checked_at?.toISOString() || null;
+}
+
 export async function loadProtocolCorpus(pool: Pool): Promise<ProtocolCorpus | null> {
   const result = await pool.query<{ id: string; creado_en: Date; archivos: ProtocolCorpus['files']; tokens_estimados: number }>(
     'SELECT id, creado_en, archivos, tokens_estimados FROM agente_protocolos_corpus WHERE activo = TRUE LIMIT 1',
