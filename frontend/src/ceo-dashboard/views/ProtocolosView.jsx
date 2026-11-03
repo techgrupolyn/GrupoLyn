@@ -28,11 +28,10 @@ export default function ProtocolosView() {
       if (!active) return;
       setStatus(nextStatus);
       setError('');
-      clearInterval(retry);
     }).catch(() => {
       if (active) setError('No se pudo comprobar el estado de los protocolos. Reintentando conexión…');
     });
-    const retry = setInterval(checkStatus, 5000);
+    const retry = setInterval(checkStatus, 60_000);
     void checkStatus();
     return () => { active = false; clearInterval(retry); };
   }, []);
@@ -67,16 +66,18 @@ export default function ProtocolosView() {
     finally { setSyncing(false); }
   };
 
-  const stale = status?.updatedAt && (!status.lastSyncedAt || Date.now() - new Date(status.lastSyncedAt).getTime() > 24 * 60 * 60 * 1000);
+  const lastSyncTime = status?.lastSyncedAt ? new Date(status.lastSyncedAt).getTime() : NaN;
+  const stale = Boolean(status?.versionId) && (!Number.isFinite(lastSyncTime) || Date.now() - lastSyncTime > 24 * 60 * 60 * 1000);
 
   return <section className="ceo-page mx-auto max-w-4xl space-y-6 p-4 sm:p-6 xl:p-8">
     <header className="border-b border-[#2E2E2E] pb-5">
       <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#737373]">Método LYN</p>
       <h2 className="mt-2 font-display text-2xl text-[#F2F2F2]">Agente de protocolos</h2>
       <p className="mt-2 text-sm text-[#BFBFBF]">Pregunta primero aquí cómo se trabaja. Las respuestas usan solo protocolos vigentes y muestran su fuente. {isPreview ? 'Esta prueba solo guarda consultas temporalmente en memoria.' : 'Las consultas se registran sin datos personales.'}</p>
+      {status?.versionId && <p className="mt-2 text-xs text-[#999999]">Versión <code>{status.versionId.slice(0, 12)}</code> · Última sincronización correcta: {Number.isFinite(lastSyncTime) ? <time dateTime={status.lastSyncedAt}>{new Date(lastSyncTime).toLocaleString('es-ES')}</time> : 'sin confirmar'}</p>}
     </header>
     {status && (!status.enabled || !status.versionId) && <p role="status" className="rounded border border-amber-300/30 bg-amber-300/5 p-4 text-sm text-amber-100">El agente aún no tiene un corpus válido. Tech debe completar la sincronización de la carpeta Protocolos.</p>}
-    {stale && <p role="status" className="rounded border border-amber-300/30 p-4 text-sm text-amber-100">Los protocolos no se han actualizado en más de 24 horas.</p>}
+    {stale && <p role="status" className="rounded border border-amber-300/30 p-4 text-sm text-amber-100">La última sincronización correcta de los protocolos tiene más de 24 horas o no se ha podido confirmar. La versión visible puede estar desactualizada.</p>}
     {status?.canManage && <details className="rounded border border-[#2E2E2E] bg-[#141414] p-4 text-xs text-[#BFBFBF]"><summary className="cursor-pointer font-semibold text-[#F2F2F2]">Informe de sincronización · Solo Tech/Dirección</summary><div className="mt-4 space-y-3">{status.report ? <><p>Última revisión: {new Date(status.report.checkedAt).toLocaleString('es-ES')}</p>{status.report.error && <p className="text-amber-200">{status.report.error}</p>}<ul className="space-y-2">{status.report.files.map(file => <li key={file.id} className="rounded border border-[#2E2E2E] p-2"><strong>{file.name}</strong> · {file.status} · {file.sections} secciones · {file.tables} tablas · ~{file.tokens} tokens{file.warnings.map((warning, index) => <p key={index} className="mt-1 text-amber-200">{warning}</p>)}</li>)}</ul></> : <p>Aún no hay sincronizaciones registradas.</p>}<button type="button" onClick={sync} disabled={syncing || !status.enabled} className="rounded border border-[#737373] px-3 py-2 disabled:opacity-40">{syncing ? 'Sincronizando…' : 'Sincronizar ahora'}</button></div></details>}
     <form onSubmit={ask} className="space-y-3">
       <label htmlFor="protocol-question" className="block text-sm font-medium text-[#F2F2F2]">Tu duda</label>

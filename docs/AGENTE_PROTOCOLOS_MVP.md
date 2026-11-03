@@ -1,6 +1,6 @@
 # Agente de Protocolos · MVP local
 
-El agente usa solo los archivos que están **directamente** en la carpeta Drive `Protocolos` (`14oB0TKbGyvEDMti2JgjXIep54-ZcMbc_`). No recorre `Plantillas Quantifier` ni `_Obsoletos`. Alex mantiene los documentos; Tech no los edita ni convierte.
+El agente usa solo los archivos que están **directamente** en la carpeta Drive `Protocolos` (`14oB0TKbGyvEDMti2JgjXIep54-ZcMbc_`). No recorre `Plantillas Quantifier` ni `_Obsoletos`. Alex mantiene los documentos; Tech no los edita ni convierte. Si una versión anterior incluyó plantillas, hay que sincronizar tras desplegar y verificar que desaparecieron de la versión activa; publicar código por sí solo no modifica el corpus guardado.
 
 ## Estado y activación
 

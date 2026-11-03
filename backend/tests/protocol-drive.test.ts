@@ -5,6 +5,33 @@ import { syncProtocolDrive } from '../protocol-drive.ts';
 const folderId = '14oB0TKbGyvEDMti2JgjXIep54-ZcMbc_';
 
 describe('sincronización de protocolos', () => {
+  it('excluye subcarpetas y retira plantillas que entraron en un corpus anterior', async () => {
+    const save = vi.fn(async () => undefined);
+    const previous = {
+      id: 'version-anterior', createdAt: '2026-11-02T00:00:00Z', tokenEstimate: 100,
+      files: [
+        { id: 'doc-1', name: 'Normas', mimeType: 'text/plain', revision: '1', modifiedTime: '', extractionVersion: 4, sections: [{ ref: 'texto', text: 'Normas del equipo' }], warnings: [] },
+        { id: 'template-1', name: 'Plantilla.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', revision: '1', modifiedTime: '', extractionVersion: 4, sections: [{ ref: 'hoja 1', text: 'Presupuesto orientativo' }], warnings: [] },
+      ],
+      documents: [],
+    };
+    const request = vi.fn(async (path: string) => {
+      if (!path.startsWith('/files?')) throw new Error('No debe leer el contenido de una subcarpeta');
+      const parent = new URL(path, 'https://drive.test').searchParams.get('q');
+      if (!parent?.includes(`'${folderId}'`)) throw new Error('No debe listar una subcarpeta');
+      return Response.json({ files: [
+        { id: 'doc-1', name: 'Normas', mimeType: 'text/plain', version: '1', parents: [folderId] },
+        { id: 'folder-q', name: 'Plantillas Quantifier', mimeType: 'application/vnd.google-apps.folder', parents: [folderId] },
+        { id: 'folder-old', name: '_Obsoletos', mimeType: 'application/vnd.google-apps.folder', parents: [folderId] },
+      ] });
+    });
+    const report = await syncProtocolDrive(request, { maxTokens: 1000, previous, save });
+    expect(report.error).toBeNull();
+    expect(report.files.map(file => file.id)).toEqual(['doc-1']);
+    expect(save.mock.calls[0][0].files.map(file => file.id)).toEqual(['doc-1']);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it('incluye la hoja externa autorizada sin moverla a la carpeta de protocolos', async () => {
     const save = vi.fn(async () => undefined);
     const sheetId = '1H43otMwHAzD724u-e2s8czAoNLnxCW95kOUm3bNhG3w';
