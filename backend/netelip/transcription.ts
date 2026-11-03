@@ -188,6 +188,18 @@ export class NetelipAIEngine implements TranscriptionEngine {
   }
 }
 
+/**
+ * Minutos que se deja trabajar a Whisper con una llamada (NETELIP_WHISPER_TIMEOUT_MINUTES, 30 por defecto).
+ * En la instancia de producción (CPU de ráfaga, `nice -n 19`) una llamada de 15–28 min tarda horas (03/11/2026).
+ */
+export function whisperTimeoutMinutes(env: NodeJS.ProcessEnv): number {
+  const raw = String(env.NETELIP_WHISPER_TIMEOUT_MINUTES || '').trim();
+  if (!raw) return 30;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 1440) throw new Error('NETELIP_WHISPER_TIMEOUT_MINUTES debe ser un entero entre 1 y 1440');
+  return value;
+}
+
 export function buildEngine(env: NodeJS.ProcessEnv): TranscriptionEngine | null {
   const name = String(env.NETELIP_TRANSCRIPTION_ENGINE || 'none').trim();
   if (name === 'none' || !name) return null;
@@ -200,7 +212,7 @@ export function buildEngine(env: NodeJS.ProcessEnv): TranscriptionEngine | null 
     const command = String(env.NETELIP_WHISPER_COMMAND || '').trim();
     if (!command) throw new Error('NETELIP_WHISPER_COMMAND es obligatorio con NETELIP_TRANSCRIPTION_ENGINE=local_whisper');
     const vdrive = vdriveConfigFromEnv(env);
-    return new WhisperCommandEngine(command, 30 * 60_000, String(env.NETELIP_DEBUG_AUDIO_DIR || '').trim() || null, vdrive ? new VdriveClient(vdrive) : null);
+    return new WhisperCommandEngine(command, whisperTimeoutMinutes(env) * 60_000, String(env.NETELIP_DEBUG_AUDIO_DIR || '').trim() || null, vdrive ? new VdriveClient(vdrive) : null);
   }
   throw new Error(`motor de transcripción desconocido: ${name}`);
 }
