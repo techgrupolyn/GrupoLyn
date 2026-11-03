@@ -8,7 +8,7 @@ import {
 import { maskPhone, toE164 } from '../netelip/phone.ts';
 import { parseReportDate, reconcile, reportKey } from '../netelip/processing.ts';
 import { madridDay, partiesFromRecording, parsePropfind, pickRecording } from '../netelip/vdrive.ts';
-import { buildEngine, GeminiEngine, parseGeminiTranscript, TranscriptionError } from '../netelip/transcription.ts';
+import { buildEngine, GeminiEngine, parseGeminiTranscript, TranscriptionError, whisperTimeoutMinutes } from '../netelip/transcription.ts';
 import type { VdriveClient } from '../netelip/vdrive.ts';
 import { canAccessNetelipCalls, canReadTranscripts } from '../netelip/routes.ts';
 
@@ -347,5 +347,16 @@ describe('Netelip · motor Gemini', () => {
   it('se selecciona con NETELIP_TRANSCRIPTION_ENGINE=gemini', () => {
     expect(buildEngine({ NETELIP_TRANSCRIPTION_ENGINE: 'gemini' } as NodeJS.ProcessEnv)?.name).toBe('gemini');
     expect(buildEngine({ NETELIP_TRANSCRIPTION_ENGINE: 'none' } as NodeJS.ProcessEnv)).toBeNull();
+  });
+
+  it('el límite de Whisper es de 30 min por defecto y se amplía con NETELIP_WHISPER_TIMEOUT_MINUTES', () => {
+    expect(whisperTimeoutMinutes({} as NodeJS.ProcessEnv)).toBe(30);
+    expect(whisperTimeoutMinutes({ NETELIP_WHISPER_TIMEOUT_MINUTES: '360' } as NodeJS.ProcessEnv)).toBe(360);
+    for (const bad of ['0', '-5', '2.5', 'seis', '1441']) {
+      expect(() => whisperTimeoutMinutes({ NETELIP_WHISPER_TIMEOUT_MINUTES: bad } as NodeJS.ProcessEnv)).toThrow(/NETELIP_WHISPER_TIMEOUT_MINUTES/);
+    }
+    const env = { NETELIP_TRANSCRIPTION_ENGINE: 'local_whisper', NETELIP_WHISPER_COMMAND: 'python w.py', NETELIP_WHISPER_TIMEOUT_MINUTES: '360' } as NodeJS.ProcessEnv;
+    expect(buildEngine(env)?.name).toBe('local_whisper');
+    expect(() => buildEngine({ ...env, NETELIP_WHISPER_TIMEOUT_MINUTES: '0' })).toThrow(/NETELIP_WHISPER_TIMEOUT_MINUTES/);
   });
 });
