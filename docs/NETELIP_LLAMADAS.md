@@ -86,6 +86,38 @@ Se elige con `NETELIP_TRANSCRIPTION_ENGINE` y se cambia reiniciando el backend. 
 - **Duración de Whisper.** Se procesa una llamada cada vez y, si no termina en `NETELIP_WHISPER_TIMEOUT_MINUTES`, se corta («Whisper no terminó a tiempo») y se reintenta hasta 3 veces. El 03/11/2026, con el límite fijo de 30 min, fallaron todas las llamadas de 11 a 28 min de la extensión 115: en la instancia de producción (CPU de ráfaga, `nice -n 19`) Whisper tarda varias veces la duración de la llamada. Con un límite de horas las llamadas largas se transcriben, pero ocupan la CPU todo ese tiempo y las demás esperan en cola. Las fallidas se reencolan con `UPDATE netelip_call_transcriptions SET status='pending', attempts=0, last_error=NULL, progress=NULL, next_attempt_at=NOW() WHERE call_id IN (…)`.
 - **Precisión objetivo de Producto: 95 %.** Depende sobre todo de la calidad del audio: mono, 8 kHz, línea móvil. Ver el estado en la subtarea del spike.
 
+## Calificador interno de llamadas (ticket 869e9y98n)
+
+Cuando termina la transcripción de una llamada de un **comercial configurado** (pestaña *Comerciales evaluados* o tabla `comercial_rol`) que dura **60 s o más**, Gemini la evalúa con la rúbrica de Fase 0 y:
+
+1. guarda la nota, los errores críticos con su cita, 2 aciertos, 2 mejoras con acción, las objeciones y las ideas de marketing (`llamada_evaluacion`, `objecion_marketing`);
+2. envía al comercial un feedback de 5 líneas y 600 caracteres como máximo por WhatsApp y, si se escala, el mismo mensaje a la vez al supervisor;
+3. lo muestra en el detalle de la llamada, donde el supervisor añade su propio feedback (`llamada_feedback_humano`), que también le llega al comercial.
+
+Lo que decide el código, no el modelo (`backend/netelip/calificador/reglas.ts`):
+
+- Los datos del cliente se enmascaran antes de enviar la transcripción a Gemini (nombre del lead o cliente, teléfono, email, DNI, IBAN y dirección).
+- Cada error crítico debe traer una cita que aparezca literalmente en la transcripción. Si no aparece, se descarta y la llamada queda con duda.
+- `NO_PREGUNTAR` solo es error si el presupuesto del lead está registrado (Alex, 02/11/2026). `crm_leads` aún no guarda ese dato (P-05), así que hoy nunca lo es.
+- **Apto** = nota ≥ 80 y ningún error crítico. **Escalado** = algún error crítico, nota < 80 o duda (P-01, pendiente de confirmar).
+- Hasta 3 intentos con el modelo (1, 5 y 15 min). Después queda «no evaluada» con el motivo, sin feedback, y se avisa a tecnología.
+
+La rúbrica está versionada en `backend/netelip/calificador/rubrica-v1.md` (`VERSION_RUBRICA` en `modelo.ts`). Viene del «Contexto unificado del Entrenador de llamadas Fase 0» de Jean Parra (05/11/2026), adaptada a llamadas reales. Para cambiarla, crea `rubrica-v2.md` y sube la versión: cada evaluación guarda la versión con la que se hizo.
+
+| Variable | Valor |
+|---|---|
+| `GOOGLE_GEMINI_API_KEY` | La misma que el resto del Superagente. Sin ella no se evalúa nada (aviso al arrancar) |
+| `CALIFICADOR_ENABLED` | `false` para apagarlo. Por defecto, encendido si hay clave de Gemini |
+| `CALIFICADOR_MODEL` | Opcional. Por defecto, `GOOGLE_GEMINI_FLASH_MODEL` |
+| `CALIFICADOR_ENVIO` | `whatsapp` para enviar el feedback (P-02). Sin definir, solo se ve en el Dashboard |
+| `CALIFICADOR_SUPERVISOR_NOMBRE` / `CALIFICADOR_SUPERVISOR_WHATSAPP` | `Ernesto` / su móvil en E.164. Obligatorio con envío activo: sin él, una evaluación escalada no se envía |
+| `CALIFICADOR_DASHBOARD_URL` | `https://ceo.grupolyn.com`, para el enlace a la llamada en el mensaje al supervisor |
+| `CALIFICADOR_SUPERVISOR_ROLES` | Roles que escriben feedback y dan de alta comerciales. Por defecto, los mismos que ven Historial de llamadas |
+
+**Antes de activarlo con el SDR (lunes 09/11):** el SDR informado por escrito de que sus llamadas se evalúan con IA (ticket, «Laboral y RGPD»); su extensión dada de alta con rol `sdr` y su WhatsApp; y `CALIFICADOR_ENVIO=whatsapp` solo cuando se confirme el canal (P-02).
+
+**Apagarlo:** `CALIFICADOR_ENABLED=false` y reiniciar, o desactivar al comercial en *Comerciales evaluados*. Sus tablas son independientes: `backend/netelip/calificador/schema-down.sql` las borra con su contenido.
+
 ## Paso a paso hasta producción
 
 ### Antes de fusionar el PR

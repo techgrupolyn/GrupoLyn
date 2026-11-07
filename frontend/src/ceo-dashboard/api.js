@@ -148,6 +148,12 @@ export const api = {
     calls: (query) => request(`/netelip/calls?${query}`),
     call: (id) => request(`/netelip/calls/${encodeURIComponent(id)}`),
     filterOptions: () => request('/netelip/calls/filter-options'),
+    // Calificador interno de llamadas (869e9y98n).
+    evaluation: (id) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion`),
+    addEvaluationFeedback: (id, texto) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion/feedback`, { method: 'POST', body: JSON.stringify({ texto }) }),
+    objections: (filters = {}) => request(`/netelip/objeciones?${new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== '' && value != null))}`),
+    salespeople: () => request('/netelip/comerciales'),
+    saveSalesperson: (extension, body) => request(`/netelip/comerciales/${encodeURIComponent(extension)}`, { method: 'PUT', body: JSON.stringify(body) }),
   },
   meetings: {
     recording: (id) => request(`/meetings/${encodeURIComponent(id)}/recording`),

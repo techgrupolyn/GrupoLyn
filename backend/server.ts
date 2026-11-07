@@ -9019,10 +9019,16 @@ app.post('/api/protocolos/:id/confirmar', requireProtocolUser, async (req: Reque
     res.status(saved ? 200 : 404).json(saved ? { ok: true } : { error: 'Consulta no encontrada o ya confirmada' });
   } catch { res.status(503).json({ error: 'No se pudo guardar la confirmación' }); }
 });
-const netelipWorkers = createNetelipWorkers(pool);
+// Calificador de llamadas: feedback al comercial y al supervisor por el WhatsApp de la instancia de Evolution.
+const enviarWhatsAppCalificador = async (telefonoE164: string, texto: string) => {
+  await evolutionFetch(`/message/sendText/${INSTANCE_NAME}`, { method: 'POST', body: JSON.stringify({ number: telefonoE164.replace(/\D/g, ''), text: texto }) });
+};
+const netelipWorkers = createNetelipWorkers(pool, process.env, { enviar: enviarWhatsAppCalificador });
 registerNetelipCalls(app, {
   pool, admin: requireCeoAuth, kick: netelipWorkers.kick,
   role: (res) => String((res.locals.ceoSession as CeoSession | undefined)?.rol || ''),
+  actor: (res) => ({ id: meetingAuditIdentity(res).id, nombre: meetingAuditActor(res) }),
+  enviar: enviarWhatsAppCalificador,
 });
 registerDashboardOperations(app, {
   pool, admin: requireCeoAuth, actor: meetingAuditActor, identity: meetingAuditIdentity,

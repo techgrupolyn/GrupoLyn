@@ -8,6 +8,9 @@ import { relinkCalls } from './contacts.ts';
 import { applyRetention, notifyTech, processInbox, processNextTranscription, reconcile, recoverFromVdrive } from './processing.ts';
 import { buildEngine } from './transcription.ts';
 import { VdriveClient, vdriveConfigFromEnv } from './vdrive.ts';
+import { encolarPendientes } from './calificador/encolar.ts';
+import { evaluadorGemini } from './calificador/modelo.ts';
+import { configDesdeEnv, enviarPendientes, procesarSiguienteEvaluacion, type Enviador } from './calificador/proceso.ts';
 
 export { ensureNetelipCalls } from './schema.ts';
 export { registerNetelipCalls } from './routes.ts';
@@ -19,6 +22,8 @@ const RELINK_INTERVAL_MS = 5 * 60_000;
 const RECONCILE_INTERVAL_MS = 60 * 60_000;
 const RETENTION_INTERVAL_MS = 24 * 3600_000;
 const RECOVERY_INTERVAL_MS = 5 * 60_000;
+const EVALUATION_INTERVAL_MS = 15_000;
+const EVALUATION_RECOVERY_INTERVAL_MS = 5 * 60_000;
 
 function days(name: string, env: NodeJS.ProcessEnv): number | null {
   const raw = String(env[name] || '').trim();
@@ -39,7 +44,7 @@ function singleFlight(name: string, task: () => Promise<unknown>): () => void {
 }
 
 /** Un aviso de trabajo nuevo antes de arrancar los procesos no se pierde: lo recoge el primer ciclo. */
-export function createNetelipWorkers(pool: Pool, env: NodeJS.ProcessEnv = process.env) {
+export function createNetelipWorkers(pool: Pool, env: NodeJS.ProcessEnv = process.env, options: { enviar?: Enviador | null } = {}) {
   const engine = buildEngine(env);
   const transcriptDays = days('NETELIP_TRANSCRIPT_RETENTION_DAYS', env);
   const audioDays = days('NETELIP_AUDIO_RETENTION_DAYS', env);
@@ -74,6 +79,20 @@ export function createNetelipWorkers(pool: Pool, env: NodeJS.ProcessEnv = proces
     console.log(JSON.stringify({ msg: 'netelip_retention_done', transcript_days: transcriptDays, audio_days: audioDays, ...summary }));
   });
 
+  // Calificador interno de llamadas (869e9y98n): evalúa con Gemini y envía el feedback por WhatsApp.
+  const evaluador = env.CALIFICADOR_ENABLED === 'false' ? null : evaluadorGemini(env);
+  const calificadorConfig = configDesdeEnv(env);
+  const evaluate = singleFlight('calificador', async () => {
+    if (!evaluador) return;
+    while (await procesarSiguienteEvaluacion(pool, evaluador, calificadorConfig)) { /* siguiente */ }
+    if (options.enviar) await enviarPendientes(pool, options.enviar, calificadorConfig);
+  });
+  const evaluationRecovery = singleFlight('calificador · recuperación', async () => {
+    if (!evaluador) return;
+    const queued = await encolarPendientes(pool);
+    if (queued) console.log(JSON.stringify({ msg: 'calificador_encoladas', llamadas: queued }));
+  });
+
   return {
     kick: inbox,
     relink,
@@ -81,11 +100,14 @@ export function createNetelipWorkers(pool: Pool, env: NodeJS.ProcessEnv = proces
     start() {
       if (!engine) console.warn('[netelip] Sin motor de transcripción (NETELIP_TRANSCRIPTION_ENGINE): las transcripciones quedan pendientes');
       if (!transcriptDays && !audioDays) console.warn('[netelip] Retención sin configurar (P5): no se borra ninguna transcripción ni audio');
+      if (env.CALIFICADOR_ENABLED !== 'false' && !evaluador) console.warn('[calificador] Sin GOOGLE_GEMINI_API_KEY: las llamadas no se evalúan');
+      if (evaluador && calificadorConfig.envioActivo && !options.enviar) console.warn('[calificador] CALIFICADOR_ENVIO=whatsapp sin canal de envío: el feedback solo se ve en el Dashboard');
       if (!vdrive) console.warn('[netelip] Sin acceso a vDrive (NETELIP_VDRIVE_USER / NETELIP_VDRIVE_APP_PASSWORD): no se recuperan llamadas sin aviso de grabación ni se podrán transcribir las pendientes cuando caduque su URL');
       // Las transcripciones pendientes dependen de vDrive para descargar el audio: si las credenciales fallan, avisar al arrancar.
       else vdrive.list('/APIVoice/Record').catch((error) => notifyTech('vDrive de Netelip inaccesible', { error: (error as Error).message.slice(0, 300) }));
       for (const [task, ms] of [[inbox, INBOX_INTERVAL_MS], [transcribe, TRANSCRIPTION_INTERVAL_MS], [relink, RELINK_INTERVAL_MS],
-        [reconcileTask, RECONCILE_INTERVAL_MS], [retention, RETENTION_INTERVAL_MS], [recover, RECOVERY_INTERVAL_MS]] as const) {
+        [reconcileTask, RECONCILE_INTERVAL_MS], [retention, RETENTION_INTERVAL_MS], [recover, RECOVERY_INTERVAL_MS],
+        [evaluate, EVALUATION_INTERVAL_MS], [evaluationRecovery, EVALUATION_RECOVERY_INTERVAL_MS]] as const) {
         task();
         setInterval(task, ms).unref();
       }
