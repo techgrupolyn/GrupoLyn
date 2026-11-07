@@ -109,7 +109,8 @@ La rúbrica está versionada en `backend/netelip/calificador/rubrica-v1.md` (`VE
 | `GOOGLE_GEMINI_API_KEY` | La misma que el resto del Superagente. Sin ella no se evalúa nada (aviso al arrancar) |
 | `CALIFICADOR_ENABLED` | `false` para apagarlo. Por defecto, encendido si hay clave de Gemini |
 | `CALIFICADOR_MODEL` | Opcional. Por defecto, `GOOGLE_GEMINI_FLASH_MODEL` |
-| `CALIFICADOR_ENVIO` | `whatsapp` para enviar el feedback (P-02). Sin definir, solo se ve en el Dashboard |
+| `CALIFICADOR_THINKING_LEVEL` | Opcional. Por defecto, `low` |
+| `CALIFICADOR_ENVIO` | `whatsapp` para enviar el feedback (P-02). Sale desde el WhatsApp de la instancia de Evolution (`INSTANCE_NAME`), el mismo que habla con los clientes. Sin definir, solo se ve en el Dashboard |
 | `CALIFICADOR_SUPERVISOR_NOMBRE` / `CALIFICADOR_SUPERVISOR_WHATSAPP` | `Ernesto` / su móvil en E.164. Obligatorio con envío activo: sin él, una evaluación escalada no se envía |
 | `CALIFICADOR_DASHBOARD_URL` | `https://ceo.grupolyn.com`, para el enlace a la llamada en el mensaje al supervisor |
 | `CALIFICADOR_SUPERVISOR_ROLES` | Roles que escriben feedback y dan de alta comerciales. Por defecto, los mismos que ven Historial de llamadas |
