@@ -3,7 +3,7 @@ import api from '../api';
 import ProtocolosAdminPanel from './ProtocolosAdminPanel';
 
 const projectSheetId = '1H43otMwHAzD724u-e2s8czAoNLnxCW95kOUm3bNhG3w';
-const projectSheetTabs = { 'PM DELINEANTE': '940712510', INTERIORISTAS: '1638569767' };
+const projectSheetTabs = { 'PM DELINEANTE': '940712510', PM: '940712510', INTERIORISTAS: '1638569767' };
 
 function sourceUrl(source) {
   if (source.doc_id !== projectSheetId) {
