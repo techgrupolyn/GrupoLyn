@@ -7,6 +7,7 @@ import {
   isInternal, startedAt, whatsappExternalId, whatsappIsRecorded, type CallRecordingEvent, type WhatsAppCallEvent,
 } from './events.ts';
 import { loadDirectoryIndex, matchPhone } from './contacts.ts';
+import { ingestStatusEvent, MERGE_WINDOW_SECONDS, type StatusEvent } from './status-events.ts';
 import { InvalidPhone, toE164, tryE164 } from './phone.ts';
 import type { TranscriptionEngine } from './transcription.ts';
 import { madridDay, partiesFromRecording, type VdriveClient } from './vdrive.ts';
@@ -19,7 +20,7 @@ const ANSWERED = new Set(['ANSWER', 'ANSWERED']);
 const RECONCILE_GRACE_MS = 24 * 3600_000;
 const STALE_TRANSCRIPTION_MS = 2 * 3600_000;
 
-export type InboxKind = 'callrecording' | 'report' | 'whatsapp_call';
+export type InboxKind = 'callrecording' | 'report' | 'whatsapp_call' | 'call_event';
 
 // --- Alertas a tecnología ---------------------------------------------------------------------
 
@@ -58,6 +59,10 @@ export async function processInbox(pool: Pool, limit = 20): Promise<number> {
     try {
       if (row.kind === 'callrecording') await ingestCallRecording(pool, row.payload as unknown as CallRecordingEvent, row.received_at);
       else if (row.kind === 'whatsapp_call') await ingestWhatsAppCall(pool, row.payload as unknown as WhatsAppCallEvent, row.received_at);
+      else if (row.kind === 'call_event') {
+        const event = row.payload as unknown as StatusEvent;
+        await ingestStatusEvent(pool, { ...event, at: new Date(event.at) }, row.received_at);
+      }
       else await storeCallReport(pool, row.payload, row.received_at);
       // Las URL con token ya están en la transcripción (o no se necesitan): fuera de la bandeja.
       await pool.query(
@@ -101,13 +106,36 @@ async function insertCall(pool: Pool, call: NewCall): Promise<number | null> {
       await client.query('ROLLBACK');
       return null;
     }
+    // ¿Esta llamada ya se registró por los eventos de la extensión (status-events.ts)? Entonces la grabación
+    // completa esa misma fila: por el id de API Voice, o por extensión, teléfono y hora.
+    if (call.via === 'phone' && call.agentExtension) {
+      const { rows: [registered] } = await client.query<{ id: string }>(
+        `SELECT c.id FROM netelip_calls c
+         WHERE c.audio_ref IS NULL AND c.via = 'phone' AND (
+           EXISTS (SELECT 1 FROM netelip_call_events e WHERE e.uniqueid = c.event_uniqueid AND e.idapivoice = $1)
+           OR (c.agent_extension = $2 AND (c.phone_e164 = $3 OR c.counterpart_phone = $4)
+               AND c.occurred_at BETWEEN $5::timestamptz - make_interval(secs => $6) AND $5::timestamptz + make_interval(secs => $6)))
+         ORDER BY abs(extract(epoch FROM c.occurred_at - $5::timestamptz)) LIMIT 1 FOR UPDATE`,
+        [call.externalId, call.agentExtension, call.phoneE164, call.counterpartPhone, call.occurredAt, MERGE_WINDOW_SECONDS]);
+      if (registered) {
+        const callId = Number(registered.id);
+        await client.query(
+          `UPDATE netelip_calls SET external_id = $2, occurred_at = $3, started_at_source = $4, duration_seconds = $5,
+             call_status = $6, audio_ref = $7, resultado = 'contestada' WHERE id = $1`,
+          [callId, call.externalId, call.occurredAt, call.startedAtSource, call.durationSeconds, call.callStatus, call.audioRef]);
+        await client.query('INSERT INTO netelip_call_transcriptions (call_id, source_url) VALUES ($1, $2)', [callId, call.sourceUrl]);
+        await client.query('COMMIT');
+        console.log(JSON.stringify({ msg: 'netelip_call_recording_merged', external_id: call.externalId, call_id: callId }));
+        return callId;
+      }
+    }
     // Sin número (oculto o anónimo) no hay clave de identidad: sin contacto ni identidad pendiente.
     const match = call.phoneE164 || !call.waUserId ? matchPhone(index, call.phoneE164) : { status: 'unknown' as const, client_id: null, lead_id: null };
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO netelip_calls (external_id, via, direction, occurred_at, started_at_source, counterpart_phone, phone_e164,
          counterpart_wa_user_id, contact_status, client_id, lead_id, agent_extension, duration_seconds, call_status, audio_ref,
-         received_at, linked_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::uuid,$12,$13,$14,$15,$16, CASE WHEN $9 = 'matched' THEN NOW() END)
+         received_at, linked_at, resultado)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::uuid,$12,$13,$14,$15,$16, CASE WHEN $9 = 'matched' THEN NOW() END, 'contestada')
        RETURNING id`,
       [call.externalId, call.via, call.direction, call.occurredAt, call.startedAtSource, call.counterpartPhone, call.phoneE164,
         call.waUserId, match.status, match.client_id, match.lead_id, call.agentExtension, call.durationSeconds, call.callStatus,
@@ -434,7 +462,7 @@ export async function applyRetention(pool: Pool, now: Date, transcriptDays: numb
   if (audioDays) {
     const result = await pool.query(
       `INSERT INTO netelip_audio_deletion_requests (call_id, audio_ref, reason)
-       SELECT id, audio_ref, 'retention' FROM netelip_calls WHERE occurred_at < $1 ON CONFLICT (audio_ref) DO NOTHING`,
+       SELECT id, audio_ref, 'retention' FROM netelip_calls WHERE occurred_at < $1 AND audio_ref IS NOT NULL ON CONFLICT (audio_ref) DO NOTHING`,
       [new Date(now.getTime() - audioDays * day)],
     );
     summary.audios_pending_deletion = result.rowCount || 0;
@@ -462,7 +490,7 @@ export async function eraseCalls(pool: Pool, target: ErasureTarget): Promise<{ c
     const deleted = await client.query('DELETE FROM netelip_call_transcriptions WHERE call_id = ANY($1::bigint[])', [ids]);
     const queued = await client.query(
       `INSERT INTO netelip_audio_deletion_requests (call_id, audio_ref, reason)
-       SELECT id, audio_ref, 'erasure' FROM netelip_calls WHERE id = ANY($1::bigint[]) ON CONFLICT (audio_ref) DO NOTHING`,
+       SELECT id, audio_ref, 'erasure' FROM netelip_calls WHERE id = ANY($1::bigint[]) AND audio_ref IS NOT NULL ON CONFLICT (audio_ref) DO NOTHING`,
       [ids],
     );
     await client.query('COMMIT');
