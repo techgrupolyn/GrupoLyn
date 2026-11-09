@@ -127,6 +127,32 @@ describe('NetelipCallsView', () => {
     expect(await screen.findByText(text)).toBeInTheDocument();
   });
 
+  it('muestra las llamadas no contestadas, sin grabación y con su resultado', async () => {
+    vi.mocked(api.netelip.calls).mockResolvedValue(page([
+      { ...calls[0], id: 20, result: 'no_contestada', recorded: false, transcription_status: null, duration_seconds: 0 },
+      { ...calls[0], id: 21, result: 'contestada', recorded: false, transcription_status: null, duration_seconds: 75 },
+    ], { metrics: { ...metrics, missed: 1 } }));
+    render(<NetelipCallsView />);
+    expect(await screen.findByText('No contestada')).toBeInTheDocument();
+    expect(screen.getAllByText('Sin grabación')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: /Llamadas perdidas\s*1/ })).toBeInTheDocument();
+  });
+
+  it('el indicador de perdidas filtra por resultado', async () => {
+    render(<NetelipCallsView />);
+    fireEvent.click(await screen.findByRole('button', { name: /Llamadas perdidas/ }));
+    await waitFor(() => expect(vi.mocked(api.netelip.calls).mock.lastCall[0]).toContain('result=missed'));
+    expect(window.location.search).toContain('res=missed');
+  });
+
+  it('el detalle de una llamada sin grabación explica por qué no hay transcripción', async () => {
+    vi.mocked(api.netelip.call).mockResolvedValue({ call: { ...calls[0], result: 'colgada', recorded: false, transcription_status: null }, transcription_access: 'granted', transcription: null });
+    window.history.replaceState({}, '', '/?view=netelip&call=1');
+    render(<NetelipCallsView />);
+    expect(await screen.findByText(/Esta llamada no se grabó \(colgada antes de contestar\)/)).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog', { name: 'Detalle de llamada' })).getByText('Colgada antes de contestar')).toBeInTheDocument();
+  });
+
   it('muestra «En cola» y la barra de avance mientras se transcribe', async () => {
     vi.mocked(api.netelip.calls).mockResolvedValue(page([
       { ...calls[1], transcription_phase: 'queued', transcription_progress: null },

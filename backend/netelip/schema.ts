@@ -8,7 +8,7 @@ import { ensureEntrenador } from './entrenador/schema.ts';
 
 export const NETELIP_TABLES = [
   'netelip_audio_deletion_requests', 'netelip_call_reports', 'netelip_call_transcriptions',
-  'netelip_calls', 'netelip_inbox', 'netelip_extensions',
+  'netelip_calls', 'netelip_inbox', 'netelip_extensions', 'netelip_call_events',
 ] as const;
 
 export async function ensureNetelipCalls(pool: Pool): Promise<void> {
@@ -104,6 +104,29 @@ export async function ensureNetelipCalls(pool: Pool): Promise<void> {
       requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       done_at TIMESTAMPTZ
     );
+
+    -- Registro de todas las llamadas de las extensiones de NETELIP_REGISTRO_EXTENSIONES (status-events.ts):
+    -- también las no contestadas o sin grabación. Una llamada así no tiene audio_ref ni transcripción.
+    ALTER TABLE netelip_calls ALTER COLUMN audio_ref DROP NOT NULL;
+    ALTER TABLE netelip_calls ADD COLUMN IF NOT EXISTS event_uniqueid TEXT;
+    ALTER TABLE netelip_calls ADD COLUMN IF NOT EXISTS resultado TEXT
+      CHECK (resultado IN ('contestada','no_contestada','ocupado','colgada','no_disponible','en_curso'));
+    CREATE UNIQUE INDEX IF NOT EXISTS netelip_calls_event_uniqueid ON netelip_calls(event_uniqueid) WHERE event_uniqueid IS NOT NULL;
+    -- Eventos de estado de cada llamada (ring, answer, hangup…), tal cual llegan, para calcular el resultado.
+    CREATE TABLE IF NOT EXISTS netelip_call_events (
+      uniqueid TEXT NOT NULL,
+      extension TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('ring','answer','hangup','busy','noanswer','notavailable')),
+      at TIMESTAMPTZ NOT NULL,
+      direction TEXT NOT NULL CHECK (direction IN ('inbound','outbound')),
+      counterpart TEXT NOT NULL,
+      idapivoice TEXT,
+      received_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (uniqueid, status, at)
+    );
+    CREATE INDEX IF NOT EXISTS netelip_call_events_idapivoice ON netelip_call_events(idapivoice) WHERE idapivoice IS NOT NULL;
+    ALTER TABLE netelip_inbox DROP CONSTRAINT IF EXISTS netelip_inbox_kind_check;
+    ALTER TABLE netelip_inbox ADD CONSTRAINT netelip_inbox_kind_check CHECK (kind IN ('callrecording','report','whatsapp_call','call_event')) NOT VALID;
   `);
   await ensureCalificador(pool);
   await ensureEntrenador(pool);

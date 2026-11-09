@@ -40,6 +40,25 @@ Llamada ─► Netelip API Voice ─► /webhook/netelip/<token>/control   (avis
   - «Consultas IA» no lee las tablas `netelip_*`.
 - **Esquema** (`schema.ts`): solo tablas nuevas `netelip_*`, aplicadas en cada arranque. Reversión: `backend/netelip/schema-down.sql`.
 
+## Registro de todas las llamadas de una extensión
+
+Hasta ahora solo existían en el Historial las llamadas **grabadas**. Con `NETELIP_REGISTRO_EXTENSIONES=115`, quedan registradas **todas** las llamadas de esa extensión, entrantes y salientes, se contesten o no, y pasen o no por API Voice (`backend/netelip/status-events.ts`):
+
+- **Fuente:** las *notificaciones de estado* de API Voice (índice `call`: `ring`, `answer`, `hangup`, `busy`, `noanswer`, `notavailable`). Llegan a la **URL eventos de llamadas** (`…/callrecording`) de las extensiones marcadas en *API Voice › Notificaciones de estado*. Las de otras extensiones se siguen ignorando.
+- **Agrupación:** los eventos se guardan en `netelip_call_events` y se agrupan por `uniqueid`.
+- **Resultado:** contestada, no contestada, colgada antes de contestar, ocupado o no disponible. La duración va de que se contesta a que se cuelga.
+- **Llamada con grabación:** la grabación completa **la misma fila** de `netelip_calls` y se transcribe como siempre. Se une por `idapivoice` o, si no, por extensión, teléfono y una diferencia de 3 minutos como mucho, llegue antes la grabación o los eventos.
+- **Llamada sin grabación:** queda con `audio_ref` vacío, sin transcripción, y el Dashboard la muestra como «Sin grabación».
+- **Dashboard:** indicador **Llamadas perdidas** y filtro **Resultado**.
+
+**En el panel de Netelip** (*API Voice › Notificaciones de estado*): la extensión marcada y los eventos **Ring, Answer, Hangup, Busy, No answer y Not available**.
+
+**Límites:**
+- Las llamadas que no llegan a sonar en la extensión (por ejemplo, si cuelgan en el IVR) no generan eventos.
+- Registrar no es grabar: solo se graban las que pasan por API Voice.
+
+**Esquema:** aditivo. `netelip_calls.audio_ref` admite NULL, hay dos columnas nuevas en `netelip_calls` (`event_uniqueid` y `resultado`) y una tabla nueva, `netelip_call_events`.
+
 ## Variables (`/etc/lyn/backend.env`)
 
 | Variable | Valor en producción |
