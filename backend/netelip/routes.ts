@@ -7,6 +7,8 @@ import { maskPhone } from './phone.ts';
 import { acceptInbox, parseCallRecording, type InboxKind } from './processing.ts';
 import { registerCalificador } from './calificador/rutas.ts';
 import type { Enviador } from './calificador/proceso.ts';
+import { registerEntrenador } from './entrenador/rutas.ts';
+import type { DriveEntrenador } from './entrenador/proceso.ts';
 
 type Dependencies = {
   pool: Pool;
@@ -19,6 +21,8 @@ type Dependencies = {
   /** Calificador: quién escribe el feedback humano y por dónde se envía al comercial. */
   actor?: (res: Response) => { id: string; nombre: string };
   enviar?: Enviador | null;
+  /** Documento del entrenador: carpeta de Drive y token de la cuenta con drive.file. */
+  entrenadorDrive?: DriveEntrenador | null;
 };
 
 const CONTROL_STATE_TTL_MS = 3 * 3600_000;
@@ -327,4 +331,5 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
   });
 
   registerCalificador(app, { pool, access, role: deps.role, actor: deps.actor, enviar: deps.enviar, fail, canReadTranscripts: (role) => canReadTranscripts(role, env), env });
+  registerEntrenador(app, { pool, access, role: deps.role, actor: deps.actor, fail, env, drive: deps.entrenadorDrive });
 }

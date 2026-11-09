@@ -2,7 +2,7 @@
 
 ## Alcance
 
-La integración permite que administradores del Dashboard conecten una o varias cuentas Google por OAuth, registren varias carpetas de Drive y sincronicen las reuniones disponibles. El permiso solicitado es exclusivamente `drive.readonly`; no se crean, editan, mueven ni comparten archivos de Drive.
+La integración permite que administradores del Dashboard conecten una o varias cuentas Google por OAuth, registren varias carpetas de Drive y sincronicen las reuniones disponibles. Para las reuniones, el permiso solicitado es `drive.readonly`: no se crean, editan, mueven ni comparten archivos de Drive. La única excepción es el documento del entrenador de llamadas. Si `ENTRENADOR_DRIVE_CARPETA` está definida, se pide además `drive.file`, que solo da acceso a los archivos que crea la app; así se publica ese documento. Detalle en `docs/NETELIP_LLAMADAS.md`, sección «Documento del entrenador de llamadas».
 
 - Las grabaciones y audios permanecen en Google Drive y el Dashboard muestra un enlace al original.
 - Las transcripciones de Google Docs y archivos de texto compatibles se guardan hasta `GOOGLE_DRIVE_TEXT_MAX_CHARS` para consulta posterior.

@@ -53,7 +53,9 @@ export type Evaluador = (system: string, user: string) => Promise<RespuestaModel
 
 export class ModeloNoDisponible extends Error {}
 
-export function evaluadorGemini(env: NodeJS.ProcessEnv = process.env, fetcher: typeof fetch = fetch): Evaluador | null {
+/** `schema` y `maxOutputTokens` permiten reutilizar la llamada con otra salida (documento del entrenador). */
+export function evaluadorGemini(env: NodeJS.ProcessEnv = process.env, fetcher: typeof fetch = fetch,
+  opciones: { schema?: object; maxOutputTokens?: number; timeoutMs?: number } = {}): Evaluador | null {
   const apiKey = env.GOOGLE_GEMINI_API_KEY?.trim() || env.GOOGLE_API_KEY?.trim() || '';
   if (!apiKey) return null;
   const model = env.CALIFICADOR_MODEL?.trim() || env.GOOGLE_GEMINI_FLASH_MODEL?.trim() || 'gemini-3.6-flash';
@@ -64,9 +66,9 @@ export function evaluadorGemini(env: NodeJS.ProcessEnv = process.env, fetcher: t
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({ model, input: user, system_instruction: system, store: false,
-          generation_config: { temperature: 0, thinking_level: env.CALIFICADOR_THINKING_LEVEL?.trim() || 'low', max_output_tokens: 4096 },
-          response_format: { type: 'text', mime_type: 'application/json', schema: SCHEMA } }),
-        signal: AbortSignal.timeout(90_000),
+          generation_config: { temperature: 0, thinking_level: env.CALIFICADOR_THINKING_LEVEL?.trim() || 'low', max_output_tokens: opciones.maxOutputTokens ?? 4096 },
+          response_format: { type: 'text', mime_type: 'application/json', schema: opciones.schema ?? SCHEMA } }),
+        signal: AbortSignal.timeout(opciones.timeoutMs ?? 90_000),
       });
     } catch (error) { throw new ModeloNoDisponible(`sin respuesta de Gemini: ${(error as Error).message}`); }
     if (!response.ok) throw new ModeloNoDisponible(`Gemini respondió HTTP ${response.status}`);

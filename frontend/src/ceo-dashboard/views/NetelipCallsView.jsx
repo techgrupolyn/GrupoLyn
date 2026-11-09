@@ -3,6 +3,7 @@ import { ArrowDownLeft, ArrowUpRight, MessageCircle } from 'lucide-react';
 import api from '../api';
 import CallEvaluationPanel, { EvaluationBadge } from './CallEvaluationPanel';
 import { ObjectionsPanel, SalespeoplePanel } from './CalificadorPanels';
+import EntrenadorPanel from './EntrenadorPanel';
 import { callListQuery, clearCallFilters, DEFAULT_CALL_FILTERS, formatDuration, formatMadridDateTime, formatOffset, formatPhone, readCallFilters, writeCallFilters } from '../netelipFormat';
 
 const CONTACT_THEME = {
@@ -104,7 +105,7 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [search, setSearch] = useState(filters.q);
-  // Calificador interno: pestañas de objeciones y de comerciales evaluados.
+  // Calificador interno: pestañas de objeciones, comerciales evaluados y documento del entrenador.
   const [tab, setTab] = useState('calls');
 
   const update = (changes) => setFilters((current) => ({ ...current, page: 1, ...changes }));
@@ -175,10 +176,11 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
       <input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Buscar llamadas" placeholder="Buscar por nombre o teléfono…" className="h-9 w-72 max-w-full ceo-surface rounded border border-[#2E2E2E] bg-[#141414] px-3 text-xs text-[#F2F2F2] outline-none" />
     </div>
     <div role="tablist" aria-label="Secciones de llamadas" className="mb-4 flex flex-wrap gap-1.5">
-      {[['calls', 'Llamadas'], ['objections', 'Objeciones e ideas de marketing'], ['salespeople', 'Comerciales evaluados']].map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)} className={`dashboard-filter-tab rounded px-3 py-1.5 text-xs ${tab === key ? 'is-active bg-[#2E2E2E] text-[#F2F2F2]' : 'text-[#737373] hover:text-[#BFBFBF]'}`}>{label}</button>)}
+      {[['calls', 'Llamadas'], ['objections', 'Objeciones e ideas de marketing'], ['salespeople', 'Comerciales evaluados'], ['trainer', 'Documento del entrenador']].map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)} className={`dashboard-filter-tab rounded px-3 py-1.5 text-xs ${tab === key ? 'is-active bg-[#2E2E2E] text-[#F2F2F2]' : 'text-[#737373] hover:text-[#BFBFBF]'}`}>{label}</button>)}
     </div>
     {tab === 'objections' && <ObjectionsPanel onOpenCall={openCall} />}
     {tab === 'salespeople' && <SalespeoplePanel />}
+    {tab === 'trainer' && <EntrenadorPanel />}
     {tab === 'calls' && <>
     {error && <p role="alert" className="mb-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{kpis.map((kpi) => <button key={kpi.label} type="button" onClick={() => update(kpi.apply)} aria-pressed={kpi.active} className={`dashboard-metric-card rounded-md border bg-[#141414] p-4 text-left ${kpi.active ? 'border-amber-300/50' : 'border-[#2E2E2E] hover:border-[#4A4A4A]'}`}><p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#737373]">{kpi.label}</p><p className="mt-1 text-2xl font-semibold text-[#F2F2F2]">{loading && !result ? '—' : kpi.value}</p></button>)}</div>

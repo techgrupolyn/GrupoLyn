@@ -119,6 +119,30 @@ La rúbrica está versionada en `backend/netelip/calificador/rubrica-v1.md` (`VE
 
 **Apagarlo:** `CALIFICADOR_ENABLED=false` y reiniciar, o desactivar al comercial en *Comerciales evaluados*. Sus tablas son independientes: `backend/netelip/calificador/schema-down.sql` las borra con su contenido.
 
+## Documento del entrenador de llamadas
+
+Es el «Contexto unificado del Entrenador de llamadas Fase 0» de Jean Parra: el archivo que los comerciales cargan en ChatGPT para simular llamadas. La versión original está en `backend/netelip/entrenador/base-v0.txt`. En **Netelip › Historial de llamadas › Documento del entrenador**, el botón **Actualizar con N llamadas nuevas** hace lo siguiente:
+
+1. Toma las llamadas **evaluadas desde la última actualización**, por fecha de evaluación, con un máximo de 120 (las más recientes). Si la última actualización fue hace tres semanas, solo entran esas tres semanas: ninguna llamada se usa dos veces. Usa lo que guardó el calificador (objeciones con su cita, errores críticos y mejoras), que ya va sin datos de clientes.
+2. Gemini propone **añadidos**: objeciones nuevas con su criterio (sección 11), material real para los arquetipos A-G (sección 6) y frases de referencia (sección 18).
+3. El código añade cada bloque al final de su sección, con la fecha y el periodo, y actualiza la línea «Actualizado con llamadas reales de Netelip hasta…» de la cabecera. **No borra ni reescribe nada del documento.** Antes de añadir cada entrada, vuelve a enmascarar los datos personales. Si una cita no aparece en las llamadas del periodo, la quita.
+4. Guarda la versión (`entrenador_version`) y publica el **.docx** en Google Drive **sustituyendo el mismo archivo**, así el enlace que se reparte no cambia. Cada versión se descarga desde el Dashboard y se puede volver a publicar.
+
+Solo actualizan los roles de `CALIFICADOR_SUPERVISOR_ROLES`. Hay una actualización a la vez, y suele tardar menos de un minuto. Si falla, la versión vigente no cambia y se avisa a tecnología.
+
+| Variable | Valor |
+|---|---|
+| `ENTRENADOR_DRIVE_CARPETA` | Enlace o ID de la carpeta de Drive donde se publica |
+| `ENTRENADOR_DRIVE_CUENTA` | Email de la cuenta de Google conectada en Reuniones que publica (la cuenta tech) |
+
+**Permiso de Drive.** Con `ENTRENADOR_DRIVE_CARPETA` definida, la conexión de Google pide además `drive.file`, que solo da acceso a los archivos que crea la app. El resto de Drive sigue en solo lectura. Pasos:
+
+1. Añade el scope `https://www.googleapis.com/auth/drive.file` en Google Auth Platform › Acceso a datos.
+2. Vuelve a conectar la cuenta tech desde **Reuniones › Conectar Google Drive**.
+3. Si Google no deja crear el archivo dentro de la carpeta (con `drive.file` a veces no «ve» carpetas que no creó la app), el primer archivo se crea en la raíz de «Mi unidad» y el Dashboard lo avisa. Muévelo **una vez** a la carpeta: las siguientes versiones lo seguirán actualizando allí.
+
+Sin estas dos variables no se publica nada en Drive; el documento se descarga desde el Dashboard. Para revertir: `backend/netelip/entrenador/schema-down.sql` borra las versiones, pero no toca el archivo de Drive.
+
 ## Paso a paso hasta producción
 
 ### Antes de fusionar el PR
