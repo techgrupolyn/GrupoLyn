@@ -3,6 +3,8 @@
 // cambian el comportamiento de esas tablas. Idempotente: se aplica en cada arranque.
 // Reversión: backend/netelip/schema-down.sql (solo borra las tablas netelip_*).
 import type { Pool } from 'pg';
+import { ensureCalificador } from './calificador/schema.ts';
+import { ensureEntrenador } from './entrenador/schema.ts';
 
 export const NETELIP_TABLES = [
   'netelip_audio_deletion_requests', 'netelip_call_reports', 'netelip_call_transcriptions',
@@ -103,4 +105,6 @@ export async function ensureNetelipCalls(pool: Pool): Promise<void> {
       done_at TIMESTAMPTZ
     );
   `);
+  await ensureCalificador(pool);
+  await ensureEntrenador(pool);
 }

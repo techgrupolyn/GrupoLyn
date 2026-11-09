@@ -5,6 +5,10 @@ import { controlConfigFromEnv, isRecordingNotice, nextCommand, type CallState } 
 import { bodyFields, IgnoredEvent, InvalidEvent, ipAllowed, isInternal, NETELIP_TRUSTED_NETWORKS, parseWhatsAppCall, tokenMatches } from './events.ts';
 import { maskPhone } from './phone.ts';
 import { acceptInbox, parseCallRecording, type InboxKind } from './processing.ts';
+import { registerCalificador } from './calificador/rutas.ts';
+import type { Enviador } from './calificador/proceso.ts';
+import { registerEntrenador } from './entrenador/rutas.ts';
+import type { DriveEntrenador } from './entrenador/proceso.ts';
 
 type Dependencies = {
   pool: Pool;
@@ -14,6 +18,11 @@ type Dependencies = {
   /** Avisa de que hay trabajo nuevo en la bandeja, para no esperar al siguiente ciclo. */
   kick: () => void;
   env?: NodeJS.ProcessEnv;
+  /** Calificador: quién escribe el feedback humano y por dónde se envía al comercial. */
+  actor?: (res: Response) => { id: string; nombre: string };
+  enviar?: Enviador | null;
+  /** Documento del entrenador: carpeta de Drive y token de la cuenta con drive.file. */
+  entrenadorDrive?: DriveEntrenador | null;
 };
 
 const CONTROL_STATE_TTL_MS = 3 * 3600_000;
@@ -173,13 +182,15 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
            NULLIF(CONCAT_WS(' ', cl.nombre, cl.apellido), '') AS client_name, l.name AS lead_name,
            c.agent_extension, COALESCE(NULLIF(CONCAT_WS(' ', e.nombre, e.apellido), ''), x.label) AS agent_name,
            CASE t.status WHEN 'processing' THEN 'pending' ELSE t.status END AS transcription_status,
-           t.status = 'processing' AS transcribing, t.progress AS transcription_progress
+           t.status = 'processing' AS transcribing, t.progress AS transcription_progress,
+           ev.estado AS evaluation_status, ev.nota AS evaluation_score, ev.apto AS evaluation_pass, ev.escalado AS evaluation_escalated
     FROM netelip_calls c
     LEFT JOIN clientes cl ON cl.id = c.client_id
     LEFT JOIN crm_leads l ON l.id = c.lead_id
     LEFT JOIN netelip_extensions x ON x.extension = c.agent_extension
     LEFT JOIN empleados e ON e.id = x.empleado_id
-    LEFT JOIN netelip_call_transcriptions t ON t.call_id = c.id`;
+    LEFT JOIN netelip_call_transcriptions t ON t.call_id = c.id
+    LEFT JOIN llamada_evaluacion ev ON ev.llamada_id = c.id`;
 
   type CallRow = Record<string, unknown> & { client_id: string | null; lead_id: string | null; client_name: string | null; lead_name: string | null; agent_extension: string | null; agent_name: string | null };
   const toItem = (row: CallRow) => ({
@@ -192,6 +203,8 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
     // Dentro de «pending»: en cola o transcribiendo, con su avance (0-100).
     transcription_phase: row.transcription_status === 'pending' ? (row.transcribing ? 'processing' : 'queued') : null,
     transcription_progress: row.transcribing && row.transcription_progress !== null ? Number(row.transcription_progress) : null,
+    // Calificador interno (869e9y98n): resumen para la tabla; el detalle va en /evaluacion.
+    evaluation: row.evaluation_status ? { status: row.evaluation_status, score: row.evaluation_score ?? null, pass: row.evaluation_pass ?? null, escalated: Boolean(row.evaluation_escalated) } : null,
   });
 
   app.get('/api/netelip/calls', access, async (req, res) => {
@@ -316,4 +329,7 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
       res.json(rows[0]);
     } catch (error) { fail(res, error); }
   });
+
+  registerCalificador(app, { pool, access, role: deps.role, actor: deps.actor, enviar: deps.enviar, fail, canReadTranscripts: (role) => canReadTranscripts(role, env), env });
+  registerEntrenador(app, { pool, access, role: deps.role, actor: deps.actor, fail, env, drive: deps.entrenadorDrive });
 }

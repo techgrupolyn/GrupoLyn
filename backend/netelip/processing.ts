@@ -10,6 +10,7 @@ import { loadDirectoryIndex, matchPhone } from './contacts.ts';
 import { InvalidPhone, toE164, tryE164 } from './phone.ts';
 import type { TranscriptionEngine } from './transcription.ts';
 import { madridDay, partiesFromRecording, type VdriveClient } from './vdrive.ts';
+import { encolarEvaluacion } from './calificador/encolar.ts';
 
 export const TRANSCRIPTION_BACKOFF_SECONDS = [60, 300, 900];
 export const MAX_TRANSCRIPTION_ATTEMPTS = 3;
@@ -204,6 +205,8 @@ export async function processNextTranscription(pool: Pool, engine: Transcription
       [job.call_id, transcript.engine, transcript.language, transcript.text, transcript.segments ? JSON.stringify(transcript.segments) : null, attempt],
     );
     console.log(JSON.stringify({ msg: 'netelip_transcription_completed', call_id: job.call_id, chars: transcript.text.length }));
+    // Calificador interno (869e9y98n): solo si la extensión tiene comercial activo y la llamada dura ≥ 60 s.
+    await encolarEvaluacion(pool, job.call_id).catch((error) => console.error('[calificador] No se pudo encolar la evaluación:', (error as Error).message));
     return 'completed';
   } catch (error) {
     const final = attempt >= MAX_TRANSCRIPTION_ATTEMPTS;
@@ -218,7 +221,10 @@ export async function processNextTranscription(pool: Pool, engine: Transcription
       [job.call_id, attempt, message, engine.name, final, delay],
     );
     console.error(JSON.stringify({ msg: 'netelip_transcription_failed', call_id: job.call_id, attempt, final, error: message.slice(0, 300) }));
-    if (final) await notifyTech('Transcripción de llamada fallida', { call_id: job.call_id, external_id: job.external_id, attempts: attempt, error: message.slice(0, 500) });
+    if (final) {
+      await notifyTech('Transcripción de llamada fallida', { call_id: job.call_id, external_id: job.external_id, attempts: attempt, error: message.slice(0, 500) });
+      await encolarEvaluacion(pool, job.call_id, 'transcripción no disponible').catch(() => undefined);
+    }
     return final ? 'failed' : 'retrying';
   }
 }

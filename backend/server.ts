@@ -26,6 +26,7 @@ import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from '
 import { meetingReviewChain, meetingEmployeeRoles, meetingStageRecipientCondition, canDeleteMeetingActionsForRole } from './meeting-routing.ts';
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
 import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
+import { idCarpetaDrive } from './netelip/entrenador/drive.ts';
 import { ensureProjectMeetingSchema, registerProjectMeetingRoutes, refreshProjectMeetings, syncProjectMeeting } from './meeting-project-workflow.ts';
 import { exactActionProject, reconcileMeetingActionProjects } from './meeting-project-linking.ts';
 import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryMessagesReviewed, createSummaryQueue, publicSummaryJob, summaryJobStorage, SummaryJobError, type SummaryJob } from './summary-jobs.ts';
@@ -64,6 +65,9 @@ const MEETING_AI_BACKGROUND_ANALYSIS_ENABLED = process.env.MEETING_AI_BACKGROUND
 const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL?.trim() || (() => { try { return new URL(WEBHOOK_URL).origin; } catch { return ''; } })();
 const GOOGLE_DRIVE_CLIENT_ID = process.env.GOOGLE_DRIVE_CLIENT_ID?.trim() || '';
 const GOOGLE_DRIVE_CLIENT_SECRET = process.env.GOOGLE_DRIVE_CLIENT_SECRET?.trim() || '';
+// Documento del entrenador de llamadas: carpeta de Drive (ID o enlace) y cuenta conectada que lo publica.
+const ENTRENADOR_DRIVE_CARPETA = idCarpetaDrive(process.env.ENTRENADOR_DRIVE_CARPETA);
+const ENTRENADOR_DRIVE_CUENTA = process.env.ENTRENADOR_DRIVE_CUENTA?.trim().toLowerCase() || '';
 const GOOGLE_DRIVE_OAUTH_REDIRECT_URI = process.env.GOOGLE_DRIVE_OAUTH_REDIRECT_URI?.trim() || (PUBLIC_APP_URL ? `${PUBLIC_APP_URL}/api/integrations/google-drive/oauth/callback` : '');
 const GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY = process.env.GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY?.trim() || '';
 const GOOGLE_DRIVE_SYNC_PAGE_SIZE = boundedInterval(process.env.GOOGLE_DRIVE_SYNC_PAGE_SIZE || process.env.GOOGLE_DRIVE_SYNC_MAX_FILES, 1_000, 10, 1_000);
@@ -1496,6 +1500,8 @@ function googleDriveAuthorizationUrl(session: CeoSession): string {
     'profile',
     'https://www.googleapis.com/auth/drive.readonly',
     'https://www.googleapis.com/auth/calendar.events.readonly',
+    // Documento del entrenador de llamadas: drive.file solo da acceso a los archivos que crea la app.
+    ...(ENTRENADOR_DRIVE_CARPETA ? ['https://www.googleapis.com/auth/drive.file'] : []),
   ].join(' '));
   url.searchParams.set('state', createGoogleDriveOAuthState(session));
   return url.toString();
@@ -1565,6 +1571,15 @@ async function googleDriveAccessToken(connectionId: string): Promise<string> {
     [connection.id, encryptGoogleDriveSecret(String(payload.access_token), GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY), expiresAt],
   );
   return String(payload.access_token);
+}
+
+/** Token de la cuenta que publica el documento del entrenador; exige que la conexión tenga drive.file. */
+async function entrenadorDriveToken(): Promise<string> {
+  const { rows: [connection] } = await pool.query<{ id: string; scope: string | null }>(
+    'SELECT id, scope FROM google_drive_connections WHERE google_email = $1 AND revoked_at IS NULL', [ENTRENADOR_DRIVE_CUENTA]);
+  if (!connection) throw new Error(`La cuenta ${ENTRENADOR_DRIVE_CUENTA} no está conectada a Google Drive. Conéctala desde Reuniones.`);
+  if (!String(connection.scope || '').includes('/auth/drive.file')) throw new Error(`La cuenta ${ENTRENADOR_DRIVE_CUENTA} no tiene permiso de escritura (drive.file). Vuelve a conectarla desde Reuniones.`);
+  return googleDriveAccessToken(connection.id);
 }
 
 async function googleDriveFetch(path: string, accessToken: string, resourceKeys?: string): Promise<globalThis.Response> {
@@ -9019,10 +9034,17 @@ app.post('/api/protocolos/:id/confirmar', requireProtocolUser, async (req: Reque
     res.status(saved ? 200 : 404).json(saved ? { ok: true } : { error: 'Consulta no encontrada o ya confirmada' });
   } catch { res.status(503).json({ error: 'No se pudo guardar la confirmación' }); }
 });
-const netelipWorkers = createNetelipWorkers(pool);
+// Calificador de llamadas: feedback al comercial y al supervisor por el WhatsApp de la instancia de Evolution.
+const enviarWhatsAppCalificador = async (telefonoE164: string, texto: string) => {
+  await evolutionFetch(`/message/sendText/${INSTANCE_NAME}`, { method: 'POST', body: JSON.stringify({ number: telefonoE164.replace(/\D/g, ''), text: texto }) });
+};
+const netelipWorkers = createNetelipWorkers(pool, process.env, { enviar: enviarWhatsAppCalificador });
 registerNetelipCalls(app, {
   pool, admin: requireCeoAuth, kick: netelipWorkers.kick,
   role: (res) => String((res.locals.ceoSession as CeoSession | undefined)?.rol || ''),
+  actor: (res) => ({ id: meetingAuditIdentity(res).id, nombre: meetingAuditActor(res) }),
+  enviar: enviarWhatsAppCalificador,
+  entrenadorDrive: ENTRENADOR_DRIVE_CARPETA && ENTRENADOR_DRIVE_CUENTA ? { carpetaId: ENTRENADOR_DRIVE_CARPETA, token: entrenadorDriveToken } : null,
 });
 registerDashboardOperations(app, {
   pool, admin: requireCeoAuth, actor: meetingAuditActor, identity: meetingAuditIdentity,
