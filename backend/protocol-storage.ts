@@ -2,6 +2,7 @@ import type { Pool } from 'pg';
 import type { ProtocolCorpus } from './protocol-corpus.ts';
 import type { ProtocolLog } from './protocol-agent.ts';
 import type { ProtocolSyncReport } from './protocol-drive.ts';
+import type { ProtocolSection } from './protocol-answer-validation.ts';
 
 export async function ensureProtocolSchema(pool: Pool): Promise<void> {
   await pool.query(`
@@ -55,7 +56,30 @@ export async function ensureProtocolSchema(pool: Pool): Promise<void> {
       verificado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (archivo_id, revision, pagina)
     );
+    CREATE TABLE IF NOT EXISTS agente_protocolos_video_cache (
+      archivo_id TEXT NOT NULL,
+      revision TEXT NOT NULL,
+      secciones JSONB NOT NULL,
+      importado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (archivo_id, revision)
+    );
   `);
+}
+
+export async function loadProtocolVideoCache(pool: Pool, fileId: string, revision: string): Promise<ProtocolSection[] | null> {
+  const result = await pool.query<{ secciones: ProtocolSection[] }>(
+    'SELECT secciones FROM agente_protocolos_video_cache WHERE archivo_id=$1 AND revision=$2',
+    [fileId, revision],
+  );
+  return result.rows[0]?.secciones || null;
+}
+
+export async function saveProtocolVideoCache(pool: Pool, fileId: string, revision: string, sections: ProtocolSection[]): Promise<void> {
+  await pool.query(
+    `INSERT INTO agente_protocolos_video_cache (archivo_id, revision, secciones)
+     VALUES ($1,$2,$3::jsonb) ON CONFLICT (archivo_id, revision) DO NOTHING`,
+    [fileId, revision, JSON.stringify(sections)],
+  );
 }
 
 export async function loadProtocolVisionCache(pool: Pool, fileId: string, revision: string, page: string, imageHash: string): Promise<string | null> {

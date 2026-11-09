@@ -22,7 +22,7 @@ export type ProtocolLog = {
   reason: ProtocolAnswer['motivo_no_respuesta'];
   area: string;
   topic: string;
-  sources: Array<{ doc_id: string; name: string; modifiedTime: string; revision: string; seccion: string; cita: string }>;
+  sources: Array<{ doc_id: string; name: string; mimeType?: string; modifiedTime: string; revision: string; seccion: string; cita: string }>;
   derivationRole: string | null;
   contradiction: ProtocolAnswer['contradiccion'];
   validation: 'ok' | 'reintento' | 'rechazada';
@@ -179,7 +179,7 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
     }
     const sources = parsed.fuentes.map(source => {
       const file = modelFiles.find(item => item.id === source.doc_id)!;
-      return { ...source, name: file.name, modifiedTime: file.modifiedTime, revision: file.revision };
+      return { ...source, name: file.name, mimeType: file.mimeType, modifiedTime: file.modifiedTime, revision: file.revision };
     });
     const answer = parsed.motivo_no_respuesta === null ? parsed.respuesta : unansweredText(parsed.motivo_no_respuesta, parsed.cargo_derivacion!);
     const log: ProtocolLog = { ...common, answer, classification: parsed.clasificacion, reason: parsed.motivo_no_respuesta, area: parsed.area, topic: normalizeTopic(parsed.tema), sources, derivationRole: parsed.cargo_derivacion, contradiction: parsed.contradiccion, validation: attempt ? 'reintento' : 'ok', model: generation.model, inputTokens: generation.inputTokens ?? null, outputTokens: generation.outputTokens ?? null, latencyMs: (dependencies.now || Date.now)() - start, error: null };
