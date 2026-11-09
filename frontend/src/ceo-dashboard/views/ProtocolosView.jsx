@@ -6,7 +6,12 @@ const projectSheetId = '1H43otMwHAzD724u-e2s8czAoNLnxCW95kOUm3bNhG3w';
 const projectSheetTabs = { 'PM DELINEANTE': '940712510', INTERIORISTAS: '1638569767' };
 
 function sourceUrl(source) {
-  if (source.doc_id !== projectSheetId) return `https://drive.google.com/file/d/${encodeURIComponent(source.doc_id)}/view`;
+  if (source.doc_id !== projectSheetId) {
+    const url = `https://drive.google.com/file/d/${encodeURIComponent(source.doc_id)}/view`;
+    const timestamp = /^video (\d{2}):(\d{2}):(\d{2})$/u.exec(source.seccion);
+    if (!source.mimeType?.startsWith('video/') || !timestamp) return url;
+    return `${url}?t=${Number(timestamp[1]) * 3600 + Number(timestamp[2]) * 60 + Number(timestamp[3])}`;
+  }
   const [tab, cell] = source.seccion.split('!');
   const gid = projectSheetTabs[tab];
   return `https://docs.google.com/spreadsheets/d/${projectSheetId}/edit${gid ? `?gid=${gid}&range=${encodeURIComponent(cell)}` : ''}`;
