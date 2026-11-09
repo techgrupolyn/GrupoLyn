@@ -4,7 +4,8 @@ import type { Pool } from 'pg';
 import { controlConfigFromEnv, isRecordingNotice, nextCommand, type CallState } from './control.ts';
 import { bodyFields, IgnoredEvent, InvalidEvent, ipAllowed, isInternal, NETELIP_TRUSTED_NETWORKS, parseWhatsAppCall, tokenMatches } from './events.ts';
 import { maskPhone } from './phone.ts';
-import { acceptInbox, parseCallRecording, type InboxKind } from './processing.ts';
+import { acceptInbox, parseCallRecording, requeueFailedTranscriptions, type InboxKind } from './processing.ts';
+import { vdriveConfigFromEnv } from './vdrive.ts';
 
 type Dependencies = {
   pool: Pool;
@@ -289,6 +290,31 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
       res.setHeader('Cache-Control', 'no-store');
       res.json(transcription);
     } catch (error) { fail(res, error); }
+  });
+
+  // Reintentar transcripciones fallidas (p. ej. tras subir NETELIP_WHISPER_TIMEOUT_MINUTES). El audio se
+  // vuelve a bajar de vDrive: sin acceso a vDrive fallarían otra vez, así que no se reencolan.
+  const MAX_RETRY = 100;
+  const retry = async (res: Response, ids: number[]) => {
+    if (!vdriveConfigFromEnv(env)) return res.status(409).json({ error: 'Para reintentar hace falta acceso a vDrive (NETELIP_VDRIVE_USER y NETELIP_VDRIVE_APP_PASSWORD): el enlace de descarga de Netelip ya no está disponible.' });
+    const requeued = await requeueFailedTranscriptions(pool, ids);
+    if (requeued.length) deps.kick();
+    return res.status(requeued.length ? 202 : 409).json(requeued.length
+      ? { requeued }
+      : { error: 'No hay transcripciones fallidas que reintentar (solo se reintentan llamadas de Netelip).' });
+  };
+
+  app.post('/api/netelip/calls/:id/transcription/retry', access, async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: 'Identificador de llamada no válido.' });
+    try { await retry(res, [id]); } catch (error) { fail(res, error); }
+  });
+
+  app.post('/api/netelip/transcriptions/retry', access, async (req, res) => {
+    const raw = Array.isArray(req.body?.call_ids) ? req.body.call_ids : [];
+    const ids = [...new Set(raw.map(Number).filter((n: number) => Number.isSafeInteger(n) && n > 0))] as number[];
+    if (!ids.length || ids.length > MAX_RETRY) return res.status(400).json({ error: `Indica entre 1 y ${MAX_RETRY} llamadas.` });
+    try { await retry(res, ids); } catch (error) { fail(res, error); }
   });
 
   /** Teléfonos pendientes de resolución: llamadas sin lead ni cliente, o con varias coincidencias. */

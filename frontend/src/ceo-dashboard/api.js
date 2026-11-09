@@ -148,6 +148,9 @@ export const api = {
     calls: (query) => request(`/netelip/calls?${query}`),
     call: (id) => request(`/netelip/calls/${encodeURIComponent(id)}`),
     filterOptions: () => request('/netelip/calls/filter-options'),
+    // Reencolar transcripciones fallidas (una llamada o varias).
+    retryTranscription: (id) => request(`/netelip/calls/${encodeURIComponent(id)}/transcription/retry`, { method: 'POST' }),
+    retryTranscriptions: (callIds) => request('/netelip/transcriptions/retry', { method: 'POST', body: JSON.stringify({ call_ids: callIds }) }),
   },
   meetings: {
     recording: (id) => request(`/meetings/${encodeURIComponent(id)}/recording`),

@@ -166,6 +166,23 @@ export async function ingestWhatsAppCall(pool: Pool, event: WhatsAppCallEvent, r
 
 // --- Transcripción ----------------------------------------------------------------------------
 
+/**
+ * Vuelve a poner en cola transcripciones fallidas, con los intentos a cero. Al fallar del todo se borra la
+ * URL de descarga, así que el audio se vuelve a bajar de vDrive por su ruta: solo llamadas de Netelip
+ * (las de WhatsApp vienen de Asterisk). Devuelve las llamadas reencoladas.
+ */
+export async function requeueFailedTranscriptions(pool: Pool, callIds: number[]): Promise<number[]> {
+  if (!callIds.length) return [];
+  const { rows } = await pool.query<{ call_id: string }>(
+    `UPDATE netelip_call_transcriptions t SET status = 'pending', attempts = 0, last_error = NULL, progress = NULL,
+       next_attempt_at = NOW(), updated_at = NOW()
+     FROM netelip_calls c
+     WHERE c.id = t.call_id AND t.call_id = ANY($1::bigint[]) AND t.status = 'failed' AND c.via = 'phone'
+     RETURNING t.call_id`, [callIds]);
+  if (rows.length) console.log(JSON.stringify({ msg: 'netelip_transcription_requeued', calls: rows.map((r) => Number(r.call_id)) }));
+  return rows.map((r) => Number(r.call_id));
+}
+
 /** Un intento de transcripción de la siguiente llamada pendiente. Devuelve el resultado o null si no había. */
 export async function processNextTranscription(pool: Pool, engine: TranscriptionEngine): Promise<string | null> {
   // `processing` con plazo vencido: el proceso se cayó a mitad; se reintenta.

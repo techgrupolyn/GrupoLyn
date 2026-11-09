@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/ceo-dashboard/api', () => ({
-  default: { netelip: { calls: vi.fn(), call: vi.fn(), filterOptions: vi.fn() } },
+  default: { netelip: { calls: vi.fn(), call: vi.fn(), filterOptions: vi.fn(), retryTranscription: vi.fn(), retryTranscriptions: vi.fn() } },
 }));
 
 import api from '../src/ceo-dashboard/api';
@@ -124,6 +124,38 @@ describe('NetelipCallsView', () => {
     window.history.replaceState({}, '', '/?view=netelip&call=1');
     render(<NetelipCallsView />);
     expect(await screen.findByText(text)).toBeInTheDocument();
+  });
+
+  it('una transcripción fallida se puede reintentar desde el detalle', async () => {
+    vi.mocked(api.netelip.call).mockResolvedValue({ call: calls[0], transcription_access: 'granted', transcription: { status: 'failed' } });
+    vi.mocked(api.netelip.retryTranscription).mockResolvedValue({ requeued: [1] });
+    window.history.replaceState({}, '', '/?view=netelip&call=1');
+    render(<NetelipCallsView />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar transcripción' }));
+    await waitFor(() => expect(api.netelip.retryTranscription).toHaveBeenCalledWith(1));
+    expect(await screen.findByText(/la llamada está en cola/)).toBeInTheDocument();
+  });
+
+  it('si no se puede reintentar, enseña el motivo', async () => {
+    vi.mocked(api.netelip.call).mockResolvedValue({ call: calls[0], transcription_access: 'granted', transcription: { status: 'failed' } });
+    vi.mocked(api.netelip.retryTranscription).mockRejectedValue(Object.assign(new Error('HTTP 409'), { body: 'Para reintentar hace falta acceso a vDrive.' }));
+    window.history.replaceState({}, '', '/?view=netelip&call=1');
+    render(<NetelipCallsView />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar transcripción' }));
+    expect(await screen.findByText('Para reintentar hace falta acceso a vDrive.')).toBeInTheDocument();
+  });
+
+  it('con el filtro de fallidas, reintenta todas las de la lista menos las de WhatsApp', async () => {
+    vi.mocked(api.netelip.calls).mockResolvedValue(page([
+      { ...calls[0], id: 10, transcription_status: 'failed' },
+      { ...calls[0], id: 11, transcription_status: 'failed' },
+      { ...calls[1], id: 12, transcription_status: 'failed' },
+    ]));
+    vi.mocked(api.netelip.retryTranscriptions).mockResolvedValue({ requeued: [10, 11] });
+    window.history.replaceState({}, '', '/?view=netelip&tr=failed');
+    render(<NetelipCallsView />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Reintentar las 2' }));
+    await waitFor(() => expect(api.netelip.retryTranscriptions).toHaveBeenCalledWith([10, 11]));
   });
 
   it('muestra «En cola» y la barra de avance mientras se transcribe', async () => {
