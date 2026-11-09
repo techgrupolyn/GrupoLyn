@@ -50,7 +50,10 @@ export function formatOffset(seconds) {
   return formatDuration(Math.floor(Number(seconds) || 0));
 }
 
-export const DEFAULT_CALL_FILTERS = { dir: '', via: '', agent: '', contact: '', tr: '', period: '', from: '', to: '', sort: 'recent', q: '', page: 1, call: '' };
+// Resultado de la llamada (también las no contestadas de las extensiones registradas). «missed»: todas las perdidas.
+export const CALL_RESULT_LABEL = { contestada: 'Contestada', no_contestada: 'No contestada', colgada: 'Colgada antes de contestar', ocupado: 'Ocupado', no_disponible: 'No disponible', en_curso: 'En curso' };
+
+export const DEFAULT_CALL_FILTERS = { dir: '', via: '', agent: '', contact: '', tr: '', res: '', period: '', from: '', to: '', sort: 'recent', q: '', page: 1, call: '' };
 const FILTER_KEYS = Object.keys(DEFAULT_CALL_FILTERS);
 
 export function readCallFilters(search = '') {
@@ -86,6 +89,7 @@ export function callListQuery(filters, now = new Date()) {
   if (filters.agent) params.set('agent', filters.agent);
   if (filters.contact) params.set('contact', filters.contact);
   if (filters.tr) params.set('transcription', filters.tr);
+  if (filters.res) params.set('result', filters.res);
   if (filters.q) params.set('q', filters.q);
   if (filters.sort === 'oldest') params.set('sort', 'occurred_at_asc');
   else if (filters.sort === 'longest') params.set('sort', 'duration_desc');

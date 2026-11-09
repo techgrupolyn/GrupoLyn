@@ -5,6 +5,10 @@ import { controlConfigFromEnv, isRecordingNotice, nextCommand, type CallState } 
 import { bodyFields, IgnoredEvent, InvalidEvent, ipAllowed, isInternal, NETELIP_TRUSTED_NETWORKS, parseWhatsAppCall, tokenMatches } from './events.ts';
 import { maskPhone } from './phone.ts';
 import { acceptInbox, parseCallRecording, type InboxKind } from './processing.ts';
+import { CALL_RESULTS, isStatusNotification, parseStatusEvent, registeredExtensions } from './status-events.ts';
+
+// Llamadas perdidas: no llegaron a hablar.
+const MISSED = "'no_contestada','ocupado','colgada','no_disponible'";
 import { registerCalificador } from './calificador/rutas.ts';
 import type { Enviador } from './calificador/proceso.ts';
 import { registerEntrenador } from './entrenador/rutas.ts';
@@ -98,6 +102,12 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
       } else if (kind === 'whatsapp-call') {
         inboxKind = 'whatsapp_call';
         payload = parseWhatsAppCall(fields);
+      } else if (kind === 'callrecording' && registeredExtensions(env).length && isStatusNotification(fields)) {
+        // Notificación de estado (ring, answer, hangup…) de una extensión cuyas llamadas se registran todas.
+        const event = parseStatusEvent(fields as Record<string, unknown>, registeredExtensions(env));
+        if (!event) throw new IgnoredEvent('call', null);
+        inboxKind = 'call_event';
+        payload = event;
       } else if (kind === 'callrecording') {
         const event = parseCallRecording(fields);
         if (isInternal(event)) return res.status(200).type('text').send('ignored');
@@ -177,6 +187,7 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
 
   const CALL_SELECT = `
     SELECT c.id, c.external_id, c.via, c.direction, c.occurred_at, c.contact_status, c.duration_seconds, c.call_status,
+           COALESCE(c.resultado, 'contestada') AS result, c.audio_ref IS NOT NULL AS recorded,
            CASE WHEN c.contact_status = 'hidden' THEN NULL ELSE COALESCE(c.phone_e164, c.counterpart_phone) END AS phone,
            c.client_id, c.lead_id::text AS lead_id,
            NULLIF(CONCAT_WS(' ', cl.nombre, cl.apellido), '') AS client_name, l.name AS lead_name,
@@ -200,6 +211,8 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
       : row.lead_id ? { type: 'lead', id: row.lead_id, name: row.lead_name || '' } : null,
     agent: row.agent_extension ? { extension: row.agent_extension, name: row.agent_name || null } : null,
     duration_seconds: row.duration_seconds, call_status: row.call_status, transcription_status: row.transcription_status || null,
+    // Resultado de la llamada (las grabadas son siempre contestadas) y si tiene grabación.
+    result: row.result, recorded: Boolean(row.recorded),
     // Dentro de «pending»: en cola o transcribiendo, con su avance (0-100).
     transcription_phase: row.transcription_status === 'pending' ? (row.transcribing ? 'processing' : 'queued') : null,
     transcription_progress: row.transcribing && row.transcription_progress !== null ? Number(row.transcription_progress) : null,
@@ -236,6 +249,8 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
     if (q.transcription === 'pending') table.push("t.status IN ('pending','processing')");
     else if (q.transcription === 'completed' || q.transcription === 'failed') add(table, 't.status = ?', q.transcription);
     else if (q.transcription === 'none') table.push('t.call_id IS NULL');
+    if (q.result === 'missed') table.push(`c.resultado IN (${MISSED})`);
+    else if (q.result && (CALL_RESULTS as readonly string[]).includes(q.result)) add(table, "COALESCE(c.resultado, 'contestada') = ?", q.result);
     const where = (list: string[]) => (list.length ? `WHERE ${list.join(' AND ')}` : '');
     const order = q.sort === 'occurred_at_asc' ? 'c.occurred_at ASC, c.id ASC' : q.sort === 'duration_desc' ? 'c.duration_seconds DESC, c.id DESC' : 'c.occurred_at DESC, c.id DESC';
     try {
@@ -247,14 +262,15 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
         pool.query<Record<string, string>>(`SELECT COUNT(*) AS calls,
             COUNT(*) FILTER (WHERE c.contact_status <> 'matched') AS unidentified,
             COUNT(*) FILTER (WHERE t.status IN ('pending','processing')) AS transcription_pending,
-            COUNT(*) FILTER (WHERE t.status = 'failed') AS transcription_failed
+            COUNT(*) FILTER (WHERE t.status = 'failed') AS transcription_failed,
+            COUNT(*) FILTER (WHERE c.resultado IN (${MISSED})) AS missed
           ${joins} ${where(base)}`, params),
       ]);
       const count = Number(total.rows[0].total);
       const m = metrics.rows[0];
       res.json({
         items: rows.rows.map(toItem), page, pageSize, total: count, totalPages: Math.max(1, Math.ceil(count / pageSize)),
-        metrics: { calls: Number(m.calls), unidentified: Number(m.unidentified), transcription_pending: Number(m.transcription_pending), transcription_failed: Number(m.transcription_failed) },
+        metrics: { calls: Number(m.calls), unidentified: Number(m.unidentified), transcription_pending: Number(m.transcription_pending), transcription_failed: Number(m.transcription_failed), missed: Number(m.missed) },
         can_read_transcripts: canReadTranscripts(deps.role(res), env),
       });
     } catch (error) { fail(res, error); }
