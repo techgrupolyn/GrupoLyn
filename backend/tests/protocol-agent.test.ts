@@ -25,6 +25,16 @@ function dependencies(responses: string[]) {
 }
 
 describe('agente de protocolos', () => {
+  it('enmascara el contexto del widget y registra el canal de Club LYN', async () => {
+    const services = dependencies([modelAnswer]);
+    await askProtocolAgent({
+      userId: 1, role: 'Interiorista', question: '¿Quién revisa el presupuesto?', channel: 'club_lyn',
+      context: [{ author: 'user', text: 'Mi correo es maria@example.com y mi teléfono es +34600123456' }],
+    }, services);
+    expect(services.generate.mock.calls[0].join(' ')).not.toMatch(/maria@example\.com|\+34600123456/iu);
+    expect(services.logs[0].channel).toBe('club_lyn');
+  });
+
   it('enmascara datos antes del modelo y del registro, valida y guarda versión y revisión', async () => {
     const services = dependencies([modelAnswer]);
     const result = await askProtocolAgent({ userId: 1, role: 'Interiorista', question: 'María López, maria@example.com, +34600123456: ¿quién revisa el presupuesto?', channel: 'superagente' }, services);

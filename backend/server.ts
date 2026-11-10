@@ -33,7 +33,9 @@ import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryM
 import { generateBatchedGlobalSummary } from './global-summary-batches.ts';
 import { evolutionHistoryPages } from './evolution-history.ts';
 import { ensureWhatsAppReliability, createWhatsAppInbox, pendingWhatsAppCoverage, recordWhatsAppHealth } from './whatsapp-reliability.ts';
-import { askProtocolAgent } from './protocol-agent.ts';
+import { askProtocolAgent, type ProtocolAgentDependencies } from './protocol-agent.ts';
+import { createClubProtocolRouter } from './protocol-club-api.ts';
+import { resolveProtocolClubIdentity } from './protocol-club-identity.ts';
 import { syncProtocolDrive } from './protocol-drive.ts';
 import { callProtocolGemini } from './protocol-gemini.ts';
 import { canReadProtocolLog, canReadProtocolReport, hasClubAdminRole } from './protocol-privacy.ts';
@@ -204,6 +206,17 @@ app.use(cors({
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(compression());
 app.use('/api/integrations/club-lyn/phone-evidence', createPhoneEvidenceRouter(phoneEvidenceConfigFromEnv(), createPhoneEvidenceLookup(pool), createPhonePrefixInference(pool)));
+app.use('/api/club/protocolos', express.json({ limit: '20kb' }), createClubProtocolRouter({
+  enabled: process.env.PROTOCOL_AGENT_ENABLED === 'true' && process.env.PROTOCOL_CLUB_ENABLED === 'true',
+  serviceToken: process.env.CROSS_SSO_CLUB_TO_AGENT_TOKEN || '',
+  resolveUser: (externalId) => resolveProtocolClubIdentity(pool, externalId, dashboardRoleFromOrgPosition),
+  ask: (user, question, context) => askProtocolAgent({ userId: user.id, role: user.role, question, context, channel: 'club_lyn' }, protocolAgentDependencies()),
+  confirm: (user, id, resolved) => recordProtocolFeedback(pool, id, user.id, resolved, 'club_lyn'),
+  status: async () => {
+    const [corpus, lastSyncedAt] = await Promise.all([loadProtocolCorpus(pool), loadLastSuccessfulProtocolSync(pool)]);
+    return { versionId: corpus?.id || null, updatedAt: corpus?.createdAt || null, lastSyncedAt, fileCount: corpus?.files.length || 0 };
+  },
+}));
 app.use(express.json({ limit: '10mb' }));
 
 const limiter = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false,
@@ -9000,25 +9013,29 @@ app.post('/api/protocolos/sincronizar', requireCeoAuth, async (_req: Request, re
   catch { res.status(503).json({ error: 'No se pudo sincronizar la carpeta de protocolos' }); }
 });
 
+function protocolAgentDependencies(): ProtocolAgentDependencies {
+  return {
+    loadCorpus: () => loadProtocolCorpus(pool),
+    clientNames: async () => (await pool.query<{ name: string }>("SELECT CONCAT_WS(' ', nombre, apellido) AS name FROM clientes")).rows.map(row => row.name),
+    roles: async () => (await pool.query<{ name: string; person: string | null }>(
+      `SELECT c.nombre AS name, STRING_AGG(CONCAT_WS(' ', e.nombre, e.apellido), ', ' ORDER BY a.source_assigned_at DESC NULLS LAST) AS person
+       FROM organigrama_cargos c LEFT JOIN organigrama_cargo_asignaciones a ON a.cargo_id=c.id AND a.activo=TRUE AND a.proyecto_id IS NULL
+       LEFT JOIN empleados e ON e.id=a.empleado_id WHERE c.activo=TRUE GROUP BY c.id, c.nombre`,
+    )).rows.map(row => ({ name: row.name, person: row.person || undefined })),
+    topics: async () => (await pool.query<{ tema: string }>(
+      `SELECT tema FROM agente_protocolos_consultas GROUP BY tema ORDER BY COUNT(*) DESC LIMIT 150`,
+    )).rows.map(row => row.tema),
+    generate: (system, user) => callProtocolGemini(system, user),
+    save: (log) => saveProtocolQuery(pool, log),
+  };
+}
+
 app.post('/api/protocolos/consultar', requireProtocolUser, protocolQueryLimiter, async (req: Request, res: Response) => {
   if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.status(503).json({ error: 'El agente de protocolos no está activo' });
   const session = res.locals.ceoSession as CeoSession;
   if (!session.id) return res.status(401).json({ error: 'Identidad no disponible' });
   try {
-    const result = await askProtocolAgent({ userId: session.id, role: String(session.rol || ''), question: String(req.body?.pregunta || ''), channel: 'superagente' }, {
-      loadCorpus: () => loadProtocolCorpus(pool),
-      clientNames: async () => (await pool.query<{ name: string }>("SELECT CONCAT_WS(' ', nombre, apellido) AS name FROM clientes")).rows.map(row => row.name),
-      roles: async () => (await pool.query<{ name: string; person: string | null }>(
-        `SELECT c.nombre AS name, STRING_AGG(CONCAT_WS(' ', e.nombre, e.apellido), ', ' ORDER BY a.source_assigned_at DESC NULLS LAST) AS person
-         FROM organigrama_cargos c LEFT JOIN organigrama_cargo_asignaciones a ON a.cargo_id=c.id AND a.activo=TRUE AND a.proyecto_id IS NULL
-         LEFT JOIN empleados e ON e.id=a.empleado_id WHERE c.activo=TRUE GROUP BY c.id, c.nombre`,
-      )).rows.map(row => ({ name: row.name, person: row.person || undefined })),
-      topics: async () => (await pool.query<{ tema: string }>(
-        `SELECT tema FROM agente_protocolos_consultas GROUP BY tema ORDER BY COUNT(*) DESC LIMIT 150`,
-      )).rows.map(row => row.tema),
-      generate: (system, user) => callProtocolGemini(system, user),
-      save: (log) => saveProtocolQuery(pool, log),
-    });
+    const result = await askProtocolAgent({ userId: session.id, role: String(session.rol || ''), question: String(req.body?.pregunta || ''), channel: 'superagente' }, protocolAgentDependencies());
     res.json(result);
   } catch (error) {
     const message = (error as Error).message;
