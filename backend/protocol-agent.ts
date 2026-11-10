@@ -9,13 +9,15 @@ export type ProtocolQuery = {
   userId: number;
   role: string;
   question: string;
-  channel: 'superagente';
+  channel: 'superagente' | 'club_lyn';
+  context?: Array<{ author: 'user' | 'assistant'; text: string }>;
 };
 
 export type ProtocolLog = {
   id: string;
   userId: number;
   role: string;
+  channel: ProtocolQuery['channel'];
   question: string;
   answer: string;
   classification: ProtocolAnswer['clasificacion'] | 'no_urgente';
@@ -83,7 +85,7 @@ function unansweredText(reason: Exclude<ProtocolAnswer['motivo_no_respuesta'], n
 export async function askProtocolAgent(query: ProtocolQuery, dependencies: ProtocolAgentDependencies): Promise<ProtocolAgentResult> {
   const start = (dependencies.now || Date.now)();
   const id = randomUUID();
-  if (!Number.isSafeInteger(query.userId) || query.userId < 1 || !query.role.trim() || !query.question.trim() || query.question.length > 2000 || query.channel !== 'superagente') throw new Error('Consulta inválida');
+  if (!Number.isSafeInteger(query.userId) || query.userId < 1 || !query.role.trim() || !query.question.trim() || query.question.length > 2000 || !['superagente', 'club_lyn'].includes(query.channel) || (query.context && (query.context.length > 6 || query.context.some(turn => !['user', 'assistant'].includes(turn.author) || typeof turn.text !== 'string' || turn.text.length > 2000)))) throw new Error('Consulta inválida');
   const [corpus, names, roles, topics] = await Promise.all([dependencies.loadCorpus(), dependencies.clientNames(), dependencies.roles(), dependencies.topics?.() || Promise.resolve([])]);
   if (!corpus) throw new Error('El corpus de protocolos aún no está disponible');
   const modelFiles = corpus.files.filter(file => file.id !== projectAssignmentsSheetId);
@@ -96,10 +98,12 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
   };
   const masked = maskProtocolQuestion(query.question.trim(), { clientNames: names });
   if (containsUnmaskedPersonalData(masked)) throw new Error('No se puede enviar la consulta porque contiene datos personales sin enmascarar');
+  const context = (query.context || []).map(turn => ({ author: turn.author, text: maskProtocolQuestion(turn.text, { clientNames: names }) }));
+  if (context.some(turn => containsUnmaskedPersonalData(turn.text))) throw new Error('El contexto contiene datos personales sin enmascarar');
   const roleName = fallbackRole(roles);
   const rolePerson = (name: string | null) => roles.find(role => role.name === name)?.person || null;
   const buildResult = (log: ProtocolLog): ProtocolAgentResult => ({ id, answer: log.answer, classification: log.classification, sources: log.sources, derivationRole: log.derivationRole, derivationPerson: rolePerson(log.derivationRole), contradiction: log.contradiction, validation: log.validation, corpusVersionId: corpus.id });
-  const common = { id, userId: query.userId, role: query.role, question: masked, corpusVersionId: corpus.id };
+  const common = { id, userId: query.userId, role: query.role, channel: query.channel, question: masked, corpusVersionId: corpus.id };
 
   if (safetyRisk(masked)) {
     const answer = `No esperes a este chat: avisa ahora a ${roleName || 'tu responsable'}. Si hay peligro para alguien, llama al 112.`;
@@ -148,7 +152,7 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
     .replace('{{SINONIMOS}}', 'Incidencia = Alerta (Club LYN); PM = PMC; ClickUp en documentos antiguos = Club LYN para la gestión de tareas.')
     .replace('{{ORGANIGRAMA}}', roles.map(role => `${xml(role.name)}: ${xml(role.person || 'sin asignar')}`).join('\n'))
     .replace('<corpus version="{{CORPUS_VERSION_ID}}" fecha="{{CORPUS_FECHA}}">\n{{CORPUS}}\n</corpus>', protocolCorpusPrompt(modelCorpus));
-  const user = `<usuario cargo="${xml(query.role)}" />\n<fecha_hora zona="Europe/Madrid">${new Intl.DateTimeFormat('es-ES', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Madrid' }).format(new Date())}</fecha_hora>\n<temas_existentes>${topics.map(xml).join('\n')}</temas_existentes>\n<pregunta>${xml(masked)}</pregunta>`;
+  const user = `<usuario cargo="${xml(query.role)}" />\n<fecha_hora zona="Europe/Madrid">${new Intl.DateTimeFormat('es-ES', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Madrid' }).format(new Date())}</fecha_hora>\n<temas_existentes>${topics.map(xml).join('\n')}</temas_existentes>\n<contexto_reciente>${context.map(turn => `<turno autor="${turn.author}">${xml(turn.text)}</turno>`).join('\n')}</contexto_reciente>\n<pregunta>${xml(masked)}</pregunta>`;
   if (containsUnmaskedPersonalData(user) || maskProtocolQuestion(user, { clientNames: names }) !== user || modelFiles.some(file => containsUnmaskedPersonalData(file.name) || maskProtocolQuestion(file.name, { clientNames: names }) !== file.name || file.sections.some(section => containsUnmaskedPersonalData(section.text) || maskProtocolQuestion(section.text, { clientNames: names }) !== section.text))) throw new Error('El contexto contiene datos personales sin enmascarar');
   let lastError = 'Respuesta no verificable';
   let modelUnavailable = false;

@@ -149,10 +149,10 @@ export async function saveProtocolCorpus(pool: Pool, corpus: ProtocolCorpus): Pr
 export async function saveProtocolQuery(pool: Pool, log: ProtocolLog): Promise<void> {
   await pool.query(
     `INSERT INTO agente_protocolos_consultas (
-      id, usuario_id, cargo, pregunta, respuesta, clasificacion, motivo_no_respuesta, area, tema,
+      id, usuario_id, cargo, canal, pregunta, respuesta, clasificacion, motivo_no_respuesta, area, tema,
       fuentes, cargo_derivacion, contradiccion, validacion, corpus_version_id, modelo, tokens_entrada, tokens_salida, latencia_ms, error
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19)`,
-    [log.id, log.userId, log.role, log.question, log.answer, log.classification, log.reason,
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13::jsonb,$14,$15,$16,$17,$18,$19,$20)`,
+    [log.id, log.userId, log.role, log.channel, log.question, log.answer, log.classification, log.reason,
       log.area, log.topic, JSON.stringify(log.sources), log.derivationRole, JSON.stringify(log.contradiction),
       log.validation, log.corpusVersionId, log.model, log.inputTokens, log.outputTokens, log.latencyMs, log.error],
   );
@@ -182,10 +182,10 @@ export async function countProtocolQueries(pool: Pool): Promise<number> {
   return Number(result.rows[0]?.total || 0);
 }
 
-export async function recordProtocolFeedback(pool: Pool, id: string, userId: number, resolved: boolean): Promise<boolean> {
+export async function recordProtocolFeedback(pool: Pool, id: string, userId: number, resolved: boolean, channel?: ProtocolLog['channel']): Promise<boolean> {
   const result = await pool.query(
-    'UPDATE agente_protocolos_consultas SET resuelta_por_usuario=$3 WHERE id=$1 AND usuario_id=$2 AND resuelta_por_usuario IS NULL RETURNING id',
-    [id, userId, resolved],
+    'UPDATE agente_protocolos_consultas SET resuelta_por_usuario=$3 WHERE id=$1 AND usuario_id=$2 AND ($4::text IS NULL OR canal=$4) AND resuelta_por_usuario IS NULL RETURNING id',
+    [id, userId, resolved, channel || null],
   );
   return result.rowCount === 1;
 }
