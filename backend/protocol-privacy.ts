@@ -32,6 +32,10 @@ export function canReadProtocolLog(role: unknown): boolean {
   return ['superadmin', 'admin', 'employee:director', 'employee:director_general', 'employee:director_de_operaciones', 'employee:direccion_de_operaciones'].includes(normalized);
 }
 
+export function canReadRestrictedProtocol(role: unknown): boolean {
+  return canReadProtocolLog(role) || String(role || '').trim().toLowerCase() === 'ceo';
+}
+
 export async function hasClubAdminRole(
   query: (sql: string, params: [number]) => Promise<{ rows: Array<{ allowed: boolean }> }>,
   sessionId: number | undefined,

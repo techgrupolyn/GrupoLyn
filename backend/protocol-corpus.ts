@@ -5,6 +5,7 @@ export type ProtocolFile = {
   id: string;
   name: string;
   mimeType: string;
+  audience?: 'general' | 'restricted';
   modifiedTime: string;
   revision: string;
   extractionVersion?: number;
@@ -31,7 +32,7 @@ export function createProtocolCorpus(files: ProtocolFile[], maxTokens: number, n
   if (new Set(sorted.map(file => file.id)).size !== sorted.length) throw new Error('Archivo duplicado en el corpus');
   const tokenEstimate = Math.ceil(sorted.reduce((sum, file) => sum + file.sections.reduce((sectionSum, section) => sectionSum + section.text.length, 0), 0) / 3);
   if (tokenEstimate > maxTokens) throw new Error(`El corpus supera el límite de ${maxTokens} tokens`);
-  const fingerprint = JSON.stringify(sorted.map(file => [file.id, file.revision, file.modifiedTime, file.extractionVersion, file.sections]));
+  const fingerprint = JSON.stringify(sorted.map(file => [file.id, file.revision, file.modifiedTime, file.extractionVersion, file.audience, file.sections]));
   const id = createHash('sha256').update(fingerprint).digest('hex');
   return {
     id, createdAt: now.toISOString(),
@@ -42,6 +43,7 @@ export function createProtocolCorpus(files: ProtocolFile[], maxTokens: number, n
 }
 
 export function protocolCorpusPrompt(corpus: ProtocolCorpus): string {
+  if (corpus.files.some(file => file.audience === 'restricted')) throw new Error('El corpus restringido no puede enviarse al modelo');
   const escapeXml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   return `<corpus version="${corpus.id}" fecha="${corpus.createdAt}">\n${corpus.files.map(file => `<documento id="${escapeXml(file.id)}" titulo="${escapeXml(file.name)}" formato="${escapeXml(file.mimeType)}" modificado="${escapeXml(file.modifiedTime)}">\n${file.sections.map(section => `<seccion ref="${escapeXml(section.ref)}">${escapeXml(section.text)}</seccion>`).join('\n')}\n</documento>`).join('\n')}\n</corpus>`;
 }

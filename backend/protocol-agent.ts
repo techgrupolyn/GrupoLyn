@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { validateProtocolAnswer, type ProtocolAnswer } from './protocol-answer-validation.ts';
-import { protocolCorpusPrompt, type ProtocolCorpus } from './protocol-corpus.ts';
+import { protocolCorpusPrompt, type ProtocolCorpus, type ProtocolFile } from './protocol-corpus.ts';
 import { containsUnmaskedPersonalData, maskProtocolQuestion } from './protocol-privacy.ts';
 import { PROTOCOL_SYSTEM_PROMPT_V2 } from './protocol-prompt.ts';
 import { findProjectAssignment, projectAssignmentsSheetId } from './protocol-assignments.ts';
@@ -10,6 +10,7 @@ export type ProtocolQuery = {
   role: string;
   question: string;
   channel: 'superagente' | 'club_lyn';
+  mayReadRestricted?: boolean;
   context?: Array<{ author: 'user' | 'assistant'; text: string }>;
 };
 
@@ -38,6 +39,7 @@ export type ProtocolLog = {
 
 export type ProtocolAgentDependencies = {
   loadCorpus: () => Promise<ProtocolCorpus | null>;
+  loadRestrictedFiles?: () => Promise<ProtocolFile[]>;
   clientNames: () => Promise<string[]>;
   roles: () => Promise<Array<{ name: string; person?: string }>>;
   topics?: () => Promise<string[]>;
@@ -72,6 +74,25 @@ function directProtocolEvidence(question: string, corpus: ProtocolCorpus): strin
   return null;
 }
 
+function restrictedProtocolExcerpt(question: string, files: ProtocolFile[]) {
+  const words = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/gu, '').toLowerCase().match(/[a-z\d]{4,}/gu) || [];
+  const ignored = new Set(['cual', 'cuanto', 'cuesta', 'precio', 'coste', 'obra', 'cliente', 'tiene', 'esta', 'sobre', 'para', 'incluye', 'donde', 'como', 'quien']);
+  const terms = [...new Set(words(question).filter(word => !ignored.has(word)))];
+  if (terms.length < 2) return null;
+  const matches = files.filter(file => file.audience === 'restricted').flatMap(file =>
+    file.sections.flatMap(section => section.text.split('\n').map(line => line.trim()).filter(line => {
+      if (!line || line.length > 400) return false;
+      const lineWords = new Set(words(line));
+      return terms.every(term => lineWords.has(term));
+    }).map(quote => ({ file, section, quote }))));
+  if (matches.length !== 1) return null;
+  return matches[0];
+}
+
+function restrictedInformationRequest(question: string): boolean {
+  return /\b(?:precio|coste|costo|importe|valor|tarifa|cotizador|cotizaci[oó]n|cu[aá]nto (?:cuesta|sale|vale|cobran)|notas? de reuni[oó]n)\b/iu.test(question);
+}
+
 function safetyRisk(question: string): boolean {
   return /olor a gas|fuga de gas|hay fuego|se incendia|incendio en|electrocuci[oó]n|descarga el[eé]ctrica|cable con corriente|persona herida|persona lesionada|alguien se ha ca[ií]do|persona se cay[oó]|ca[ií]da de una persona|riesgo de derrumbe|estructura se cae|fuga de agua|inundaci[oó]n activa/iu.test(question);
 }
@@ -88,7 +109,7 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
   if (!Number.isSafeInteger(query.userId) || query.userId < 1 || !query.role.trim() || !query.question.trim() || query.question.length > 2000 || !['superagente', 'club_lyn'].includes(query.channel) || (query.context && (query.context.length > 6 || query.context.some(turn => !['user', 'assistant'].includes(turn.author) || typeof turn.text !== 'string' || turn.text.length > 2000)))) throw new Error('Consulta inválida');
   const [corpus, names, roles, topics] = await Promise.all([dependencies.loadCorpus(), dependencies.clientNames(), dependencies.roles(), dependencies.topics?.() || Promise.resolve([])]);
   if (!corpus) throw new Error('El corpus de protocolos aún no está disponible');
-  const modelFiles = corpus.files.filter(file => file.id !== projectAssignmentsSheetId);
+  const modelFiles = corpus.files.filter(file => file.id !== projectAssignmentsSheetId && file.audience !== 'restricted' && (file.audience === 'general' || !process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID));
   const modelCorpus = {
     ...corpus,
     id: createHash('sha256').update(JSON.stringify(modelFiles.map(file => [file.id, file.revision, file.sections]))).digest('hex'),
@@ -112,11 +133,29 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
     return buildResult(log);
   }
 
-  const assignmentsFile = corpus.files.find(file => file.id === projectAssignmentsSheetId);
+  const assignmentsFile = corpus.files.find(file => file.id === projectAssignmentsSheetId && file.audience !== 'restricted' && (file.audience === 'general' || !process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID));
   const assignment = assignmentsFile && findProjectAssignment(masked, assignmentsFile);
   if (assignment && assignmentsFile) {
     const sources = assignment.sections.map(section => ({ doc_id: assignmentsFile.id, name: assignmentsFile.name, modifiedTime: assignmentsFile.modifiedTime, revision: assignmentsFile.revision, seccion: section.ref, cita: section.text }));
     const log: ProtocolLog = { ...common, answer: assignment.answer, classification: assignment.complete ? 'resuelta' : 'no_urgente', reason: assignment.complete ? null : 'sin_protocolo', area: 'responsables_y_escalado', topic: assignment.topic, sources, derivationRole: assignment.complete ? null : roleName, contradiction: null, validation: 'ok', model: null, inputTokens: null, outputTokens: null, latencyMs: (dependencies.now || Date.now)() - start, error: null };
+    await dependencies.save(log);
+    return buildResult(log);
+  }
+  const restrictedFiles = query.mayReadRestricted && dependencies.loadRestrictedFiles ? await dependencies.loadRestrictedFiles() : [];
+  const restricted = restrictedProtocolExcerpt(query.question.trim(), restrictedFiles);
+  if (restricted) {
+    const { file, section, quote } = restricted;
+    const answer = `El documento «${file.name}», ${section.ref}, contiene este extracto literal: «${quote}». Verifica la fuente antes de actuar.`;
+    const source = { doc_id: file.id, name: file.name, mimeType: file.mimeType, modifiedTime: file.modifiedTime, revision: file.revision, seccion: section.ref, cita: quote };
+    const log: ProtocolLog = { ...common, question: '[CONSULTA RESTRINGIDA]', answer: 'Consulta respondida con un extracto restringido.', classification: 'resuelta', reason: null, area: 'otro', topic: 'consulta restringida', sources: [{ ...source, name: '[DOCUMENTO RESTRINGIDO]', cita: '[CONTENIDO RESTRINGIDO]' }], derivationRole: null, contradiction: null, validation: 'ok', model: null, inputTokens: null, outputTokens: null, latencyMs: (dependencies.now || Date.now)() - start, error: null };
+    await dependencies.save(log);
+    return { id, answer, classification: log.classification, sources: [source], derivationRole: null, derivationPerson: null, contradiction: null, validation: log.validation, corpusVersionId: corpus.id };
+  }
+  if (restrictedInformationRequest(masked)) {
+    const answer = query.mayReadRestricted
+      ? 'No encuentro un extracto inequívoco en los documentos privados. Consulta el archivo original con Dirección antes de tomar una decisión.'
+      : 'No tienes acceso a cifras o notas privadas desde este agente. Consulta con Dirección.';
+    const log: ProtocolLog = { ...common, question: '[CONSULTA RESTRINGIDA]', answer, classification: 'no_urgente', reason: query.mayReadRestricted ? 'sin_protocolo' : 'tema_sensible', area: 'otro', topic: 'consulta restringida', sources: [], derivationRole: null, contradiction: null, validation: 'ok', model: null, inputTokens: null, outputTokens: null, latencyMs: (dependencies.now || Date.now)() - start, error: null };
     await dependencies.save(log);
     return buildResult(log);
   }
