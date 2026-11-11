@@ -41,6 +41,7 @@ import { syncRestrictedProtocolDrive } from './protocol-restricted-drive.ts';
 import { callProtocolGemini } from './protocol-gemini.ts';
 import { canReadProtocolLog, canReadProtocolReport, canReadRestrictedProtocol, hasClubAdminRole } from './protocol-privacy.ts';
 import { loadProtocolReport, parseProtocolReportFilters } from './protocol-report.ts';
+import { loadProtocolWeeklySnapshot } from './protocol-weekly.ts';
 import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, ensureProtocolSchema, listProtocolQueries, loadLastSuccessfulProtocolSync, loadProtocolCorpus, loadProtocolSyncReport, loadProtocolVideoCache, loadProtocolVisionCache, loadRestrictedProtocolFiles, pruneProtocolQueries, recordProtocolFeedback, saveProtocolCorpus, saveProtocolQuery, saveProtocolSyncReport, saveProtocolVisionCache, saveRestrictedProtocolFiles } from './protocol-storage.ts';
 
 const PORT = Number(process.env.PORT || 3003);
@@ -220,6 +221,7 @@ app.use('/api/club/protocolos', express.json({ limit: '20kb' }), createClubProto
     const [corpus, lastSyncedAt] = await Promise.all([loadProtocolCorpus(pool), loadLastSuccessfulProtocolSync(pool)]);
     return { versionId: corpus?.id || null, updatedAt: corpus?.createdAt || null, lastSyncedAt, fileCount: corpus?.files.length || 0 };
   },
+  weeklySnapshot: (from, to) => loadProtocolWeeklySnapshot(pool, from, to),
 }));
 app.use(express.json({ limit: '10mb' }));
 
