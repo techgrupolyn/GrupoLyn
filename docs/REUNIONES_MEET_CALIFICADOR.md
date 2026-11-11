@@ -24,6 +24,20 @@ comercial y a su fase, y quedan listas para evaluarse con la rúbrica activa de 
 Las `sin_comercial` se revisan solas cuando alguien vincula al organizador a mano o se da de alta un comercial.
 `reabrirSinRubrica(pool, fase)` devuelve a `pendiente` las `sin_rubrica` de una fase tras activar su rúbrica.
 
+## Transcripción para el modelo
+
+`prepararTranscripcion(texto, equipoLyn)` (`transcripcion.ts`) convierte la transcripción de Meet al formato del
+calificador de llamadas: `[hh:mm:ss] GRUPO LYN: …` / `[hh:mm:ss] CLIENTE: …`. Así el prompt, la verificación de citas
+(`citaVerificable`) y `marca_tiempo` funcionan sin cambios.
+
+- Lee el documento de Meet (marcas de tiempo en su línea y párrafos `Nombre: texto`), WEBVTT (`<v Nombre>`) y SRT.
+- Un «Nombre:» cuenta como hablante si aparece dos veces o es del equipo; la cabecera (título, asistentes) y el pie
+  de Meet se descartan.
+- Quien coincide con un empleado activo habla por GRUPO LYN (Ernesto y el closer nuevo, los dos); el resto es CLIENTE
+  y su nombre se enmascara junto con teléfonos, emails y direcciones (`enmascarar` de Juan).
+- `conHablantes = false` si no se reconoce ninguna voz: conviene marcar la evaluación con duda.
+- Formato supuesto a partir de Meet; falta confirmarlo con una transcripción real de un closer.
+
 ## Pendiente (depende de otros)
 
 - **Evaluación con el modelo** (`por_evaluar` → `evaluada`) y escritura en `llamada_evaluacion` con
