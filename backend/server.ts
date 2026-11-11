@@ -26,6 +26,7 @@ import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from '
 import { meetingReviewChain, meetingEmployeeRoles, meetingStageRecipientCondition, canDeleteMeetingActionsForRole } from './meeting-routing.ts';
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
 import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
+import { createReunionesWorkers, ensureReunionesMeet } from './reuniones-meet/index.ts';
 import { idCarpetaDrive } from './netelip/entrenador/drive.ts';
 import { ensureProjectMeetingSchema, registerProjectMeetingRoutes, refreshProjectMeetings, syncProjectMeeting } from './meeting-project-workflow.ts';
 import { exactActionProject, reconcileMeetingActionProjects } from './meeting-project-linking.ts';
@@ -1030,6 +1031,7 @@ async function ensureDatabaseSchema(): Promise<void> {
   await ensureMeetingRecordingSchema(pool);
   await ensureSummaryJobs(pool);
   await ensureNetelipCalls(pool);
+  await ensureReunionesMeet(pool);
   await ensureWhatsAppReliability(pool);
   await pool.query(
     `INSERT INTO usuarios (usuario, contraseña, password_hash, nombre, rol)
@@ -8893,6 +8895,7 @@ async function bootstrap() {
   void runSummaryQueue();
   setInterval(() => void runSummaryQueue(), 5_000).unref();
   if (process.env.NETELIP_WORKERS_ENABLED !== 'false') netelipWorkers.start();
+  reunionesWorkers.start();
   if (EVOLUTION_BACKGROUND_SYNC_ENABLED) await bootEvolution();
 }
 
@@ -9058,6 +9061,7 @@ const enviarWhatsAppCalificador = async (telefonoE164: string, texto: string) =>
   await evolutionFetch(`/message/sendText/${INSTANCE_NAME}`, { method: 'POST', body: JSON.stringify({ number: telefonoE164.replace(/\D/g, ''), text: texto }) });
 };
 const netelipWorkers = createNetelipWorkers(pool, process.env, { enviar: enviarWhatsAppCalificador });
+const reunionesWorkers = createReunionesWorkers(pool);
 registerNetelipCalls(app, {
   pool, admin: requireCeoAuth, kick: netelipWorkers.kick,
   role: (res) => String((res.locals.ceoSession as CeoSession | undefined)?.rol || ''),
