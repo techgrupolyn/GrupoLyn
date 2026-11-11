@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { askProtocolAgent, type ProtocolLog } from '../protocol-agent.ts';
-import { createProtocolCorpus, protocolFileAllowed } from '../protocol-corpus.ts';
+import { createProtocolCorpus, protocolCorpusPrompt, protocolFileAllowed } from '../protocol-corpus.ts';
 import { canReadProtocolLog, containsUnmaskedPersonalData, hasClubAdminRole, maskProtocolQuestion } from '../protocol-privacy.ts';
 import { callProtocolGemini } from '../protocol-gemini.ts';
 import { syntheticCorpus } from './protocol-qa-cases.ts';
@@ -93,6 +93,89 @@ describe('agente de protocolos', () => {
     const otherSystem = otherServices.generate.mock.calls[0][0];
     const corpusEnd = system.indexOf('</corpus>') + '</corpus>'.length;
     expect(otherSystem.slice(0, corpusEnd)).toBe(system.slice(0, corpusEnd));
+  });
+
+  it('no envía documentos restringidos ni sus datos personales al modelo para ningún rol', async () => {
+    const services = dependencies([modelAnswer]);
+    services.loadCorpus = async () => createProtocolCorpus([...corpus.files, {
+      id: 'documento-restringido', name: 'Notas privadas', mimeType: 'application/vnd.google-apps.document',
+      audience: 'restricted', modifiedTime: '2026-11-11T00:00:00Z', revision: 'rev-1', warnings: [],
+      sections: [{ ref: 'página 1', text: 'Cliente: maria@example.com. Presupuesto privado de obra.' }],
+    }], 1000);
+    for (const role of ['Interiorista', 'admin', 'superadmin', 'employee:director']) {
+      services.generate.mockClear();
+      await askProtocolAgent({ userId: 1, role, question: '¿Quién revisa el presupuesto?', channel: 'superagente' }, services);
+      expect(services.generate.mock.calls[0][0]).toContain('El PMC revisa el presupuesto');
+      expect(services.generate.mock.calls[0][0]).not.toContain('maria@example.com');
+      expect(services.generate.mock.calls[0][0]).not.toContain('Notas privadas');
+    }
+  });
+
+  it('rechaza generar un prompt directamente con documentos restringidos', () => {
+    const privateCorpus = createProtocolCorpus([...corpus.files, {
+      id: 'secreto', name: 'Cotizador', mimeType: 'text/plain', audience: 'restricted',
+      modifiedTime: '2026-11-11T00:00:00Z', revision: '1', warnings: [],
+      sections: [{ ref: 'hoja 1', text: 'Importe privado' }],
+    }], 1000);
+    expect(() => protocolCorpusPrompt(privateCorpus)).toThrow('corpus restringido');
+  });
+
+  it('entrega extractos restringidos solo a Dirección y administradores sin usar el modelo ni registrarlos en claro', async () => {
+    const privateFile = {
+      id: 'cotizador-dana', name: 'Cotizador Dana', mimeType: 'application/vnd.google-apps.spreadsheet',
+      audience: 'restricted' as const, modifiedTime: '2026-11-11T00:00:00Z', revision: 'rev-1', warnings: [],
+      sections: [{ ref: 'hoja Cocina!B12', text: 'La cocina de Dana tiene un importe de 1200 euros.' }],
+    };
+    const admin = { ...dependencies([]), loadRestrictedFiles: vi.fn(async () => [privateFile]) };
+    const result = await askProtocolAgent({ userId: 1, role: 'admin', mayReadRestricted: true, question: '¿Cuánto cuesta la cocina de Dana?', channel: 'club_lyn' }, admin);
+    expect(result.answer).toContain('1200 euros');
+    expect(result.sources[0].cita).toContain('1200 euros');
+    expect(admin.generate).not.toHaveBeenCalled();
+    expect(admin.loadRestrictedFiles).toHaveBeenCalledOnce();
+    expect(JSON.stringify(admin.logs[0])).not.toMatch(/Dana|1200 euros/u);
+    for (const role of ['Interiorista', 'PMC']) {
+      const regular = { ...dependencies([modelAnswer]), loadRestrictedFiles: vi.fn(async () => [privateFile]) };
+      const response = await askProtocolAgent({ userId: 2, role, question: '¿Cuánto cuesta la cocina de Dana?', channel: 'club_lyn' }, regular);
+      expect(response.answer).not.toContain('1200');
+      expect(regular.loadRestrictedFiles).not.toHaveBeenCalled();
+      expect(regular.generate).not.toHaveBeenCalled();
+      expect(regular.logs[0].reason).toBe('tema_sensible');
+      expect(regular.logs[0].question).toBe('[CONSULTA RESTRINGIDA]');
+    }
+  });
+
+  it('no toma una coincidencia de una hoja entera como evidencia de la misma partida', async () => {
+    const services = { ...dependencies([]), loadRestrictedFiles: vi.fn(async () => [{
+      id: 'cotizador', name: 'Cotizador', mimeType: 'text/plain', audience: 'restricted' as const,
+      modifiedTime: '2026-11-11T00:00:00Z', revision: '1', warnings: [],
+      sections: [{ ref: 'hoja Cocina', text: '| Dana | Fregadero | 300 euros |\n| Argeo | Cocina | 1200 euros |' }],
+    }]) };
+    const result = await askProtocolAgent({ userId: 1, role: 'admin', mayReadRestricted: true, question: '¿Cuánto cuesta la cocina de Dana?', channel: 'club_lyn' }, services);
+    expect(result.classification).not.toBe('resuelta');
+    expect(result.answer).not.toContain('1200');
+    expect(services.generate).not.toHaveBeenCalled();
+  });
+
+  it('niega sin consultar Gemini los sinónimos de importes a perfiles ordinarios', async () => {
+    for (const question of ['¿Cuánto sale la cocina de Dana?', '¿Cuál es el valor del cotizador de Dana?']) {
+      const services = dependencies([modelAnswer]);
+      const result = await askProtocolAgent({ userId: 2, role: 'Interiorista', question, channel: 'club_lyn' }, services);
+      expect(result.answer).toContain('No tienes acceso');
+      expect(services.generate).not.toHaveBeenCalled();
+      expect(services.logs[0].question).toBe('[CONSULTA RESTRINGIDA]');
+    }
+  });
+
+  it('no envía al modelo una pregunta privada sin coincidencia inequívoca', async () => {
+    const services = { ...dependencies([]), loadRestrictedFiles: vi.fn(async () => [{
+      id: 'cotizador', name: 'Cotizador Dana', mimeType: 'text/plain', audience: 'restricted' as const,
+      modifiedTime: '2026-11-11T00:00:00Z', revision: '1', warnings: [],
+      sections: [{ ref: 'hoja 1', text: 'La cocina de Dana tiene un importe de 1200 euros.' }],
+    }]) };
+    const result = await askProtocolAgent({ userId: 1, role: 'admin', mayReadRestricted: true, question: '¿Cuál es el precio del baño de Dana?', channel: 'club_lyn' }, services);
+    expect(result.answer).toContain('No encuentro un extracto inequívoco');
+    expect(services.generate).not.toHaveBeenCalled();
+    expect(services.logs[0].question).toBe('[CONSULTA RESTRINGIDA]');
   });
 
   it('interpreta una descripción indirecta sin exigir palabras exactas del protocolo', async () => {
