@@ -24,6 +24,20 @@ comercial y a su fase, y quedan listas para evaluarse con la rúbrica activa de 
 Las `sin_comercial` se revisan solas cuando alguien vincula al organizador a mano o se da de alta un comercial.
 `reabrirSinRubrica(pool, fase)` devuelve a `pendiente` las `sin_rubrica` de una fase tras activar su rúbrica.
 
+## Invitados (Calendar)
+
+`guardarInvitados` (`invitados.ts`) rellena `reunion.invitados` con los asistentes del evento de Calendar, para buscar
+el lead cuando se conecte el CRM. Corre en la misma vuelta de cada minuto, 20 reuniones como máximo.
+
+- Usa el evento que ya encontró el Agente de Reuniones (`meeting_artifact_organizers.assigned_by = 'calendar:<id>'`) y
+  lo pide con `GET calendars/primary/events/{id}`, solo lectura. No toca `linkMeetingOrganizer`.
+- Cada invitado: `{ email, nombre, respuesta, organizador, interno }`; `interno` = email de un empleado. Sin salas ni
+  recursos.
+- `invitados_en` NULL = sin consultar. Organizador vinculado a mano o evento borrado/cancelado: definitivo, con
+  `invitados_motivo`. Red, 5xx, token o falta de permiso de Calendar: `invitados_reintentar`, cada hora.
+- No mueve `actualizado_en` (la revisión de las `sin_comercial` lo compara con la asignación del organizador).
+- `REUNIONES_MEET_INVITADOS=false` apaga solo esta consulta.
+
 ## Transcripción para el modelo
 
 `prepararTranscripcion(texto, equipoLyn)` (`transcripcion.ts`) convierte la transcripción de Meet al formato del
@@ -45,8 +59,8 @@ calificador de llamadas: `[hh:mm:ss] GRUPO LYN: …` / `[hh:mm:ss] CLIENTE: …`
   Se acuerda con el dueño del calificador de llamadas.
 - **`rubrica_version`** la crea el ticket 869fpj8dm. Se suponen las columnas `version`, `fase`, `activo` y
   `vigente_desde`. Si la tabla no existe o no tiene `fase`, todas las reuniones quedan `sin_rubrica`.
-- **Lead y fase desde el CRM** («Contacto de Reforma», `ETAPA_CRM`): `lead_id` e `invitados` quedan vacíos hasta
-  localizar el CRM y pedir los invitados a Calendar.
+- **Lead y fase desde el CRM** («Contacto de Reforma», `ETAPA_CRM`): `lead_id` queda vacío hasta localizar el CRM;
+  entonces se buscará por los emails externos de `invitados`.
 - **Alta de closers en `comercial_rol`:** hoy su clave es la extensión de Netelip.
 
 ## Operación

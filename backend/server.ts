@@ -9061,7 +9061,7 @@ const enviarWhatsAppCalificador = async (telefonoE164: string, texto: string) =>
   await evolutionFetch(`/message/sendText/${INSTANCE_NAME}`, { method: 'POST', body: JSON.stringify({ number: telefonoE164.replace(/\D/g, ''), text: texto }) });
 };
 const netelipWorkers = createNetelipWorkers(pool, process.env, { enviar: enviarWhatsAppCalificador });
-const reunionesWorkers = createReunionesWorkers(pool);
+const reunionesWorkers = createReunionesWorkers(pool, process.env, { tokenGoogle: googleDriveAccessToken });
 registerNetelipCalls(app, {
   pool, admin: requireCeoAuth, kick: netelipWorkers.kick,
   role: (res) => String((res.locals.ceoSession as CeoSession | undefined)?.rol || ''),

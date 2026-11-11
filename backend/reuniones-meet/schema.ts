@@ -37,6 +37,12 @@ export async function ensureReunionesMeet(pool: Consultable): Promise<void> {
       creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       actualizado_en TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    -- Consulta de invitados a Calendar (invitados.ts). Columnas añadidas aparte para que valga también en una base
+    -- donde la tabla ya exista.
+    ALTER TABLE reunion ADD COLUMN IF NOT EXISTS invitados_en TIMESTAMPTZ;          -- NULL = sin consultar
+    ALTER TABLE reunion ADD COLUMN IF NOT EXISTS invitados_motivo TEXT;             -- por qué no hay invitados
+    ALTER TABLE reunion ADD COLUMN IF NOT EXISTS invitados_reintentar BOOLEAN NOT NULL DEFAULT FALSE;
+    CREATE INDEX IF NOT EXISTS reunion_invitados_pendientes ON reunion(invitados_en NULLS FIRST) WHERE invitados_en IS NULL OR invitados_reintentar;
     CREATE INDEX IF NOT EXISTS reunion_estado ON reunion(estado, actualizado_en);
     CREATE INDEX IF NOT EXISTS reunion_empleado_fecha ON reunion(empleado_id, fecha_reunion DESC);
   `);

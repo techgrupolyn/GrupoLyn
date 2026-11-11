@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 import { ensureReunionesMeet } from '../reuniones-meet/schema.ts';
 import { ingestarTranscripciones, reabrirSinRubrica, vincularPendientes } from '../reuniones-meet/proceso.ts';
+import { ErrorCalendar, guardarInvitados } from '../reuniones-meet/invitados.ts';
 
 const databaseUrl = process.env.QA_TEST_DATABASE_URL;
 const ESQUEMA = `reuniones_meet_test_${process.pid}`;
@@ -96,5 +97,39 @@ describe.skipIf(!databaseUrl)('Reuniones Meet en PostgreSQL QA local', () => {
       { titulo: 'F3 · Presentación López - Transcripción', estado: 'sin_consentimiento', version_rubrica: null },
       { titulo: 'Reunión de diseño - Transcripción', estado: 'sin_rubrica', version_rubrica: null },
     ]);
+  });
+
+  it('invitados: guarda los del evento de Calendar, no insiste con el vinculado a mano y reintenta el fallo temporal', async () => {
+    await client.query(`ALTER TABLE google_drive_connections ADD COLUMN scope TEXT;
+      UPDATE google_drive_connections SET scope = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/calendar.events.readonly';
+      UPDATE meeting_artifact_organizers SET assigned_by = 'manual:jean' WHERE artifact_id = '00000000-0000-0000-0000-0000000000a4'`);
+    const antes = (await client.query(`SELECT id, actualizado_en FROM reunion ORDER BY id`)).rows;
+    const pedidos: string[] = [];
+    const pedirEvento = async (_token: string, eventId: string) => {
+      pedidos.push(eventId);
+      if (eventId === '2') throw new ErrorCalendar('Calendar respondió 503 al pedir el evento.', 503);
+      return { id: eventId, attendees: [{ email: 'ERNESTO@grupolyn.com', organizer: true }, { email: 'garcia@gmail.com', displayName: 'Familia García' }] };
+    };
+    const tokens: string[] = [];
+    const obtenerToken = async (id: string) => { tokens.push(id); return 'token'; };
+
+    expect(await guardarInvitados(pool, obtenerToken, pedirEvento)).toBe(3);
+    expect(pedidos.sort()).toEqual(['1', '2']);
+    expect(tokens).toHaveLength(1);   // un token por conexión y vuelta
+    const fila = async (archivo: string) => (await client.query(
+      `SELECT invitados, invitados_motivo, invitados_reintentar FROM reunion WHERE google_file_id = $1`, [archivo])).rows[0];
+    expect(await fila('file-visita')).toEqual({ invitados_motivo: null, invitados_reintentar: false, invitados: [
+      { email: 'ernesto@grupolyn.com', nombre: null, respuesta: null, organizador: true, interno: true },
+      { email: 'garcia@gmail.com', nombre: 'Familia García', respuesta: null, organizador: false, interno: false },
+    ] });
+    expect(await fila('file-diseno')).toMatchObject({ invitados: [], invitados_reintentar: false, invitados_motivo: 'Organizador vinculado a mano: no hay evento de Calendar.' });
+    expect(await fila('file-negativa')).toMatchObject({ invitados: [], invitados_reintentar: true });
+    // No mueve actualizado_en: la revisión de las sin_comercial depende de él.
+    expect((await client.query(`SELECT id, actualizado_en FROM reunion ORDER BY id`)).rows).toEqual(antes);
+
+    expect(await guardarInvitados(pool, obtenerToken, pedirEvento)).toBe(0);   // el reintento espera una hora
+    await client.query(`UPDATE reunion SET invitados_en = NOW() - INTERVAL '2 hours' WHERE invitados_reintentar`);
+    expect(await guardarInvitados(pool, obtenerToken, pedirEvento)).toBe(1);
+    expect(pedidos.filter((p) => p === '2')).toHaveLength(2);
   });
 });

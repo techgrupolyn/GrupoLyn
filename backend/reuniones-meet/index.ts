@@ -7,6 +7,7 @@
 // Drive ya guardó. Así no se toca el bucle de sincronización y una caída no pierde reuniones: la siguiente
 // vuelta las recoge.
 import type { Pool } from 'pg';
+import { guardarInvitados, type ObtenerToken } from './invitados.ts';
 import { ingestarTranscripciones, vincularPendientes } from './proceso.ts';
 
 export { ensureReunionesMeet } from './schema.ts';
@@ -14,7 +15,10 @@ export { reabrirSinRubrica } from './proceso.ts';
 
 const INTERVALO_MS = 60_000;
 
-export function createReunionesWorkers(pool: Pool, env: NodeJS.ProcessEnv = process.env) {
+/** tokenGoogle: el token de la conexión de Drive (server.ts). Sin él no se consultan invitados. */
+export type DependenciasReuniones = { tokenGoogle?: ObtenerToken };
+
+export function createReunionesWorkers(pool: Pool, env: NodeJS.ProcessEnv = process.env, deps: DependenciasReuniones = {}) {
   let enCurso = false;
   const ciclo = async () => {
     if (enCurso) return;
@@ -24,7 +28,9 @@ export function createReunionesWorkers(pool: Pool, env: NodeJS.ProcessEnv = proc
       let vinculadas = 0;
       for (let n; (n = await ingestarTranscripciones(pool)) > 0;) nuevas += n;
       for (let n; (n = await vincularPendientes(pool)) > 0;) vinculadas += n;
-      if (nuevas || vinculadas) console.log(JSON.stringify({ msg: 'reuniones_meet', nuevas, vinculadas }));
+      // Un lote por vuelta (no en bucle): cada reunión es una llamada a Calendar y no hay prisa.
+      const invitados = deps.tokenGoogle && env.REUNIONES_MEET_INVITADOS !== 'false' ? await guardarInvitados(pool, deps.tokenGoogle) : 0;
+      if (nuevas || vinculadas || invitados) console.log(JSON.stringify({ msg: 'reuniones_meet', nuevas, vinculadas, invitados }));
     } catch (error) {
       console.error('[reuniones-meet] Error en el ciclo:', (error as Error).message);
     } finally {
