@@ -5,6 +5,43 @@ import { syncProtocolDrive } from '../protocol-drive.ts';
 const folderId = '14oB0TKbGyvEDMti2JgjXIep54-ZcMbc_';
 
 describe('sincronización de protocolos', () => {
+  it('une la carpeta anterior, incluye subcarpetas válidas y evita copias idénticas', async () => {
+    const legacyFolderId = 'club-protocolos';
+    const save = vi.fn(async () => undefined);
+    const request = vi.fn(async (path: string) => {
+      const parent = new URL(path, 'https://drive.test').searchParams.get('q');
+      if (parent?.includes(`'${folderId}'`)) return Response.json({ files: [
+        { id: 'main-copy', name: 'Materiales.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', version: '1', md5Checksum: 'same', parents: [folderId] },
+      ] });
+      if (parent?.includes(`'${legacyFolderId}'`)) return Response.json({ files: [
+        { id: 'club-copy', name: 'Materiales.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', version: '1', md5Checksum: 'same', parents: [legacyFolderId] },
+        { id: 'club-only', name: 'Interiorismo.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', version: '1', md5Checksum: 'unique', parents: [legacyFolderId] },
+        { id: 'pm-folder', name: 'PM', mimeType: 'application/vnd.google-apps.folder', parents: [legacyFolderId] },
+        { id: 'obsolete-folder', name: '_Obsoletos', mimeType: 'application/vnd.google-apps.folder', parents: [legacyFolderId] },
+      ] });
+      if (parent?.includes("'pm-folder'")) return Response.json({ files: [
+        { id: 'pm-only', name: 'Certificaciones.pdf', mimeType: 'application/pdf', version: '1', md5Checksum: 'pm', parents: ['pm-folder'] },
+      ] });
+      return new Response(Buffer.from('archivo'));
+    });
+    const extract = vi.fn(async () => ({ sections: [{ ref: 'página 1', text: 'Texto de protocolo verificable' }], warnings: [] }));
+    const report = await syncProtocolDrive(request, { maxTokens: 1000, legacyFolderId, save, extract });
+    expect(report.error).toBeNull();
+    expect(report.files.map(file => file.id)).toEqual(['main-copy', 'club-only', 'pm-only']);
+    expect(save.mock.calls[0][0].files.map(file => file.id).sort()).toEqual(['club-only', 'main-copy', 'pm-only']);
+    expect(request.mock.calls.filter(([path]) => path.startsWith('/files?'))).toHaveLength(3);
+  });
+
+  it('conserva el corpus anterior si falla la carpeta adicional', async () => {
+    const save = vi.fn(async () => undefined);
+    const request = vi.fn(async (path: string) => path.includes(`'${folderId}'`)
+      ? Response.json({ files: [] })
+      : new Response(null, { status: 403 }));
+    const report = await syncProtocolDrive(request, { maxTokens: 1000, legacyFolderId: 'club-protocolos', save });
+    expect(report.error).toContain('Google Drive respondió 403');
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it('excluye subcarpetas y retira plantillas que entraron en un corpus anterior', async () => {
     const save = vi.fn(async () => undefined);
     const previous = {

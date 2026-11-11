@@ -8955,6 +8955,7 @@ function runProtocolSync(): Promise<unknown> {
       report = await syncProtocolDrive((path, resourceKeys) => googleDriveFetch(path, token, resourceKeys), {
         previous,
         assignmentsSheetId: process.env.PROTOCOL_ASSIGNMENTS_SHEET_ID?.trim(),
+        legacyFolderId: process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID?.trim(),
         maxTokens: boundedInterval(process.env.PROTOCOL_MAX_TOKENS, 100_000, 1_000, 500_000),
         save: (corpus) => saveProtocolCorpus(pool, corpus),
         loadVideo: (fileId, revision) => loadProtocolVideoCache(pool, fileId, revision),

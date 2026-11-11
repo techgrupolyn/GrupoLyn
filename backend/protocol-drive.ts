@@ -36,22 +36,42 @@ function extractionFormat(file: DriveEntry): { kind: string; exportMime?: string
   return null;
 }
 
-async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: string): Promise<DriveEntry[]> {
+async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: string, legacyFolderId?: string): Promise<DriveEntry[]> {
   const files: DriveEntry[] = [];
-  let pageToken = '';
-  const tokens = new Set<string>();
-  do {
-    if (tokens.has(pageToken)) throw new Error('Drive repitió la paginación');
-    tokens.add(pageToken);
-    const params = new URLSearchParams({ q: `'${folderId}' in parents and trashed = false`, pageSize: '1000', fields: 'nextPageToken,incompleteSearch,files(id,name,mimeType,modifiedTime,version,md5Checksum,parents,resourceKey)', supportsAllDrives: 'true', includeItemsFromAllDrives: 'true' });
-    if (pageToken) params.set('pageToken', pageToken);
-    const response = await request(`/files?${params}`);
-    if (!response.ok) throw new Error(`Google Drive respondió ${response.status}`);
-    const page = await response.json() as DrivePage;
-    if (page.incompleteSearch) throw new Error('Google Drive devolvió una búsqueda incompleta');
-    files.push(...(page.files || []).filter(file => file.parents?.includes(folderId)));
-    pageToken = page.nextPageToken || '';
-  } while (pageToken);
+  if (legacyFolderId && (!/^[\w-]+$/u.test(legacyFolderId) || legacyFolderId === folderId)) throw new Error('Carpeta adicional no válida');
+  const folders = [folderId, ...(legacyFolderId ? [legacyFolderId] : [])];
+  const visited = new Set<string>();
+  const ids = new Set<string>();
+  const hashes = new Set<string>();
+  for (let index = 0; index < folders.length; index++) {
+    const currentFolder = folders[index];
+    if (visited.has(currentFolder)) continue;
+    visited.add(currentFolder);
+    let pageToken = '';
+    const tokens = new Set<string>();
+    do {
+      if (tokens.has(pageToken)) throw new Error('Drive repitió la paginación');
+      tokens.add(pageToken);
+      const params = new URLSearchParams({ q: `'${currentFolder}' in parents and trashed = false`, pageSize: '1000', fields: 'nextPageToken,incompleteSearch,files(id,name,mimeType,modifiedTime,version,md5Checksum,parents,resourceKey)', supportsAllDrives: 'true', includeItemsFromAllDrives: 'true' });
+      if (pageToken) params.set('pageToken', pageToken);
+      const response = await request(`/files?${params}`);
+      if (!response.ok) throw new Error(`Google Drive respondió ${response.status}`);
+      const page = await response.json() as DrivePage;
+      if (page.incompleteSearch) throw new Error('Google Drive devolvió una búsqueda incompleta');
+      for (const file of page.files || []) {
+        if (!file.parents?.includes(currentFolder)) continue;
+        if (file.mimeType === `${googleMime}folder`) {
+          if (legacyFolderId && currentFolder !== folderId && !/^(_obsoletos|plantillas quantifier)$/iu.test(file.name.trim())) folders.push(file.id);
+          continue;
+        }
+        if (ids.has(file.id) || (file.md5Checksum && hashes.has(file.md5Checksum))) continue;
+        files.push(file);
+        ids.add(file.id);
+        if (file.md5Checksum) hashes.add(file.md5Checksum);
+      }
+      pageToken = page.nextPageToken || '';
+    } while (pageToken);
+  }
   if (assignmentsSheetId) {
     if (assignmentsSheetId !== projectAssignmentsSheetId) throw new Error('Hoja de asignaciones no autorizada');
     const params = new URLSearchParams({ fields: 'id,name,mimeType,modifiedTime,version,md5Checksum,trashed,resourceKey', supportsAllDrives: 'true' });
@@ -91,6 +111,7 @@ async function extractFile(kind: string, data: Buffer, pythonBin: string): Promi
 export async function syncProtocolDrive(request: DriveRequest, options: {
   maxTokens: number;
   assignmentsSheetId?: string;
+  legacyFolderId?: string;
   pythonBin?: string;
   extract?: typeof extractFile;
   previous?: ProtocolCorpus | null;
@@ -102,7 +123,7 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
 }): Promise<ProtocolSyncReport> {
   const report: ProtocolSyncReport = { checkedAt: new Date().toISOString(), files: [], versionId: options.previous?.id || null, error: null };
   try {
-    const entries = await listProtocolFiles(request, options.assignmentsSheetId);
+    const entries = await listProtocolFiles(request, options.assignmentsSheetId, options.legacyFolderId);
     const accepted: ProtocolFile[] = [];
     let driveFailure = false;
     let dependencyFailure = false;
