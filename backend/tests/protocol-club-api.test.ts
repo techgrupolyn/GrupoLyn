@@ -16,16 +16,18 @@ function setup(enabled = true) {
   });
   const confirm = vi.fn().mockResolvedValue(true);
   const resolveUser = vi.fn().mockResolvedValue(user);
+  const weeklySnapshot = vi.fn().mockResolvedValue({ preguntas: [], metricas: [], documentos: [] });
   const app = express();
   app.use(express.json());
   app.use('/api/club/protocolos', createClubProtocolRouter({
     enabled, serviceToken, resolveUser, ask, confirm,
     status: async () => ({ versionId: 'v1', updatedAt: '2026-11-10T00:00:00Z', lastSyncedAt: '2026-11-09T00:00:00Z', fileCount: 7 }),
+    weeklySnapshot,
     now: () => Date.parse('2026-11-10T01:00:00Z'),
   }));
   const authorized = () => request(app).post('/api/club/protocolos/consultas')
     .set('Authorization', `Bearer ${serviceToken}`).set('X-Club-User-Id', user.externalId);
-  return { app, ask, confirm, resolveUser, authorized };
+  return { app, ask, confirm, resolveUser, weeklySnapshot, authorized };
 }
 
 describe('Club LYN protocol bridge', () => {
@@ -78,5 +80,15 @@ describe('Club LYN protocol bridge', () => {
     const saved = await request(app).post(`/api/club/protocolos/consultas/${consultationId}/confirmacion`).set('Authorization', `Bearer ${serviceToken}`).set('X-Club-User-Id', user.externalId).send({ resuelta: false });
     expect(saved.status).toBe(200);
     expect(confirm).toHaveBeenCalledWith(user, consultationId, false);
+  });
+
+  it('exposes a bounded weekly snapshot only to the server token without a user identity', async () => {
+    const { app, weeklySnapshot } = setup();
+    const path = '/api/club/protocolos/reporte-semanal?from=2026-11-02T05%3A00%3A00.000Z&to=2026-11-09T05%3A00%3A00.000Z';
+    expect((await request(app).get(path)).status).toBe(401);
+    expect((await request(app).get(path).set('Origin', 'https://club-lyn.grupolyn.com').set('Authorization', `Bearer ${serviceToken}`)).status).toBe(403);
+    expect((await request(app).get(path).set('Authorization', `Bearer ${serviceToken}`)).status).toBe(200);
+    expect(weeklySnapshot).toHaveBeenCalledWith('2026-11-02T05:00:00.000Z', '2026-11-09T05:00:00.000Z');
+    expect((await request(app).get('/api/club/protocolos/reporte-semanal?from=no&to=no').set('Authorization', `Bearer ${serviceToken}`)).status).toBe(400);
   });
 });

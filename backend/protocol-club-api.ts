@@ -2,9 +2,11 @@ import { timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { ProtocolAgentResult } from './protocol-agent.ts';
+import { parseWeeklyWindow } from './protocol-weekly.ts';
 
 type User = { id: number; externalId: string; role: string };
 type CorpusStatus = { versionId: string | null; updatedAt: string | null; lastSyncedAt: string | null; fileCount: number };
+type WeeklySnapshot = { preguntas: Record<string, unknown>[]; metricas: Record<string, unknown>[]; documentos: Record<string, unknown>[] };
 type Options = {
   enabled: boolean;
   serviceToken: string;
@@ -12,6 +14,7 @@ type Options = {
   ask: (user: User, question: string, context: Array<{ author: 'user' | 'assistant'; text: string }>) => Promise<ProtocolAgentResult>;
   confirm: (user: User, id: string, resolved: boolean) => Promise<boolean>;
   status: () => Promise<CorpusStatus>;
+  weeklySnapshot: (from: string, to: string) => Promise<WeeklySnapshot>;
   now?: () => number;
 };
 
@@ -38,6 +41,21 @@ export function createClubProtocolRouter(options: Options) {
     if (req.get('Origin')) return void res.status(403).json({ error: 'Solo acceso entre servidores' });
     const authorization = req.get('Authorization') || '';
     if (!authorization.startsWith('Bearer ') || !secureMatch(authorization.slice(7), options.serviceToken)) return void res.status(401).json({ error: 'Integración no autorizada' });
+    next();
+  });
+
+  router.get('/reporte-semanal', async (req, res) => {
+    try {
+      const { from, to } = parseWeeklyWindow(req.query.from, req.query.to, now());
+      const snapshot = await options.weeklySnapshot(from, to);
+      if (Buffer.byteLength(JSON.stringify(snapshot)) > 2_000_000) return void res.status(413).json({ error: 'Resumen demasiado grande' });
+      res.json(snapshot);
+    } catch (error) {
+      res.status(error instanceof Error && error.message === 'Periodo inválido' ? 400 : 503).json({ error: 'No se pudo preparar el resumen' });
+    }
+  });
+
+  router.use(async (req, res, next) => {
     const externalId = req.get('X-Club-User-Id') || '';
     if (!uuid.test(externalId)) return void res.status(400).json({ error: 'Identidad de Club inválida' });
     try {
