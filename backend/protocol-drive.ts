@@ -43,6 +43,7 @@ async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: str
   const visited = new Set<string>();
   const ids = new Set<string>();
   const hashes = new Set<string>();
+  const primaryNames = new Set<string>();
   for (let index = 0; index < folders.length; index++) {
     const currentFolder = folders[index];
     if (visited.has(currentFolder)) continue;
@@ -64,6 +65,9 @@ async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: str
           if (legacyFolderId && currentFolder !== folderId && !/^(_obsoletos|plantillas quantifier)$/iu.test(file.name.trim())) folders.push(file.id);
           continue;
         }
+        const normalizedName = file.name.trim().normalize('NFKC').toLocaleLowerCase('es');
+        if (currentFolder === folderId) primaryNames.add(normalizedName);
+        else if (primaryNames.has(normalizedName)) continue;
         if (ids.has(file.id) || (file.md5Checksum && hashes.has(file.md5Checksum))) continue;
         files.push(file);
         ids.add(file.id);

@@ -42,6 +42,26 @@ describe('sincronización de protocolos', () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  it('da prioridad al documento de Protocolos si Club tiene otra versión con el mismo nombre', async () => {
+    const save = vi.fn(async () => undefined);
+    const request = vi.fn(async (path: string) => {
+      const parent = new URL(path, 'https://drive.test').searchParams.get('q');
+      if (parent?.includes(`'${folderId}'`)) return Response.json({ files: [
+        { id: 'current', name: 'Control de materiales.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', md5Checksum: 'new', parents: [folderId] },
+      ] });
+      if (parent?.includes("'club-protocolos'")) return Response.json({ files: [
+        { id: 'old', name: 'CONTROL DE MATERIALES.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', md5Checksum: 'old', parents: ['club-protocolos'] },
+        { id: 'extra', name: 'Manual de interiorismo.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', md5Checksum: 'extra', parents: ['club-protocolos'] },
+      ] });
+      return new Response(Buffer.from('archivo'));
+    });
+    const extract = vi.fn(async () => ({ sections: [{ ref: 'diapositiva 1', text: 'Contenido verificable' }], warnings: [] }));
+    const report = await syncProtocolDrive(request, { maxTokens: 1000, legacyFolderId: 'club-protocolos', save, extract });
+    expect(report.error).toBeNull();
+    expect(report.files.map(file => file.id)).toEqual(['current', 'extra']);
+    expect(save.mock.calls[0][0].files.map(file => file.id).sort()).toEqual(['current', 'extra']);
+  });
+
   it('excluye subcarpetas y retira plantillas que entraron en un corpus anterior', async () => {
     const save = vi.fn(async () => undefined);
     const previous = {
