@@ -199,7 +199,10 @@ describe('Calificador · proceso', () => {
     expect(sql).toMatch(/JOIN comercial_rol r ON r\.extension_netelip = c\.agent_extension AND r\.activo/);
     expect(sql).toMatch(/c\.duration_seconds >= \$3/);
     expect(params[2]).toBe(60);
-    expect(sql).toMatch(/ON CONFLICT \(llamada_id\) DO NOTHING/);
+    // Una evaluación automática por llamada (las reevaluaciones bajo demanda no cuentan), con la rúbrica vigente.
+    expect(sql).toMatch(/NOT EXISTS \(SELECT 1 FROM llamada_evaluacion x WHERE x\.llamada_id = c\.id AND NOT x\.reevaluacion\)/);
+    expect(sql).toMatch(/SELECT v\.id FROM rubrica_version v WHERE v\.rol = r\.rol AND v\.activo/);
+    expect(sql).toMatch(/ON CONFLICT DO NOTHING/);
   });
 
   it('evalúa: enmascara antes del modelo y guarda nota, decisión, feedback y objeciones', async () => {

@@ -29,7 +29,7 @@ export async function llamadasDelPeriodo(pool: Pool, desde: Date | null, hasta: 
             (SELECT json_agg(json_build_object('tipo', o.tipo_objecion, 'cita', o.cita, 'idea_contenido', o.idea_contenido) ORDER BY o.id)
              FROM objecion_marketing o WHERE o.evaluacion_id = e.id) AS objeciones
      FROM llamada_evaluacion e JOIN netelip_calls c ON c.id = e.llamada_id
-     WHERE e.estado = 'evaluada' AND ($1::timestamptz IS NULL OR e.actualizado_en > $1) AND e.actualizado_en <= $2
+     WHERE e.estado = 'evaluada' AND NOT e.reevaluacion AND ($1::timestamptz IS NULL OR e.actualizado_en > $1) AND e.actualizado_en <= $2
      ORDER BY e.actualizado_en DESC LIMIT ${MAX_LLAMADAS}`, [desde, hasta]);
   return rows.map((r) => ({
     id: String(r.id), rol: r.rol, direccion: r.direction, duracion: Number(r.duration_seconds) || 0, nota: r.nota, apto: r.apto,
@@ -56,7 +56,7 @@ export async function iniciarActualizacion(pool: Pool, autor: { id: string; nomb
   const actual = await vigente(pool);
   const hasta = new Date();
   const { rows: [{ n }] } = await pool.query<{ n: number }>(
-    `SELECT COUNT(*)::int AS n FROM llamada_evaluacion WHERE estado = 'evaluada' AND ($1::timestamptz IS NULL OR actualizado_en > $1) AND actualizado_en <= $2`,
+    `SELECT COUNT(*)::int AS n FROM llamada_evaluacion WHERE estado = 'evaluada' AND NOT reevaluacion AND ($1::timestamptz IS NULL OR actualizado_en > $1) AND actualizado_en <= $2`,
     [actual.periodo_hasta, hasta]);
   if (!n) throw new ErrorEntrenador('No hay llamadas evaluadas nuevas desde la última actualización.', 409);
   try {

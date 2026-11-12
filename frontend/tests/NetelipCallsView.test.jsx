@@ -7,6 +7,7 @@ vi.mock('../src/ceo-dashboard/api', () => ({
 
 import api from '../src/ceo-dashboard/api';
 import NetelipCallsView from '../src/ceo-dashboard/views/NetelipCallsView';
+import CallEvaluationPanel, { EvaluationBadge } from '../src/ceo-dashboard/views/CallEvaluationPanel';
 import { callListQuery, formatDuration, formatMadridDateTime, formatPhone, madridDayStartIso, readCallFilters, writeCallFilters } from '../src/ceo-dashboard/netelipFormat';
 
 const metrics = { calls: 3, unidentified: 2, transcription_pending: 1, transcription_failed: 0 };
@@ -191,5 +192,90 @@ describe('NetelipCallsView', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Lucía Ficticia' }));
     expect(onOpenContact).toHaveBeenCalledWith({ type: 'client', id: 'c1', name: 'Lucía Ficticia' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+
+describe('CallEvaluationPanel · rúbrica versionada', () => {
+  const evaluation = {
+    id: 10, estado: 'evaluada', nota: 72, apto: true, escalado: false, comercial: 'Elena Prueba', rol: 'sdr', modelo: 'modelo-x',
+    version_rubrica: 'sdr-v1', reevaluacion: false, sin_consentimiento: false,
+    rubrica: { codigo: 'sdr-v1', fuente: 'Manual SDR v1', errores: [{ codigo: 'EXCEPCION_SIN_AUTORIZACION', nombre: 'EXCEPCIÓN SIN AUTORIZACIÓN' }] },
+    puntuacion_pasos: [
+      { paso: 1, nombre: 'Saludo', peso: 20, aplica: true, puntos: 15, comentario: 'Se presenta bien.' },
+      { paso: 2, nombre: 'Agenda reunión', peso: 30, aplica: false, puntos: 0, comentario: 'El cliente cuelga antes.' },
+    ],
+    errores_criticos: [{ regla: 'EXCEPCION_SIN_AUTORIZACION', cita: 'Te lo dejo más barato', marca_tiempo: '01:10' }],
+    bien: ['Escucha'], mejorar: [], objeciones: [], feedback_humano: [], otras: [],
+  };
+  const renderPanel = async (evaluationData, extra = {}) => {
+    vi.mocked(api.netelip.evaluation).mockResolvedValue({ evaluation: evaluationData, quotes_access: 'granted', can_supervise: false, ...extra });
+    render(<CallEvaluationPanel callId={1} transcriptionStatus="completed" />);
+    await screen.findByText(/72|Sin consentimiento|No evaluada/, { selector: 'p' });
+  };
+
+  it('muestra la nota por paso, con «No aplica», y la versión de la rúbrica', async () => {
+    await renderPanel(evaluation);
+    expect(screen.getByText('Nota por paso')).toBeInTheDocument();
+    expect(screen.getByText('Saludo')).toBeInTheDocument();
+    expect(screen.getByText('15/20')).toBeInTheDocument();
+    expect(screen.getByText('Se presenta bien.')).toBeInTheDocument();
+    expect(screen.getByText('Agenda reunión')).toBeInTheDocument();
+    expect(screen.getByText('No aplica')).toBeInTheDocument();
+    expect(screen.queryByText('0/30')).not.toBeInTheDocument();
+    const versions = screen.getAllByText('sdr-v1');
+    expect(versions.length).toBeGreaterThan(0);
+    expect(versions[0]).toHaveAttribute('title', 'Manual SDR v1');
+  });
+
+  it('sin puntuación por paso (rúbrica antigua) no muestra la tabla', async () => {
+    await renderPanel({ ...evaluation, puntuacion_pasos: null, version_rubrica: 'fase0-v1', rubrica: null });
+    expect(screen.queryByText('Nota por paso')).not.toBeInTheDocument();
+    expect(screen.getAllByText('fase0-v1').length).toBeGreaterThan(0);
+  });
+
+  it('nombra el error crítico con el nombre de la rúbrica y muestra la cita', async () => {
+    await renderPanel(evaluation);
+    expect(screen.getByText('EXCEPCIÓN SIN AUTORIZACIÓN')).toBeInTheDocument();
+    expect(screen.getByText('«Te lo dejo más barato»')).toBeInTheDocument();
+  });
+
+  it('sin rúbrica, usa la etiqueta fija del error', async () => {
+    await renderPanel({ ...evaluation, rubrica: null });
+    expect(screen.getByText('Excepción sin autorización')).toBeInTheDocument();
+  });
+
+  it('avisa cuando el cliente no dio consentimiento', async () => {
+    await renderPanel({ ...evaluation, estado: 'no_evaluada', nota: null, sin_consentimiento: true, motivo_no_evaluada: 'sin consentimiento: el cliente no autoriza la grabación', puntuacion_pasos: null });
+    expect(screen.getByText('Sin consentimiento: el cliente no autorizó la grabación. La llamada no se evalúa con IA y no se guardan objeciones.')).toBeInTheDocument();
+    expect(screen.queryByText(/^No evaluada:/)).not.toBeInTheDocument();
+  });
+
+  it('lista las otras evaluaciones de la llamada', async () => {
+    await renderPanel({ ...evaluation, otras: [
+      { id: 11, estado: 'evaluada', nota: 55, apto: false, version_rubrica: 'sdr-v2', reevaluacion: true, sin_consentimiento: false, errores_criticos: ['EXCEPCION_SIN_AUTORIZACION'], creado_en: '2026-11-15T08:47:00Z' },
+      { id: 12, estado: 'procesando', nota: null, apto: null, version_rubrica: 'sdr-v3', reevaluacion: true, sin_consentimiento: false, errores_criticos: [], creado_en: '2026-11-16T08:47:00Z' },
+    ] });
+    const block = screen.getByText('Otras evaluaciones (2)').closest('details');
+    expect(within(block).getByText('sdr-v2')).toBeInTheDocument();
+    expect(within(block).getByText('55/100 · No apto')).toBeInTheDocument();
+    expect(within(block).getAllByText('EXCEPCIÓN SIN AUTORIZACIÓN')).toHaveLength(1);
+    expect(within(block).getByText('15/11/2026 09:47')).toBeInTheDocument();
+    expect(within(block).getByText('sdr-v3')).toBeInTheDocument();
+    expect(within(block).getByText('Evaluando…')).toBeInTheDocument();
+  });
+
+  it('sin otras evaluaciones no muestra el bloque', async () => {
+    await renderPanel(evaluation);
+    expect(screen.queryByText(/Otras evaluaciones/)).not.toBeInTheDocument();
+  });
+});
+
+describe('EvaluationBadge', () => {
+  it('muestra «Sin consentimiento» en lugar de «No evaluada»', () => {
+    const { rerender } = render(<EvaluationBadge evaluation={{ status: 'no_evaluada', score: null, pass: null, escalated: false, no_consent: true }} />);
+    expect(screen.getByText('Sin consentimiento')).toBeInTheDocument();
+    expect(screen.queryByText('No evaluada')).not.toBeInTheDocument();
+    rerender(<EvaluationBadge evaluation={{ status: 'no_evaluada', score: null, pass: null, escalated: false, no_consent: false }} />);
+    expect(screen.getByText('No evaluada')).toBeInTheDocument();
   });
 });
