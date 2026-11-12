@@ -124,6 +124,18 @@ export function esCuentaLyn(nombre: string): boolean {
   return tokens(nombre).some((t) => t === 'lyn' || t === 'grupolyn');
 }
 
+// Dirección en mitad de una frase: tipo de vía + nombre (hasta 6 palabras) + número, con piso o puerta opcionales.
+// El enmascarado del calificador (protocol-privacy) solo tapa la dirección si llega hasta el final de la línea; en una
+// reunión los turnos son largos y la dirección suele ir seguida de más texto («calle Mayor 12, por si…»).
+// El nombre de la vía debe empezar en mayúscula (lo normal en Meet con nombres propios) para no tapar frases como
+// «la plaza a las 10». Una dirección escrita toda en minúsculas no se tapa: limitación conocida.
+const DIRECCION_EN_FRASE = /\b(?:[Cc]alle|[Cc]\/|[Aa]venida|[Aa]vda\.?|[Aa]v\.|[Pp]aseo|[Pp]laza|[Pp]l\.|[Cc]arretera|[Cc]tra\.?|[Cc]amino|[Rr]onda|[Uu]rbanizaci[oó]n|[Pp]artida)\s+(?:(?:de|del|la|las|los|el|d')\s+)*\p{Lu}[\p{L}'’-]*(?:\s+(?:de|del|la|las|los|el|y|\p{Lu}[\p{L}'’-]*)){0,5}\s*,?\s*(?:n[º°o.]?\s*)?\d{1,4}(?:\s?[A-Za-z](?![\p{L}]))?(?:\s*[,-]?\s*\d{1,2}\s*[º°ª]?(?:\s?[A-Za-z](?![\p{L}]))?)?/gu;
+
+/** Tapa direcciones con número aunque no terminen la línea. Complementa a `enmascarar` del calificador. */
+export function enmascararDirecciones(texto: string): string {
+  return texto.replace(DIRECCION_EN_FRASE, '[DIRECCIÓN]');
+}
+
 /**
  * ¿El nombre que muestra Meet corresponde a esta persona del equipo? Meet usa el nombre de la cuenta de Google
  * («Ernesto García López»), y en `empleados` puede estar más corto («Ernesto García») o al revés.
@@ -162,7 +174,7 @@ export function prepararTranscripcion(texto: string | null, equipoLyn: string[],
   const ultimo = turnos.length ? Math.max(...turnos.map((t) => t.inicio)) : 0;
   return {
     // Se enmascaran los clientes que hablan y los que solo se mencionan pero se conocen (invitados de Calendar, lead).
-    transcripcion: enmascarar(turnosTexto, [...clientes, ...(opciones.nombresCliente || [])]),
+    transcripcion: enmascararDirecciones(enmascarar(turnosTexto, [...clientes, ...(opciones.nombresCliente || [])])),
     hablantesLyn: [...lyn],
     hablantesCliente: [...clientes],
     conHablantes,

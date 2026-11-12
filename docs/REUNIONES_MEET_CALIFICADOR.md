@@ -116,6 +116,8 @@ calificador de llamadas: `[hh:mm:ss] GRUPO LYN: …` / `[hh:mm:ss] CLIENTE: …`
   un nombre con «LYN» habla por GRUPO LYN; también los invitados internos de Calendar.
 - Pie: `La transcripción finalizó después de hh:mm:ss` (duración exacta) y un aviso; no se envían al modelo.
 - Se enmascaran los clientes que hablan y los invitados externos de Calendar aunque solo se mencionen.
+- Las direcciones con número se tapan aunque vayan en mitad de una frase (`enmascararDirecciones`): el enmascarado del
+  calificador solo las tapa si llegan al final de la línea. Una dirección escrita toda en minúsculas no se tapa.
 
 ## Evaluación (`evaluacion.ts`)
 
@@ -177,6 +179,37 @@ la daba, la duración. Un evento de día entero no da hora.
   SELECT id, CONCAT_WS(' ', nombre, apellido), 'closer_f2' FROM empleados WHERE LOWER(email) = '<email de Ernesto>' AND activo
   ON CONFLICT (empleado_id) DO UPDATE SET rol = EXCLUDED.rol, activo = TRUE, actualizado_en = NOW();
   ```
+
+## Pruebas con servicios reales (tests «live»)
+
+No se ejecutan en la suite normal: hace falta activarlos a propósito. Usan datos inventados y la base local de QA.
+
+**Gemini** (`tests/reuniones-meet-gemini.live.test.ts`). Evalúa una reunión de oficina inventada, con el formato real de
+Meet, con una rúbrica de prueba de F2 sacada del Manual Fase 0. Comprueba:
+- que la salida es válida y las citas están verificadas;
+- que a Gemini no le llega el nombre, el teléfono ni la dirección de la clienta;
+- que detecta el «precio final» que se promete a propósito (`PRECIO_CERRADO`, no apto).
+
+Imprime la nota, los pasos, los tokens y el coste. Solo permite conexiones a Gemini.
+
+```bash
+docker run -d --rm --name lyn-qa-reuniones -e POSTGRES_PASSWORD=qa -e POSTGRES_USER=qa -e POSTGRES_DB=lyn_qa_retest -p 127.0.0.1:15439:5432 postgres:16-alpine
+QA_LIVE_REUNIONES_GEMINI=true GOOGLE_GEMINI_API_KEY=… QA_TEST_DATABASE_URL=postgres://qa:qa@127.0.0.1:15439/lyn_qa_retest npx vitest run tests/reuniones-meet-gemini.live.test.ts
+```
+
+Opcional: `CALIFICADOR_PRECIO_ENTRADA_1M` y `CALIFICADOR_PRECIO_SALIDA_1M` para ver el coste en dinero.
+
+**ClickUp** (`tests/reuniones-meet-clickup.live.test.ts`). Solo lectura: bloquea cualquier escritura y cualquier otro
+destino. Comprueba:
+- que la lista tiene los campos supuestos, e imprime sus nombres y las opciones de `ETAPA_CRM` con la fase que les toca;
+- que encuentra una sola tarea padre para el email de un lead real;
+- que un email inexistente no encuentra nada.
+
+No imprime datos de clientes, solo ids y nombres de campos.
+
+```bash
+QA_LIVE_REUNIONES_CLICKUP=true CLICKUP_API_TOKEN=pk_… QA_CLICKUP_EMAIL_LEAD=<email de un lead> npx vitest run tests/reuniones-meet-clickup.live.test.ts
+```
 
 ## Operación
 

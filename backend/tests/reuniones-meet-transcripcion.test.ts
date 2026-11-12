@@ -1,7 +1,7 @@
 // Transcripción de Meet → formato del calificador (869fppbcj). Los textos imitan el formato de Meet; no son reuniones reales.
 import { describe, expect, it } from 'vitest';
 import { citaVerificable } from '../netelip/calificador/reglas.ts';
-import { esCuentaLyn, leerTurnos, mismaPersona, prepararTranscripcion, segundos } from '../reuniones-meet/transcripcion.ts';
+import { enmascararDirecciones, esCuentaLyn, leerTurnos, mismaPersona, prepararTranscripcion, segundos } from '../reuniones-meet/transcripcion.ts';
 import { codigoMeet, duracionAproximada, faseDelTitulo } from '../reuniones-meet/reglas.ts';
 
 const DOC_MEET = `F2 · Visita García - Transcripción
@@ -158,5 +158,20 @@ describe('formato real de Meet (11/2026)', () => {
     expect(esCuentaLyn('GrupoLyn Admin')).toBe(true);
     expect(esCuentaLyn('Carolyn Smith')).toBe(false);
     expect(esCuentaLyn('María García')).toBe(false);
+  });
+});
+
+describe('direcciones en mitad de una frase', () => {
+  it('se tapan aunque sigan más palabras; sin número no se toca (no es una dirección completa)', () => {
+    expect(enmascararDirecciones('Vivimos en la calle Mayor 12, por si lo necesitáis.')).toBe('Vivimos en la [DIRECCIÓN], por si lo necesitáis.');
+    expect(enmascararDirecciones('Es en Avenida de la Estación 45 3º B y luego vemos.')).toBe('Es en [DIRECCIÓN] y luego vemos.');
+    expect(enmascararDirecciones('En c/ San Vicente 7, segundo.')).toBe('En [DIRECCIÓN], segundo.');
+    expect(enmascararDirecciones('Paseo Marítimo nº 3 al lado del mar.')).toBe('[DIRECCIÓN] al lado del mar.');
+    expect(enmascararDirecciones('La calle es estrecha y el camino largo.')).toBe('La calle es estrecha y el camino largo.');
+    expect(enmascararDirecciones('Quedamos en la plaza a las 10.')).toBe('Quedamos en la plaza a las 10.');
+  });
+  it('prepararTranscripcion ya lo aplica', () => {
+    const p = prepararTranscripcion('Ana Gil: Vivimos en la calle Mayor 12, por si lo necesitáis.\nAna Gil: Gracias.', []);
+    expect(p.transcripcion).not.toMatch(/Mayor/);
   });
 });
