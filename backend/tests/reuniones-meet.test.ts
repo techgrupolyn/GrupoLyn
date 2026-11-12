@@ -77,10 +77,10 @@ describe('Reuniones Meet · estado de cada reunión (criterios del ticket)', () 
 
   it('con rúbrica activa para su fase: por_evaluar con esa versión', async () => {
     const { pool, consultas } = poolFalso([[ORGANIZADOR, { rows: [ernesto] }], [COMERCIAL, { rows: [{ rol: 'closer_f2' }] }],
-      [EXISTE_RUBRICA, { rows: [{ existe: true, con_fase: true }] }], [VERSION_ACTIVA, { rows: [{ id: '7', version: 'f2-v1' }] }]]);
+      [EXISTE_RUBRICA, { rows: [{ existe: true, con_fase: true }] }], [VERSION_ACTIVA, { rows: [{ id: '7', version: 'closer_f2-v1' }] }]]);
     const v = await decidirVinculacion(pool, reunion());
-    expect(v).toMatchObject({ estado: 'por_evaluar', version_rubrica: 'f2-v1', rubrica_version_id: '7', fase: 'F2' });
-    expect(consultas.find((c) => VERSION_ACTIVA.test(c.sql))?.params).toEqual(['F2']);
+    expect(v).toMatchObject({ estado: 'por_evaluar', version_rubrica: 'closer_f2-v1', rubrica_version_id: '7', fase: 'F2' });
+    expect(consultas.find((c) => VERSION_ACTIVA.test(c.sql))?.params).toEqual(['closer_f2']);
   });
 
   it('organizador desconocido: sin_comercial', async () => {

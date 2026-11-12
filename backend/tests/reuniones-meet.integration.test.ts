@@ -88,13 +88,15 @@ describe.skipIf(!databaseUrl)('Reuniones Meet en PostgreSQL QA local', () => {
   });
 
   it('rúbrica de F2 activada después: reabrir y vincular las deja por_evaluar con esa versión; la negativa no se toca', async () => {
-    await client.query(`CREATE TABLE rubrica_version (id SERIAL PRIMARY KEY, rol TEXT, fase TEXT, version TEXT NOT NULL, vigente_desde TIMESTAMPTZ DEFAULT NOW(), activo BOOLEAN NOT NULL DEFAULT FALSE);
-      INSERT INTO rubrica_version (rol, fase, version, activo) VALUES ('closer_f2','F2','f2-v1',TRUE)`);
+    // Columnas de rubrica_version que importan aquí, como en la PR #33 (una versión activa por rol).
+    await client.query(`CREATE TABLE rubrica_version (id BIGSERIAL PRIMARY KEY, codigo TEXT NOT NULL UNIQUE, rol TEXT NOT NULL, version INTEGER NOT NULL,
+        activo BOOLEAN NOT NULL DEFAULT FALSE);
+      INSERT INTO rubrica_version (codigo, rol, version, activo) VALUES ('sdr-v1','sdr',1,TRUE), ('closer_f2-v1','closer_f2',1,TRUE)`);
     expect(await reabrirSinRubrica(pool, 'F2')).toBe(1);   // solo la de F2; la que no tiene fase sigue igual
     await vincularPendientes(pool);
     const { rows } = await client.query(`SELECT titulo, estado, version_rubrica, rubrica_version_id FROM reunion ORDER BY titulo`);
     expect(rows).toEqual([
-      { titulo: 'F2 · Visita García - Transcripción', estado: 'por_evaluar', version_rubrica: 'f2-v1', rubrica_version_id: '1' },
+      { titulo: 'F2 · Visita García - Transcripción', estado: 'por_evaluar', version_rubrica: 'closer_f2-v1', rubrica_version_id: '2' },
       { titulo: 'F3 · Presentación López - Transcripción', estado: 'sin_consentimiento', version_rubrica: null, rubrica_version_id: null },
       { titulo: 'Reunión de diseño - Transcripción', estado: 'sin_rubrica', version_rubrica: null, rubrica_version_id: null },
     ]);

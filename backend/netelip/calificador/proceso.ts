@@ -174,7 +174,9 @@ export async function enviarPendientes(pool: Pool, enviar: Enviador, config: Con
   const { rows } = await pool.query<{ id: string; llamada_id: string; feedback_texto: string; escalado: boolean; extension_netelip: string; nombre: string | null; whatsapp: string | null }>(
     `SELECT e.id, e.llamada_id, e.feedback_texto, e.escalado, e.extension_netelip, r.nombre, r.whatsapp
      FROM llamada_evaluacion e LEFT JOIN comercial_rol r ON r.extension_netelip = e.extension_netelip
-     WHERE e.estado = 'evaluada' AND NOT e.reevaluacion AND e.enviado_en IS NULL AND e.envio_intentos < $1 ORDER BY e.id LIMIT 20`, [MAX_INTENTOS_ENVIO]);
+     -- llamada_id IS NOT NULL: las reuniones de Meet (869fppbcj) no se envían por WhatsApp; no tienen extensión y cada
+     -- intento fallaría y avisaría a Tech.
+     WHERE e.estado = 'evaluada' AND NOT e.reevaluacion AND e.llamada_id IS NOT NULL AND e.enviado_en IS NULL AND e.envio_intentos < $1 ORDER BY e.id LIMIT 20`, [MAX_INTENTOS_ENVIO]);
   let enviados = 0;
   for (const row of rows) {
     try {

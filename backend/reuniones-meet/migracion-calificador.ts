@@ -4,7 +4,8 @@
 //   llamada_evaluacion   + reunion_id (BIGINT, FK en schema.ts › enlazarEvaluaciones)
 //                        llamada_id, extension_netelip y rol admiten nulos (una reunión no tiene llamada ni extensión)
 //                        CHECK num_nonnulls(llamada_id, reunion_id) = 1   (exactamente uno de los dos)
-//                        una evaluación por reunión y versión de rúbrica (índice único parcial)
+//                        una evaluación por reunión y versión: (reunion_id, COALESCE(rubrica_version_id, 0)), como las llamadas
+//   rubrica_version      CHECK de rol con closer_f4 (la tabla la crea 869fpj8dm, PR #33)
 //   objecion_marketing   llamada_id admite nulos; CHECK: al menos llamada_id o evaluacion_id (no hay objeciones huérfanas)
 //   comercial_rol        id propio como clave; extension_netelip opcional pero UNIQUE (la cola, el envío y el alta
 //                        hacen ON CONFLICT (extension_netelip)); empleado_id UNIQUE (una fila por persona); closer_f4
@@ -37,9 +38,14 @@ export async function adaptarCalificador(pool: Consultable): Promise<void> {
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'llamada_evaluacion_origen_check' AND conrelid = to_regclass('llamada_evaluacion')) THEN
           ALTER TABLE llamada_evaluacion ADD CONSTRAINT llamada_evaluacion_origen_check CHECK (num_nonnulls(llamada_id, reunion_id) = 1);
         END IF;
-        -- Hasta que exista rubrica_version (869fpj8dm) la versión es texto; COALESCE para que un NULL no esquive la unicidad.
-        CREATE UNIQUE INDEX IF NOT EXISTS llamada_evaluacion_reunion_version
-          ON llamada_evaluacion (reunion_id, COALESCE(version_rubrica, '')) WHERE reunion_id IS NOT NULL;
+        -- Una evaluación por reunión y versión, con el mismo patrón que las llamadas (869fpj8dm:
+        -- (llamada_id, COALESCE(rubrica_version_id, 0))). Sustituye al índice por version_rubrica del primer borrador.
+        DROP INDEX IF EXISTS llamada_evaluacion_reunion_version;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                     AND table_name = 'llamada_evaluacion' AND column_name = 'rubrica_version_id') THEN
+          CREATE UNIQUE INDEX IF NOT EXISTS llamada_evaluacion_reunion_rubrica
+            ON llamada_evaluacion (reunion_id, (COALESCE(rubrica_version_id, 0))) WHERE reunion_id IS NOT NULL;
+        END IF;
       END IF;
 
       -- objecion_marketing ------------------------------------------------------------------------------
@@ -47,6 +53,18 @@ export async function adaptarCalificador(pool: Consultable): Promise<void> {
         ALTER TABLE objecion_marketing ALTER COLUMN llamada_id DROP NOT NULL;
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'objecion_marketing_origen_check' AND conrelid = to_regclass('objecion_marketing')) THEN
           ALTER TABLE objecion_marketing ADD CONSTRAINT objecion_marketing_origen_check CHECK (num_nonnulls(llamada_id, evaluacion_id) >= 1);
+        END IF;
+      END IF;
+
+      -- rubrica_version (869fpj8dm): admite rúbricas de cierre (closer_f4) ----------------------------------
+      IF to_regclass('rubrica_version') IS NOT NULL THEN
+        FOR c IN SELECT conname FROM pg_constraint
+                 WHERE conrelid = to_regclass('rubrica_version') AND contype = 'c'
+                   AND pg_get_constraintdef(oid) LIKE '%closer_f3%' AND pg_get_constraintdef(oid) NOT LIKE '%closer_f4%' LOOP
+          EXECUTE format('ALTER TABLE rubrica_version DROP CONSTRAINT %I', c.conname);
+        END LOOP;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('rubrica_version') AND conname = 'rubrica_version_rol_check') THEN
+          ALTER TABLE rubrica_version ADD CONSTRAINT rubrica_version_rol_check CHECK (rol IN ('sdr','closer_f2','closer_f3','closer_f4'));
         END IF;
       END IF;
 

@@ -42,25 +42,24 @@ export async function ingestarTranscripciones(pool: Consultable, lote = LOTE_ING
 
 let avisoRubrica = false;
 
-/**
- * Versión activa de la rúbrica para la fase de la reunión, o null.
- * rubrica_version la crea el ticket 869fpj8dm (Juan). Mientras no exista, o no tenga columna `fase`, no hay
- * rúbrica para ninguna fase de closer y la reunión queda `sin_rubrica` sin llamar al modelo.
- * Acordado con Juan (11/11): se elige por `fase` (F0, F2, F3, F4); el rol es informativo. Columnas: id, fase,
- * version, activo, vigente_desde. Se devuelve el id porque su evaluación se encola con rubrica_version_id.
- */
+/** La rúbrica de una reunión se elige por su fase; en rubrica_version (869fpj8dm) cada fase de closer es un rol. */
+export const ROL_DE_FASE: Record<FaseReunion, string> = { F2: 'closer_f2', F3: 'closer_f3', F4: 'closer_f4' };
+
 export type RubricaActiva = { id: string; version: string };
 
+/**
+ * Versión activa de la rúbrica para la fase de la reunión, o null.
+ * rubrica_version (PR #33 de Juan) tiene una versión activa por rol; F2 → closer_f2, F3 → closer_f3, F4 → closer_f4.
+ * Devuelve el id (la evaluación se guarda con rubrica_version_id) y el código («closer_f2-v1»), que es lo que el
+ * calificador copia en llamada_evaluacion.version_rubrica. Sin tabla o sin versión activa: null → `sin_rubrica`.
+ */
 export async function rubricaActiva(pool: Consultable, fase: FaseReunion): Promise<RubricaActiva | null> {
-  const { rows } = await pool.query<{ existe: boolean; con_fase: boolean }>(
-    `SELECT to_regclass('rubrica_version') IS NOT NULL AS existe,
-            EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'rubrica_version' AND column_name = 'fase') AS con_fase`,
-  );
-  if (!rows[0]?.existe || !rows[0]?.con_fase) return null;
+  const { rows } = await pool.query<{ existe: boolean }>(`SELECT to_regclass('rubrica_version') IS NOT NULL AS existe`);
+  if (!rows[0]?.existe) return null;
   try {
     const activa = await pool.query<RubricaActiva>(
-      `SELECT id::text AS id, version::text AS version FROM rubrica_version WHERE activo AND fase = $1 ORDER BY vigente_desde DESC NULLS LAST LIMIT 1`,
-      [fase],
+      `SELECT id::text AS id, codigo AS version FROM rubrica_version WHERE activo AND rol = $1 LIMIT 1`,
+      [ROL_DE_FASE[fase]],
     );
     return activa.rows[0] ?? null;
   } catch (error) {

@@ -34,7 +34,8 @@ en cada arranque y comprueba cada paso. Juan la revisa antes de pasar a `main`.
 | `llamada_evaluacion` | + `reunion_id BIGINT` con FK `llamada_evaluacion_reunion_fk → reunion(id) ON DELETE RESTRICT` | Una sola tabla de notas para el gráfico 5 |
 | | `llamada_id`, `extension_netelip` y `rol` admiten nulos | Una reunión no tiene llamada ni extensión |
 | | `CHECK (num_nonnulls(llamada_id, reunion_id) = 1)` | Exactamente uno: una fila no mezcla llamada y reunión |
-| | Índice único `(reunion_id, COALESCE(version_rubrica, ''))` | Una evaluación por reunión y versión (reevaluar = versión nueva) |
+| | Índice único `(reunion_id, COALESCE(rubrica_version_id, 0))` | Una evaluación por reunión y versión, mismo patrón que las llamadas (PR #33) |
+| `rubrica_version` | CHECK de `rol` con `closer_f4` | Rúbrica de cierre (F4) |
 | `objecion_marketing` | `llamada_id` admite nulos; `CHECK` al menos `llamada_id` o `evaluacion_id` | La objeción de una reunión va por `evaluacion_id → llamada_evaluacion.reunion_id` |
 | `comercial_rol` | Clave `id` propia; `extension_netelip` opcional y `UNIQUE`; `empleado_id UNIQUE`; rol `closer_f4` | Closers sin extensión, una fila por persona. La extensión sigue siendo única porque la cola, el envío y el alta hacen `ON CONFLICT (extension_netelip)` |
 
@@ -43,8 +44,11 @@ en cada arranque y comprueba cada paso. Juan la revisa antes de pasar a `main`.
   pendiente sería la más antigua y la cola se pararía. Las reuniones tendrán su propio procesador.
 - Si `comercial_rol` ya tuviera un empleado repetido, `UNIQUE (empleado_id)` no se aplica (aviso en el log) para no
   tumbar el arranque; el resto de la migración sí.
-- La rúbrica se elige por fase. Hasta que exista `rubrica_version` (869fpj8dm) la versión es texto (`version_rubrica`);
-  `rubrica_version_id` se añadirá en esa migración.
+- **Rúbrica de una reunión:** `rubrica_version` (PR #33) tiene una versión activa **por rol**, y la de la reunión sale de
+  su fase: F2 → `closer_f2`, F3 → `closer_f3`, F4 → `closer_f4`. `reunion` guarda `rubrica_version_id` y, como
+  `version_rubrica`, el código de la versión (`closer_f2-v1`), igual que las llamadas.
+- **Envío por WhatsApp:** `enviarPendientes` solo envía evaluaciones de llamadas (`llamada_id IS NOT NULL`).
+- **Consentimiento:** las reuniones usan el mismo detector que las llamadas (`detectarNegativaGrabacion`).
 - `sin_rubrica` vive solo en `reunion`; `sin_consentimiento` se llama igual en las dos tablas.
 - Feedback por WhatsApp a los closers: excluido hasta que negocio lo decida.
 
@@ -98,8 +102,14 @@ calificador de llamadas: `[hh:mm:ss] GRUPO LYN: …` / `[hh:mm:ss] CLIENTE: …`
   no exista, todas las reuniones quedan `sin_rubrica`.
 - **Búsqueda del lead y fase desde el CRM** (lista de ClickUp «Contacto de Reforma», `ETAPA_CRM`; F2 = e4 VISITA): falta
   acceso a la lista y saber qué valores son F3 y F4. No hay historial de `ETAPA_CRM`: manda el título.
-- **Alta de los closers en `comercial_rol`** (Ernesto y el closer nuevo, por `empleado_id`): la tabla ya lo admite; falta
-  hacerlo. El alta del Dashboard de Juan sigue pidiendo extensión.
+- **Alta de los closers en `comercial_rol`:** de momento por SQL (acordado con Juan; la ruta del Dashboard llegará cuando
+  haya más closers sin extensión). Una fila por persona; el rol es informativo, porque la rúbrica sale de la fase:
+
+  ```sql
+  INSERT INTO comercial_rol (empleado_id, nombre, rol)
+  SELECT id, CONCAT_WS(' ', nombre, apellido), 'closer_f2' FROM empleados WHERE LOWER(email) = '<email de Ernesto>' AND activo
+  ON CONFLICT (empleado_id) DO UPDATE SET rol = EXCLUDED.rol, activo = TRUE, actualizado_en = NOW();
+  ```
 
 ## Operación
 

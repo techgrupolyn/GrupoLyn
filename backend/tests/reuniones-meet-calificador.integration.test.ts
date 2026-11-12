@@ -4,7 +4,7 @@ import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 import { ensureCalificador } from '../netelip/calificador/schema.ts';
-import { procesarSiguienteEvaluacion } from '../netelip/calificador/proceso.ts';
+import { enviarPendientes, procesarSiguienteEvaluacion } from '../netelip/calificador/proceso.ts';
 import { ensureReunionesMeet } from '../reuniones-meet/schema.ts';
 import { adaptarCalificador } from '../reuniones-meet/migracion-calificador.ts';
 
@@ -76,7 +76,7 @@ describe.skipIf(!databaseUrl)('Migración del calificador para reuniones en Post
 
   it('llamada_evaluacion: admite una reunión y exige exactamente uno de llamada_id o reunion_id', async () => {
     await client.query(`INSERT INTO llamada_evaluacion (reunion_id, empleado_id, rol, version_rubrica) VALUES ($1,'ernesto','closer_f2','f2-v1')`, [reunionId]);
-    await expect(client.query(`INSERT INTO llamada_evaluacion (reunion_id, version_rubrica) VALUES ($1,'f2-v1')`, [reunionId])).rejects.toThrow(/llamada_evaluacion_reunion_version/);
+    await expect(client.query(`INSERT INTO llamada_evaluacion (reunion_id, version_rubrica) VALUES ($1,'f2-v1')`, [reunionId])).rejects.toThrow(/llamada_evaluacion_reunion_rubrica/);
     await expect(client.query(`INSERT INTO llamada_evaluacion (estado) VALUES ('evaluada')`)).rejects.toThrow(/llamada_evaluacion_origen_check/);
     await expect(client.query(`INSERT INTO llamada_evaluacion (llamada_id, reunion_id) VALUES (1, $1)`, [reunionId])).rejects.toThrow(/llamada_evaluacion_origen_check/);
     await expect(client.query(`INSERT INTO llamada_evaluacion (reunion_id) VALUES (999999)`)).rejects.toThrow(/llamada_evaluacion_reunion_fk/);
@@ -97,6 +97,31 @@ describe.skipIf(!databaseUrl)('Migración del calificador para reuniones en Post
     expect(await procesarSiguienteEvaluacion(pool, async () => { throw new Error('no debe llamarse'); }, {} as never)).toBe('no_evaluada');
     const { rows } = await client.query(`SELECT estado FROM llamada_evaluacion WHERE reunion_id = $1`, [reunionId]);
     expect(rows).toEqual([{ estado: 'pendiente' }]);   // la reunión no la toca: es de nuestro procesador
+  });
+
+  it('rubrica_version admite closer_f4, y el SQL de alta de Ernesto de la guía funciona', async () => {
+    await client.query(`INSERT INTO rubrica_version (codigo, rol, version, fuente, objetivo, criterios, errores_criticos, activo)
+      VALUES ('closer_f4-v1','closer_f4',1,'prueba','Cierre','[]','[]',TRUE)`);
+    await expect(client.query(`INSERT INTO rubrica_version (codigo, rol, version, fuente, objetivo, criterios, errores_criticos)
+      VALUES ('jefe-v1','jefe',1,'prueba','x','[]','[]')`)).rejects.toThrow(/rubrica_version_rol_check/);
+    // La consulta de docs/REUNIONES_MEET_CALIFICADOR.md (alta por SQL), dos veces: la segunda actualiza.
+    const alta = `INSERT INTO comercial_rol (empleado_id, nombre, rol)
+      SELECT id, nombre, $2 FROM empleados WHERE LOWER(email) = $1 AND activo
+      ON CONFLICT (empleado_id) DO UPDATE SET rol = EXCLUDED.rol, activo = TRUE, actualizado_en = NOW()`;
+    await client.query(alta, ['ernesto@grupolyn.com', 'closer_f3']);
+    await client.query(alta, ['ernesto@grupolyn.com', 'closer_f2']);
+    expect((await client.query(`SELECT rol, extension_netelip FROM comercial_rol WHERE empleado_id = 'ernesto'`)).rows).toEqual([{ rol: 'closer_f2', extension_netelip: null }]);
+  });
+
+  it('el envío por WhatsApp de Juan ignora las evaluaciones de reuniones', async () => {
+    await client.query(`UPDATE llamada_evaluacion SET estado = 'evaluada', feedback_texto = 'x', enviado_en = NULL WHERE reunion_id = $1`, [reunionId]);
+    await client.query(`UPDATE llamada_evaluacion SET enviado_en = NOW() WHERE llamada_id IS NOT NULL`);
+    const enviados: string[] = [];
+    const n = await enviarPendientes(pool, async (tel: string) => { enviados.push(tel); }, { envioActivo: true, supervisorNombre: 'Ernesto', supervisorWhatsapp: null } as never);
+    expect(n).toBe(0);
+    expect(enviados).toEqual([]);
+    expect((await client.query(`SELECT envio_intentos, envio_error FROM llamada_evaluacion WHERE reunion_id = $1`, [reunionId])).rows)
+      .toEqual([{ envio_intentos: 0, envio_error: null }]);
   });
 
   it('un empleado repetido en comercial_rol no tumba el arranque: se migra todo menos UNIQUE (empleado_id)', async () => {

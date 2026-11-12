@@ -1,4 +1,5 @@
 // Reglas puras de las reuniones de Meet (869fppbcj): sin base de datos ni red, para probarlas por separado.
+import { detectarNegativaGrabacion } from '../netelip/calificador/reglas.ts';
 import type { FaseReunion } from './schema.ts';
 
 /** Quita tildes y pasa a minúsculas para comparar texto libre. */
@@ -26,23 +27,14 @@ export function faseDelTitulo(titulo: string | null | undefined): FaseReunion | 
   return fases.size === 1 ? [...fases][0] : null;
 }
 
-// Frases con las que un participante niega la grabación. Mismo criterio que las llamadas (869fpj8dm):
-// ante la negativa, la reunión no se evalúa nunca, ni en una reevaluación.
-const NEGATIVAS_GRABACION = [
-  /\bno (?:quiero|queremos|deseo) que (?:se )?(?:me |nos |lo |la )?grab/,
-  /\bprefiero que no (?:se )?(?:me |nos |lo |la )?grab/,
-  /\bpreferimos que no (?:se )?(?:me |nos |lo |la )?grab/,
-  /\bno (?:me |nos )?grab(?:es|eis|e usted|en)\b/,
-  /\bno (?:autorizo|autorizamos|acepto|aceptamos|consiento|consentimos)(?: que se grabe| la grabacion| grabar| a que se grabe)/,
-  /\bno (?:doy|damos) (?:permiso|consentimiento) (?:para|a) (?:que se )?grab/,
-  /\bsin grabar,? por favor\b/,
-  /\bapaga(?:d|r)? la grabacion\b/,
-];
-
-/** true si en la transcripción alguien se niega a que se grabe. Detectarlo de más es preferible a evaluar sin permiso. */
+/**
+ * true si en la transcripción alguien se niega a que se grabe. Usa el detector del calificador de llamadas
+ * (detectarNegativaGrabacion, 869fpj8dm) para que llamadas y reuniones decidan igual: descarta las hipótesis del
+ * comercial («si no quiere que se grabe…») y reconoce la respuesta del guion («sin problema, tomo yo las notas»).
+ * Ante la negativa, la reunión no se evalúa nunca, ni en una reevaluación.
+ */
 export function niegaGrabacion(transcripcion: string | null | undefined): boolean {
-  const texto = normalizar(String(transcripcion || '')).replace(/\s+/g, ' ');
-  return NEGATIVAS_GRABACION.some((patron) => patron.test(texto));
+  return detectarNegativaGrabacion(String(transcripcion || '')) !== null;
 }
 
 /**
