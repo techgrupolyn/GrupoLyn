@@ -24,16 +24,28 @@ comercial y a su fase, y quedan listas para evaluarse con la rúbrica activa de 
 Las `sin_comercial` se revisan solas cuando alguien vincula al organizador a mano o se da de alta un comercial.
 `reabrirSinRubrica(pool, fase)` devuelve a `pendiente` las `sin_rubrica` de una fase tras activar su rúbrica.
 
-## Acuerdos con el calificador de llamadas (Juan, 11/11/2026)
+## Migración de las tablas del calificador (acordada con Juan, 11/11/2026)
 
-- La rúbrica se elige **por fase** (F0 SDR, F2, F3, F4) en `rubrica_version`; el rol es informativo. `reunion` guarda
-  `version_rubrica` y **`rubrica_version_id`**, porque la evaluación se encola con `rubrica_version_id NOT NULL` y
-  `UNIQUE (reunion_id, rubrica_version_id)`.
-- `sin_rubrica` vive solo en `reunion`: la fila en `llamada_evaluacion` (con `origen = reunion_meet`) se crea cuando
-  hay rúbrica. `sin_consentimiento` se llama igual en las dos tablas.
-- Juan crea `llamada_evaluacion.reunion_id` y su CHECK; **este módulo crea el FK** `llamada_evaluacion_reunion_fk →
-  reunion(id) ON DELETE RESTRICT` (`enlazarEvaluaciones`, en cada arranque y solo si la columna existe).
-- Su cola de llamadas ignora `reunion_meet`: las reuniones tendrán su propio procesador.
+La hace este módulo (`migracion-calificador.ts › adaptarCalificador`), aditiva, en un único bloque `DO` que se aplica
+en cada arranque y comprueba cada paso. Juan la revisa antes de pasar a `main`.
+
+| Tabla | Cambio | Por qué |
+|---|---|---|
+| `llamada_evaluacion` | + `reunion_id BIGINT` con FK `llamada_evaluacion_reunion_fk → reunion(id) ON DELETE RESTRICT` | Una sola tabla de notas para el gráfico 5 |
+| | `llamada_id`, `extension_netelip` y `rol` admiten nulos | Una reunión no tiene llamada ni extensión |
+| | `CHECK (num_nonnulls(llamada_id, reunion_id) = 1)` | Exactamente uno: una fila no mezcla llamada y reunión |
+| | Índice único `(reunion_id, COALESCE(version_rubrica, ''))` | Una evaluación por reunión y versión (reevaluar = versión nueva) |
+| `objecion_marketing` | `llamada_id` admite nulos; `CHECK` al menos `llamada_id` o `evaluacion_id` | La objeción de una reunión va por `evaluacion_id → llamada_evaluacion.reunion_id` |
+| `comercial_rol` | Clave `id` propia; `extension_netelip` opcional y `UNIQUE`; `empleado_id UNIQUE`; rol `closer_f4` | Closers sin extensión, una fila por persona. La extensión sigue siendo única porque la cola, el envío y el alta hacen `ON CONFLICT (extension_netelip)` |
+
+- `ROLES_COMERCIALES` (`netelip/calificador/schema.ts`) incluye `closer_f4`: es lo que valida el alta del Dashboard.
+- La cola de llamadas (`netelip/calificador/proceso.ts`) solo coge filas con `llamada_id`: sin ese filtro, una reunión
+  pendiente sería la más antigua y la cola se pararía. Las reuniones tendrán su propio procesador.
+- Si `comercial_rol` ya tuviera un empleado repetido, `UNIQUE (empleado_id)` no se aplica (aviso en el log) para no
+  tumbar el arranque; el resto de la migración sí.
+- La rúbrica se elige por fase. Hasta que exista `rubrica_version` (869fpj8dm) la versión es texto (`version_rubrica`);
+  `rubrica_version_id` se añadirá en esa migración.
+- `sin_rubrica` vive solo en `reunion`; `sin_consentimiento` se llama igual en las dos tablas.
 - Feedback por WhatsApp a los closers: excluido hasta que negocio lo decida.
 
 ## Lead (Contacto de Reforma)
@@ -80,20 +92,20 @@ calificador de llamadas: `[hh:mm:ss] GRUPO LYN: …` / `[hh:mm:ss] CLIENTE: …`
 
 ## Pendiente (depende de otros)
 
-- **Evaluación con el modelo** (`por_evaluar` → `evaluada`) y escritura en `llamada_evaluacion` con
-  `origen = reunion_meet`: requiere la migración de `llamada_evaluacion`, que hoy exige una llamada de Netelip.
-  Se acuerda con el dueño del calificador de llamadas.
+- **Procesador de evaluación** (`por_evaluar` → `evaluada`): escribe en `llamada_evaluacion` con `reunion_id`. Las
+  tablas ya lo admiten; falta el procesador y, sobre todo, las rúbricas de F2, F3 y F4 (Alex).
 - **`rubrica_version`** la crea el ticket 869fpj8dm (columnas `id`, `fase`, `version`, `activo`, `vigente_desde`). Mientras
   no exista, todas las reuniones quedan `sin_rubrica`.
 - **Búsqueda del lead y fase desde el CRM** (lista de ClickUp «Contacto de Reforma», `ETAPA_CRM`; F2 = e4 VISITA): falta
   acceso a la lista y saber qué valores son F3 y F4. No hay historial de `ETAPA_CRM`: manda el título.
-- **Alta de closers en `comercial_rol`:** hoy su clave es la extensión de Netelip.
+- **Alta de los closers en `comercial_rol`** (Ernesto y el closer nuevo, por `empleado_id`): la tabla ya lo admite; falta
+  hacerlo. El alta del Dashboard de Juan sigue pidiendo extensión.
 
 ## Operación
 
 - `REUNIONES_MEET_ENABLED=false` apaga la ingesta y la vinculación.
 - No llama a ningún modelo: coste cero mientras no haya reuniones `por_evaluar` con evaluación activa.
-- Reversión: `backend/reuniones-meet/schema-down.sql` (quita el FK de `llamada_evaluacion` y borra `reunion`) y revertir
-  los commits.
+- Reversión: `backend/reuniones-meet/schema-down.sql` (deshace la migración de las tablas del calificador y borra
+  `reunion`; lee sus avisos) y revertir los commits.
 - Pruebas: `npx vitest run tests/reuniones-meet.test.ts`. Para la de integración hace falta
   `QA_TEST_DATABASE_URL=postgres://…@127.0.0.1:15439/lyn_qa_retest`.

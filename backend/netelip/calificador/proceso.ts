@@ -61,7 +61,9 @@ export async function procesarSiguienteEvaluacion(pool: Pool, evaluar: Evaluador
      LEFT JOIN crm_leads l ON l.id = c.lead_id
      LEFT JOIN clientes cl ON cl.id = c.client_id
      WHERE c.id = e.llamada_id AND e.id = (
-       SELECT id FROM llamada_evaluacion WHERE estado IN ('pendiente','procesando') AND proximo_intento <= NOW()
+       -- llamada_id IS NOT NULL: las evaluaciones de reuniones de Meet (869fppbcj) tienen su propio procesador; sin el
+       -- filtro, una reunión pendiente sería la «más antigua», el cruce con netelip_calls no la encontraría y la cola se pararía.
+       SELECT id FROM llamada_evaluacion WHERE estado IN ('pendiente','procesando') AND proximo_intento <= NOW() AND llamada_id IS NOT NULL
        ORDER BY proximo_intento LIMIT 1 FOR UPDATE SKIP LOCKED)
      RETURNING e.id, e.llamada_id, e.intentos, e.rol, e.extension_netelip, c.direction, c.duration_seconds, c.occurred_at,
        t.status AS t_status, t.text AS t_text, t.segments, l.name AS lead_name, CONCAT_WS(' ', cl.nombre, cl.apellido) AS client_name`,

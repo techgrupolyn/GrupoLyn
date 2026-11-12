@@ -2,6 +2,7 @@
 // aplicada en cada arranque después de Drive, de las reuniones y del calificador de llamadas.
 // Reversión: backend/reuniones-meet/schema-down.sql.
 import type { Pool } from 'pg';
+import { adaptarCalificador } from './migracion-calificador.ts';
 
 export const ESTADOS_REUNION = ['pendiente', 'por_evaluar', 'sin_rubrica', 'evaluada', 'sin_comercial', 'sin_consentimiento', 'error'] as const;
 export type EstadoReunion = typeof ESTADOS_REUNION[number];
@@ -63,13 +64,14 @@ export async function ensureReunionesMeet(pool: Consultable): Promise<void> {
     END $$;
     CREATE INDEX IF NOT EXISTS reunion_lead_pendiente ON reunion(id) WHERE lead_estado = 'pendiente';
   `);
+  // Antes del FK: adaptarCalificador crea llamada_evaluacion.reunion_id (acuerdo con Juan del 11/11).
+  await adaptarCalificador(pool);
   await enlazarEvaluaciones(pool);
 }
 
 /**
- * FK llamada_evaluacion.reunion_id → reunion(id). Juan crea la columna y el CHECK en su migración y nosotros el FK
- * (acuerdo del 11/11). Se aplica en cada arranque y solo cuando la columna ya existe, así que vale antes y después
- * de su migración. ON DELETE RESTRICT: una reunión evaluada no se puede borrar sin borrar antes su evaluación (hoy
+ * FK llamada_evaluacion.reunion_id → reunion(id). La columna la crea adaptarCalificador (migracion-calificador.ts).
+ * Se aplica en cada arranque y solo cuando la columna existe. ON DELETE RESTRICT: una reunión evaluada no se puede borrar sin borrar antes su evaluación (hoy
  * nadie borra artefactos de Drive; las conexiones se revocan, no se eliminan).
  */
 export async function enlazarEvaluaciones(pool: Consultable): Promise<boolean> {

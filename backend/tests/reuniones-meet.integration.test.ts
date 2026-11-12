@@ -100,14 +100,14 @@ describe.skipIf(!databaseUrl)('Reuniones Meet en PostgreSQL QA local', () => {
     ]);
   });
 
-  it('FK hacia reunion: no hace nada antes de la migración de Juan, se crea después, es idempotente y protege lo evaluado', async () => {
-    await client.query(`CREATE TABLE llamada_evaluacion (id BIGSERIAL PRIMARY KEY, llamada_id BIGINT)`);
-    expect(await enlazarEvaluaciones(pool)).toBe(false);   // aún sin la columna reunion_id
-    await client.query(`ALTER TABLE llamada_evaluacion ADD COLUMN reunion_id BIGINT,
-      ADD CONSTRAINT llamada_evaluacion_origen_unico CHECK ((llamada_id IS NULL) <> (reunion_id IS NULL))`);
+  it('FK hacia reunion: la migración crea reunion_id y el FK, es idempotente y protege lo evaluado', async () => {
+    // Columnas de llamada_evaluacion que importan aquí, tal como están en main (las de Juan, NOT NULL).
+    await client.query(`CREATE TABLE llamada_evaluacion (id BIGSERIAL PRIMARY KEY, llamada_id BIGINT NOT NULL UNIQUE,
+      extension_netelip TEXT NOT NULL, rol TEXT NOT NULL, version_rubrica TEXT)`);
+    expect(await enlazarEvaluaciones(pool)).toBe(false);   // sin la columna reunion_id no hay nada que enlazar
+    await ensureReunionesMeet(pool);                       // arranque: migración + FK
     expect(await enlazarEvaluaciones(pool)).toBe(true);
     await ensureReunionesMeet(pool);                       // el arranque siguiente no falla ni la duplica
-    expect(await enlazarEvaluaciones(pool)).toBe(true);
     const { rows: [r] } = await client.query(`SELECT id FROM reunion WHERE google_file_id = 'file-visita'`);
     await expect(client.query(`INSERT INTO llamada_evaluacion (reunion_id) VALUES (999999)`)).rejects.toThrow(/llamada_evaluacion_reunion_fk/);
     await client.query(`INSERT INTO llamada_evaluacion (reunion_id) VALUES ($1)`, [r.id]);
