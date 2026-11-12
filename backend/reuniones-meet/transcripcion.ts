@@ -19,7 +19,7 @@ export type TranscripcionPreparada = {
   hablantesCliente: string[];
   /** false si no se reconoció ningún hablante: el modelo recibe el texto sin voces y conviene marcar duda. */
   conHablantes: boolean;
-  /** Segundos de la última marca de tiempo encontrada, o null. */
+  /** Duración exacta del pie de Meet («La transcripción finalizó después de 00:11:26») o, si no lo hay, la última marca. */
   duracionSegundos: number | null;
 };
 
@@ -28,8 +28,10 @@ const ETIQUETAS_NO_HABLANTE = new Set([
   'asistentes', 'attendees', 'participantes', 'participants', 'transcripcion', 'transcript', 'invitados', 'fecha', 'date',
   'nota', 'notas', 'note', 'notes', 'resumen', 'summary', 'http', 'https',
 ]);
-// A partir de aquí Meet solo añade pie de página.
+// A partir de aquí Meet solo añade pie de página. Formato real (11/2026, Meet en español):
+//   «La transcripción finalizó después de 00:11:26» y una línea de aviso («Esta transcripción editable se generó…»).
 const FIN = /^(fin de la transcripci[oó]n|la transcripci[oó]n (ha )?finaliz|transcription ended|meeting ended after|la reuni[oó]n finaliz)/i;
+const DURACION_PIE = /(\d{1,2}:\d{2}:\d{2})/;
 
 const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 const tokens = (s: string) => sinTildes(s).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((t) => t.length >= 2);
@@ -47,7 +49,9 @@ const TURNO = /^\s*(?:\[?((?:\d{1,2}:)?\d{1,2}:\d{2})\]?\s+)?([^:\n]{2,60}?):\s+
 
 function esNombrePosible(nombre: string): boolean {
   const n = nombre.trim();
-  if (!/^\p{L}/u.test(n) || /\d/.test(n) || /[?¿!¡.,;()"«»]/.test(n)) return false;
+  // Puede llevar números: en LYN hay cuentas compartidas como «Interiorista Lyn 15». No puede empezar por número
+  // ni parecer un teléfono o una cifra larga.
+  if (!/^\p{L}/u.test(n) || /\d{4,}/.test(n) || /[?¿!¡.,;()"«»]/.test(n)) return false;
   const palabras = n.split(/\s+/);
   return palabras.length <= 5 && !ETIQUETAS_NO_HABLANTE.has(sinTildes(palabras[0]).toLowerCase());
 }
@@ -60,6 +64,10 @@ function esNombrePosible(nombre: string): boolean {
  * «Mira: …» no se convierta en una persona. Lo que va antes del primer turno (título, asistentes) se descarta.
  */
 export function leerTurnos(texto: string | null, equipoLyn: string[] = []): Turno[] {
+  return leerConPie(texto, equipoLyn).turnos;
+}
+
+function leerConPie(texto: string | null, equipoLyn: string[]): { turnos: Turno[]; duracionPie: number | null } {
   const lineas = String(texto || '').replace(/\r\n?/g, '\n').split('\n');
   const candidatos = new Map<string, number>();
   for (const linea of lineas) {
@@ -67,15 +75,20 @@ export function leerTurnos(texto: string | null, equipoLyn: string[] = []): Turn
     const m = voz ? [null, null, voz[1]] : TURNO.exec(linea);
     if (m && esNombrePosible(m[2] as string)) candidatos.set((m[2] as string).trim(), (candidatos.get((m[2] as string).trim()) || 0) + 1);
   }
-  const valido = (nombre: string) => (candidatos.get(nombre) || 0) >= 2 || equipoLyn.some((e) => mismaPersona(nombre, e));
+  const valido = (nombre: string) => (candidatos.get(nombre) || 0) >= 2 || esCuentaLyn(nombre) || equipoLyn.some((e) => mismaPersona(nombre, e));
   const hayHablantes = [...candidatos.keys()].some(valido) || lineas.some((l) => VOZ_VTT.test(l.trim()));
 
   const turnos: Turno[] = [];
   let tiempo = 0;
+  let duracionPie: number | null = null;
   for (const bruta of lineas) {
     const linea = bruta.trim();
     if (!linea || /^WEBVTT/i.test(linea) || /^NOTE\b/.test(linea) || /^\d+$/.test(linea)) continue;
-    if (FIN.test(sinTildes(linea))) break;
+    if (FIN.test(sinTildes(linea))) {
+      const pie = DURACION_PIE.exec(linea);
+      if (pie) duracionPie = segundos(pie[1]);
+      break;
+    }
     const marca = LINEA_MARCA.exec(linea) || LINEA_CUE.exec(linea);
     if (marca) { tiempo = segundos(marca[1]); continue; }
 
@@ -99,7 +112,16 @@ export function leerTurnos(texto: string | null, equipoLyn: string[] = []): Turn
     } else if (previo && previo.inicio === tiempo) previo.texto = `${previo.texto} ${limpio}`;
     else turnos.push({ hablante: null, inicio: tiempo, texto: limpio });
   }
-  return turnos;
+  return { turnos, duracionPie };
+}
+
+/**
+ * Cuentas de Google de la empresa: en LYN muchas reuniones se hacen con cuentas compartidas cuyo nombre no es el de
+ * una persona («Tech Grupo LYN», «Interiorista Lyn 15»). Si el nombre lleva la palabra LYN o GrupoLyn, habla por
+ * GRUPO LYN aunque no coincida con ningún empleado.
+ */
+export function esCuentaLyn(nombre: string): boolean {
+  return tokens(nombre).some((t) => t === 'lyn' || t === 'grupolyn');
 }
 
 /**
@@ -121,15 +143,15 @@ export function mismaPersona(enMeet: string, delEquipo: string): boolean {
  * Si Ernesto acompaña al closer nuevo, los dos salen como GRUPO LYN; a quién se evalúa lo decide el organizador
  * (pregunta P-03 del ticket, pendiente de Alex).
  */
-export function prepararTranscripcion(texto: string | null, equipoLyn: string[]): TranscripcionPreparada {
+export function prepararTranscripcion(texto: string | null, equipoLyn: string[], opciones: { nombresCliente?: string[] } = {}): TranscripcionPreparada {
   const equipo = equipoLyn.map((e) => String(e || '').split('@')[0].replace(/[._]/g, ' ')).filter((e) => e.trim());
-  const turnos = leerTurnos(texto, equipo);
+  const { turnos, duracionPie } = leerConPie(texto, equipo);
   const conHablantes = turnos.some((t) => t.hablante);
   const lyn = new Set<string>();
   const clientes = new Set<string>();
   for (const t of turnos) {
     if (!t.hablante) continue;
-    (equipo.some((e) => mismaPersona(t.hablante!, e)) ? lyn : clientes).add(t.hablante);
+    (esCuentaLyn(t.hablante) || equipo.some((e) => mismaPersona(t.hablante!, e)) ? lyn : clientes).add(t.hablante);
   }
   const segmentos: Segmento[] = turnos.map((t) => ({
     speaker: !t.hablante ? null : lyn.has(t.hablante) ? 'agente' : 'cliente',
@@ -139,10 +161,11 @@ export function prepararTranscripcion(texto: string | null, equipoLyn: string[])
   const turnosTexto = segmentos.length ? transcripcionPorTurnos(segmentos, '') : String(texto || '').trim();
   const ultimo = turnos.length ? Math.max(...turnos.map((t) => t.inicio)) : 0;
   return {
-    transcripcion: enmascarar(turnosTexto, [...clientes]),
+    // Se enmascaran los clientes que hablan y los que solo se mencionan pero se conocen (invitados de Calendar, lead).
+    transcripcion: enmascarar(turnosTexto, [...clientes, ...(opciones.nombresCliente || [])]),
     hablantesLyn: [...lyn],
     hablantesCliente: [...clientes],
     conHablantes,
-    duracionSegundos: ultimo > 0 ? ultimo : null,
+    duracionSegundos: duracionPie ?? (ultimo > 0 ? ultimo : null),
   };
 }

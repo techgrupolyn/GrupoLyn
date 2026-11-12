@@ -1,7 +1,8 @@
 // Transcripción de Meet → formato del calificador (869fppbcj). Los textos imitan el formato de Meet; no son reuniones reales.
 import { describe, expect, it } from 'vitest';
 import { citaVerificable } from '../netelip/calificador/reglas.ts';
-import { leerTurnos, mismaPersona, prepararTranscripcion, segundos } from '../reuniones-meet/transcripcion.ts';
+import { esCuentaLyn, leerTurnos, mismaPersona, prepararTranscripcion, segundos } from '../reuniones-meet/transcripcion.ts';
+import { codigoMeet, duracionAproximada, faseDelTitulo } from '../reuniones-meet/reglas.ts';
 
 const DOC_MEET = `F2 · Visita García - Transcripción
 Asistentes: Ernesto Pérez, María García, Luis Gómez
@@ -95,5 +96,67 @@ describe('prepararTranscripcion', () => {
     const p = prepararTranscripcion('Hola, llámame al 612345678.', ['Ernesto Pérez']);
     expect(p).toMatchObject({ conHablantes: false, hablantesCliente: [], duracionSegundos: null });
     expect(p.transcripcion).toBe('[00:00:00] Hola, llámame al [TELÉFONO].');
+  });
+});
+
+
+// Estructura de una transcripción REAL de Meet en español (11/2026), con frases inventadas: título generado por Meet,
+// marcas de tiempo en su línea con líneas en blanco, cuentas de empresa como hablantes y pie con la duración exacta.
+const TITULO_REAL = 'Reunión del 9 nov 2026 a las 10:25 GMT-05:00 - Transcripción';
+const MEET_REAL = `${TITULO_REAL}
+00:00:01
+
+Interiorista Lyn 15: Vamos con el catálogo, ¿vale?
+Tech Grupo LYN: Dale.
+
+
+00:00:09
+
+Interiorista Lyn 15: Lo separo ahí mismo y luego me deja elegir. Entonces,
+Tech Grupo LYN: Sí, pero solo si ya lo aprobó el cliente.
+Interiorista Lyn 15: Con Marta Ruiz me pasó lo mismo, su teléfono es 612 345 678.
+
+
+La transcripción finalizó después de 00:11:26
+
+Esta transcripción editable se generó por computadora y puede contener errores. Los usuarios también pueden cambiar el texto después de que se cree.`;
+
+describe('formato real de Meet (11/2026)', () => {
+  it('reconoce hablantes con números («Interiorista Lyn 15») y no pierde la primera frase', () => {
+    expect(leerTurnos(MEET_REAL).map((t) => [t.hablante, t.inicio, t.texto])).toEqual([
+      ['Interiorista Lyn 15', 1, 'Vamos con el catálogo, ¿vale?'],
+      ['Tech Grupo LYN', 1, 'Dale.'],
+      ['Interiorista Lyn 15', 9, 'Lo separo ahí mismo y luego me deja elegir. Entonces,'],
+      ['Tech Grupo LYN', 9, 'Sí, pero solo si ya lo aprobó el cliente.'],
+      ['Interiorista Lyn 15', 9, 'Con Marta Ruiz me pasó lo mismo, su teléfono es 612 345 678.'],
+    ]);
+  });
+
+  it('las cuentas de empresa hablan por GRUPO LYN aunque no sean un empleado; el pie da la duración exacta', () => {
+    const p = prepararTranscripcion(MEET_REAL, []);
+    expect(p).toMatchObject({ hablantesLyn: ['Interiorista Lyn 15', 'Tech Grupo LYN'], hablantesCliente: [], conHablantes: true, duracionSegundos: 686 });
+    expect(p.transcripcion.split(/\r?\n/).every((l) => l.includes('GRUPO LYN:'))).toBe(true);
+    expect(p.transcripcion).not.toMatch(/Esta transcripción editable|finalizó/);
+  });
+
+  it('un cliente que solo se menciona se enmascara si se conoce su nombre (invitado de Calendar o lead)', () => {
+    expect(prepararTranscripcion(MEET_REAL, []).transcripcion).toContain('Marta Ruiz');   // sin saberlo, no hay cómo
+    const p = prepararTranscripcion(MEET_REAL, [], { nombresCliente: ['Marta Ruiz'] });
+    expect(p.transcripcion).not.toMatch(/Marta|Ruiz|612 345 678/);
+    expect(p.transcripcion).toContain('[NOMBRE]');
+  });
+
+  it('el título que genera Meet no trae fase ni código: hace falta que el evento lleve la fase', () => {
+    expect(faseDelTitulo(TITULO_REAL)).toBeNull();
+    expect(codigoMeet(TITULO_REAL, MEET_REAL)).toBeNull();
+    expect(duracionAproximada(MEET_REAL)).toBe(686);
+  });
+
+  it('esCuentaLyn: solo con la palabra LYN o GrupoLyn', () => {
+    expect(esCuentaLyn('Tech Grupo LYN')).toBe(true);
+    expect(esCuentaLyn('Interiorista Lyn 15')).toBe(true);
+    expect(esCuentaLyn('GrupoLyn Admin')).toBe(true);
+    expect(esCuentaLyn('Carolyn Smith')).toBe(false);
+    expect(esCuentaLyn('María García')).toBe(false);
   });
 });

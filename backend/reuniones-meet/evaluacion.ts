@@ -71,7 +71,7 @@ export function conDudaSinHablantes(d: Decision): Decision {
 type Trabajo = {
   id: string; reunion_id: string; intentos: number; rol: string | null; rubrica_version_id: string | null; reevaluacion: boolean;
   titulo: string; fase: string | null; duracion_segundos: number | null; content_text: string | null; reunion_estado: string;
-  sin_consentimiento_previo: boolean;
+  sin_consentimiento_previo: boolean; invitados: Array<{ email?: string; nombre?: string | null; interno?: boolean }> | null;
 };
 
 async function cerrar(pool: Consultable, job: Trabajo, estadoReunion: 'no_evaluada' | 'sin_consentimiento' | 'error', motivo: string, sinConsentimiento = false): Promise<string> {
@@ -103,7 +103,7 @@ export async function procesarSiguienteReunion(pool: Consultable, evaluar: Evalu
        SELECT id FROM llamada_evaluacion WHERE estado IN ('pendiente','procesando') AND proximo_intento <= NOW() AND reunion_id IS NOT NULL
        ORDER BY proximo_intento LIMIT 1 FOR UPDATE SKIP LOCKED)
      RETURNING e.id, e.reunion_id, e.intentos, e.rol, e.rubrica_version_id, e.reevaluacion,
-       r.titulo, r.fase, r.duracion_segundos, a.content_text, r.estado AS reunion_estado,
+       r.titulo, r.fase, r.duracion_segundos, a.content_text, r.estado AS reunion_estado, r.invitados,
        EXISTS (SELECT 1 FROM llamada_evaluacion x WHERE x.reunion_id = e.reunion_id AND x.sin_consentimiento) AS sin_consentimiento_previo`,
   );
   if (!rows.length) return null;
@@ -119,7 +119,12 @@ export async function procesarSiguienteReunion(pool: Consultable, evaluar: Evalu
   const rubrica = job.rubrica_version_id ? await rubricaPorId(pool as Pool, job.rubrica_version_id) : null;
   if (!rubrica) return cerrar(pool, job, 'error', `No existe la rúbrica ${job.rubrica_version_id ?? '(sin versión)'}.`);
 
-  const preparada = prepararTranscripcion(job.content_text, await equipoLyn(pool));
+  // Invitados de Calendar: los internos ayudan a reconocer a los de LYN y los nombres de los externos se enmascaran
+  // aunque no hablen (el cliente puede no tener cuenta de Google y aparecer solo mencionado).
+  const invitados = Array.isArray(job.invitados) ? job.invitados : [];
+  const internos = invitados.filter((i) => i.interno).flatMap((i) => [i.nombre || '', i.email || '']);
+  const externos = invitados.filter((i) => !i.interno).map((i) => i.nombre || '').filter((n) => n.trim());
+  const preparada = prepararTranscripcion(job.content_text, [...await equipoLyn(pool), ...internos], { nombresCliente: externos });
   if (!preparada.transcripcion.trim()) return cerrar(pool, job, 'no_evaluada', 'La transcripción no contiene conversación.');
 
   let respuesta;
