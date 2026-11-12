@@ -8,7 +8,7 @@ import { transcribeProtocolTable } from './protocol-gemini.ts';
 import { applyProtocolVision, protocolTableColumnCount, type ProtocolVisionPage } from './protocol-vision.ts';
 import { projectAssignmentsSheetId } from './protocol-assignments.ts';
 
-type DriveEntry = { id: string; name: string; mimeType: string; modifiedTime?: string; version?: string; md5Checksum?: string; parents?: string[]; resourceKey?: string };
+type DriveEntry = { id: string; name: string; mimeType: string; modifiedTime?: string; version?: string; md5Checksum?: string; parents?: string[]; resourceKey?: string; audience?: ProtocolFile['audience'] };
 type DrivePage = { files?: DriveEntry[]; nextPageToken?: string; incompleteSearch?: boolean };
 type DriveRequest = (path: string, resourceKeys?: string) => Promise<Response>;
 
@@ -17,14 +17,16 @@ export type ProtocolSyncReport = {
   files: Array<{ id: string; name: string; status: 'correcto' | 'con avisos' | 'excluido'; sections: number; tables: number; tokens: number; warnings: string[] }>;
   versionId: string | null;
   error: string | null;
+  restricted?: { fileCount: number; error: string | null };
 };
 
 const folderId = '14oB0TKbGyvEDMti2JgjXIep54-ZcMbc_';
+const approvedLegacyFileIds = new Set(['1C9veacxQSXAcr6v3a9Zhq2mR01T7O-sL']);
 const googleMime = 'application/vnd.google-apps.';
 const extractionVersion = 4;
 const extractorPath = fileURLToPath(new URL('./protocol-extract.py', import.meta.url));
 
-function extractionFormat(file: DriveEntry): { kind: string; exportMime?: string } | null {
+export function extractionFormat(file: DriveEntry): { kind: string; exportMime?: string } | null {
   if (file.mimeType === `${googleMime}document`) return { kind: 'docx', exportMime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
   if (file.mimeType === `${googleMime}presentation`) return { kind: 'pptx', exportMime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' };
   if (file.mimeType === `${googleMime}spreadsheet`) return { kind: 'xlsx', exportMime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
@@ -36,9 +38,11 @@ function extractionFormat(file: DriveEntry): { kind: string; exportMime?: string
   return null;
 }
 
-async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: string, legacyFolderId?: string): Promise<DriveEntry[]> {
+async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: string, legacyFolderId?: string, legacyFileIds?: string[]): Promise<DriveEntry[]> {
   const files: DriveEntry[] = [];
   if (legacyFolderId && (!/^[\w-]+$/u.test(legacyFolderId) || legacyFolderId === folderId)) throw new Error('Carpeta adicional no válida');
+  if (legacyFolderId && (!legacyFileIds?.length || legacyFileIds.some(id => !approvedLegacyFileIds.has(id)) || new Set(legacyFileIds).size !== legacyFileIds.length)) throw new Error('Archivos adicionales autorizados no válidos');
+  const allowedLegacyIds = new Set(legacyFileIds || []);
   const folders = [folderId, ...(legacyFolderId ? [legacyFolderId] : [])];
   const visited = new Set<string>();
   const ids = new Set<string>();
@@ -65,11 +69,12 @@ async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: str
           if (legacyFolderId && currentFolder !== folderId && !/^(_obsoletos|plantillas quantifier)$/iu.test(file.name.trim())) folders.push(file.id);
           continue;
         }
+        if (currentFolder !== folderId && !allowedLegacyIds.has(file.id)) continue;
         const normalizedName = file.name.trim().normalize('NFKC').toLocaleLowerCase('es');
         if (currentFolder === folderId) primaryNames.add(normalizedName);
         else if (primaryNames.has(normalizedName)) continue;
         if (ids.has(file.id) || (file.md5Checksum && hashes.has(file.md5Checksum))) continue;
-        files.push(file);
+        files.push({ ...file, audience: 'general' });
         ids.add(file.id);
         if (file.md5Checksum) hashes.add(file.md5Checksum);
       }
@@ -83,14 +88,14 @@ async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: str
     if (!response.ok) throw new Error(`Google Drive respondió ${response.status}`);
     const sheet = await response.json() as DriveEntry & { trashed?: boolean };
     if (sheet.id !== assignmentsSheetId || sheet.trashed || sheet.mimeType !== `${googleMime}spreadsheet`) throw new Error('Hoja de asignaciones no válida');
-    files.push(sheet);
+    files.push({ ...sheet, audience: 'general' });
   }
   return files;
 }
 
-async function extractFile(kind: string, data: Buffer, pythonBin: string): Promise<{ sections: ProtocolFile['sections']; warnings: string[]; visionPages?: ProtocolVisionPage[] }> {
+export async function extractFile(kind: string, data: Buffer, pythonBin: string, sheetMaxRows?: number): Promise<{ sections: ProtocolFile['sections']; warnings: string[]; visionPages?: ProtocolVisionPage[] }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(pythonBin, [extractorPath, kind], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(pythonBin, [extractorPath, kind], { stdio: ['pipe', 'pipe', 'pipe'], env: sheetMaxRows ? { ...process.env, PROTOCOL_SHEET_MAX_ROWS: String(sheetMaxRows) } : undefined });
     let output = '';
     let error = '';
     const timeout = setTimeout(() => child.kill(), 120_000);
@@ -116,6 +121,7 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
   maxTokens: number;
   assignmentsSheetId?: string;
   legacyFolderId?: string;
+  legacyFileIds?: string[];
   pythonBin?: string;
   extract?: typeof extractFile;
   previous?: ProtocolCorpus | null;
@@ -127,7 +133,7 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
 }): Promise<ProtocolSyncReport> {
   const report: ProtocolSyncReport = { checkedAt: new Date().toISOString(), files: [], versionId: options.previous?.id || null, error: null };
   try {
-    const entries = await listProtocolFiles(request, options.assignmentsSheetId, options.legacyFolderId);
+    const entries = await listProtocolFiles(request, options.assignmentsSheetId, options.legacyFolderId, options.legacyFileIds);
     const accepted: ProtocolFile[] = [];
     let driveFailure = false;
     let dependencyFailure = false;
@@ -147,7 +153,7 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
       const currentExtractionVersion = video ? 1 : extractionVersion;
       const previousFile = options.previous?.files.find(file => file.id === entry.id && file.name === entry.name && file.revision === revision && file.modifiedTime === (entry.modifiedTime || '') && file.extractionVersion === currentExtractionVersion);
       if (previousFile) {
-        accepted.push(previousFile);
+        accepted.push({ ...previousFile, audience: entry.audience });
         report.files.push({ id: entry.id, name: entry.name, status: previousFile.warnings.length ? 'con avisos' : 'correcto', sections: previousFile.sections.length, tables: previousFile.sections.filter(section => /(^|\n)\| /u.test(section.text)).length, tokens: Math.ceil(previousFile.sections.reduce((sum, section) => sum + section.text.length, 0) / 3), warnings: previousFile.warnings });
         continue;
       }
@@ -157,7 +163,7 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
           if (!sections?.length || sections.some(section => !/^video \d{2}:\d{2}:\d{2}$/u.test(section.ref) || !section.text.trim() || containsUnmaskedPersonalData(section.text))) {
             throw new Error('Subtítulos temporizados pendientes o no verificables; se conserva el corpus anterior');
           }
-          accepted.push({ id: entry.id, name: entry.name, mimeType: entry.mimeType, modifiedTime: entry.modifiedTime || '', revision, extractionVersion: currentExtractionVersion, sections, warnings: ['Transcripción automática de Drive; verificar el video ante dudas'] });
+          accepted.push({ id: entry.id, name: entry.name, mimeType: entry.mimeType, audience: entry.audience, modifiedTime: entry.modifiedTime || '', revision, extractionVersion: currentExtractionVersion, sections, warnings: ['Transcripción automática de Drive; verificar el video ante dudas'] });
           report.files.push({ id: entry.id, name: entry.name, status: 'con avisos', sections: sections.length, tables: 0, tokens: Math.ceil(sections.reduce((sum, section) => sum + section.text.length, 0) / 3), warnings: ['Transcripción automática de Drive; verificar el video ante dudas'] });
           continue;
         }
@@ -223,7 +229,7 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
         const duplicate = normalizedNames.get(normalizedName);
         if (duplicate) extracted.warnings.push(`Posible versión duplicada de ${duplicate}`);
         else normalizedNames.set(normalizedName, entry.name);
-        accepted.push({ id: entry.id, name: entry.name, mimeType: entry.mimeType, modifiedTime: entry.modifiedTime || '', revision, extractionVersion: currentExtractionVersion, sections: extracted.sections, warnings: extracted.warnings });
+        accepted.push({ id: entry.id, name: entry.name, mimeType: entry.mimeType, audience: entry.audience, modifiedTime: entry.modifiedTime || '', revision, extractionVersion: currentExtractionVersion, sections: extracted.sections, warnings: extracted.warnings });
         report.files.push({ id: entry.id, name: entry.name, status: extracted.warnings.length ? 'con avisos' : 'correcto', sections: extracted.sections.length, tables: extracted.sections.filter(section => /(^|\n)\| /u.test(section.text)).length, tokens: Math.ceil(extracted.sections.reduce((sum, section) => sum + section.text.length, 0) / 3), warnings: extracted.warnings });
       } catch (error) {
         documentFailure = true;

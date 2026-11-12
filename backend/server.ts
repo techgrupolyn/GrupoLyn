@@ -38,10 +38,12 @@ import { askProtocolAgent, type ProtocolAgentDependencies } from './protocol-age
 import { createClubProtocolRouter } from './protocol-club-api.ts';
 import { resolveProtocolClubIdentity } from './protocol-club-identity.ts';
 import { syncProtocolDrive } from './protocol-drive.ts';
+import { syncRestrictedProtocolDrive } from './protocol-restricted-drive.ts';
 import { callProtocolGemini } from './protocol-gemini.ts';
-import { canReadProtocolLog, canReadProtocolReport, hasClubAdminRole } from './protocol-privacy.ts';
+import { canReadProtocolLog, canReadProtocolReport, canReadRestrictedProtocol, hasClubAdminRole } from './protocol-privacy.ts';
 import { loadProtocolReport, parseProtocolReportFilters } from './protocol-report.ts';
-import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, ensureProtocolSchema, listProtocolQueries, loadLastSuccessfulProtocolSync, loadProtocolCorpus, loadProtocolSyncReport, loadProtocolVideoCache, loadProtocolVisionCache, pruneProtocolQueries, recordProtocolFeedback, saveProtocolCorpus, saveProtocolQuery, saveProtocolSyncReport, saveProtocolVisionCache } from './protocol-storage.ts';
+import { loadProtocolWeeklySnapshot } from './protocol-weekly.ts';
+import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, ensureProtocolSchema, listProtocolQueries, loadLastSuccessfulProtocolSync, loadProtocolCorpus, loadProtocolSyncReport, loadProtocolVideoCache, loadProtocolVisionCache, loadRestrictedProtocolFiles, pruneProtocolQueries, recordProtocolFeedback, saveProtocolCorpus, saveProtocolQuery, saveProtocolSyncReport, saveProtocolVisionCache, saveRestrictedProtocolFiles } from './protocol-storage.ts';
 
 const PORT = Number(process.env.PORT || 3003);
 const BIND_HOST = process.env.BIND_HOST?.trim() || '127.0.0.1';
@@ -211,12 +213,16 @@ app.use('/api/club/protocolos', express.json({ limit: '20kb' }), createClubProto
   enabled: process.env.PROTOCOL_AGENT_ENABLED === 'true' && process.env.PROTOCOL_CLUB_ENABLED === 'true',
   serviceToken: process.env.CROSS_SSO_CLUB_TO_AGENT_TOKEN || '',
   resolveUser: (externalId) => resolveProtocolClubIdentity(pool, externalId, dashboardRoleFromOrgPosition),
-  ask: (user, question, context) => askProtocolAgent({ userId: user.id, role: user.role, question, context, channel: 'club_lyn' }, protocolAgentDependencies()),
+  ask: async (user, question, context) => {
+    const clubAdmin = canReadRestrictedProtocol(user.role) ? false : await hasClubAdminRole((sql, params) => pool.query<{ allowed: boolean }>(sql, params), user.id);
+    return askProtocolAgent({ userId: user.id, role: user.role, mayReadRestricted: canReadRestrictedProtocol(user.role) || clubAdmin, question, context, channel: 'club_lyn' }, protocolAgentDependencies(user.role, clubAdmin));
+  },
   confirm: (user, id, resolved) => recordProtocolFeedback(pool, id, user.id, resolved, 'club_lyn'),
   status: async () => {
     const [corpus, lastSyncedAt] = await Promise.all([loadProtocolCorpus(pool), loadLastSuccessfulProtocolSync(pool)]);
     return { versionId: corpus?.id || null, updatedAt: corpus?.createdAt || null, lastSyncedAt, fileCount: corpus?.files.length || 0 };
   },
+  weeklySnapshot: (from, to) => loadProtocolWeeklySnapshot(pool, from, to),
 }));
 app.use(express.json({ limit: '10mb' }));
 
@@ -8959,12 +8965,23 @@ function runProtocolSync(): Promise<unknown> {
         previous,
         assignmentsSheetId: process.env.PROTOCOL_ASSIGNMENTS_SHEET_ID?.trim(),
         legacyFolderId: process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID?.trim(),
+        legacyFileIds: process.env.PROTOCOL_LEGACY_DRIVE_FILE_IDS?.split(',').map(id => id.trim()).filter(Boolean),
         maxTokens: boundedInterval(process.env.PROTOCOL_MAX_TOKENS, 100_000, 1_000, 500_000),
         save: (corpus) => saveProtocolCorpus(pool, corpus),
         loadVideo: (fileId, revision) => loadProtocolVideoCache(pool, fileId, revision),
         loadVision: (fileId, revision, page, imageHash) => loadProtocolVisionCache(pool, fileId, revision, page, imageHash),
         saveVision: (fileId, revision, page, imageHash, markdown) => saveProtocolVisionCache(pool, fileId, revision, page, imageHash, markdown),
       });
+      const restrictedFolderId = process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID?.trim();
+      if (restrictedFolderId) {
+        report.restricted = await syncRestrictedProtocolDrive((path, resourceKeys) => googleDriveFetch(path, token, resourceKeys), {
+          folderId: restrictedFolderId,
+          generalFiles: (await loadProtocolCorpus(pool))?.files || [],
+          previousFiles: await loadRestrictedProtocolFiles(pool, 'admin'),
+          save: (files) => saveRestrictedProtocolFiles(pool, files),
+        });
+        if (report.restricted.error && !report.error) report.error = 'No se pudieron sincronizar los documentos privados; se conserva su versión anterior';
+      }
     } catch {
       report = { checkedAt: new Date().toISOString(), files: [], versionId: previous?.id || null, error: 'No se pudo acceder a la carpeta autorizada de Drive' };
     }
@@ -9017,9 +9034,12 @@ app.post('/api/protocolos/sincronizar', requireCeoAuth, async (_req: Request, re
   catch { res.status(503).json({ error: 'No se pudo sincronizar la carpeta de protocolos' }); }
 });
 
-function protocolAgentDependencies(): ProtocolAgentDependencies {
+function protocolAgentDependencies(role: string, clubAdmin: boolean): ProtocolAgentDependencies {
   return {
     loadCorpus: () => loadProtocolCorpus(pool),
+    loadRestrictedFiles: process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID?.trim()
+      ? () => loadRestrictedProtocolFiles(pool, role, clubAdmin)
+      : undefined,
     clientNames: async () => (await pool.query<{ name: string }>("SELECT CONCAT_WS(' ', nombre, apellido) AS name FROM clientes")).rows.map(row => row.name),
     roles: async () => (await pool.query<{ name: string; person: string | null }>(
       `SELECT c.nombre AS name, STRING_AGG(CONCAT_WS(' ', e.nombre, e.apellido), ', ' ORDER BY a.source_assigned_at DESC NULLS LAST) AS person
@@ -9039,7 +9059,9 @@ app.post('/api/protocolos/consultar', requireProtocolUser, protocolQueryLimiter,
   const session = res.locals.ceoSession as CeoSession;
   if (!session.id) return res.status(401).json({ error: 'Identidad no disponible' });
   try {
-    const result = await askProtocolAgent({ userId: session.id, role: String(session.rol || ''), question: String(req.body?.pregunta || ''), channel: 'superagente' }, protocolAgentDependencies());
+    const role = String(session.rol || '');
+    const clubAdmin = canReadRestrictedProtocol(role) ? false : await hasClubAdminRole((sql, params) => pool.query<{ allowed: boolean }>(sql, params), session.id);
+    const result = await askProtocolAgent({ userId: session.id, role, mayReadRestricted: canReadRestrictedProtocol(role) || clubAdmin, question: String(req.body?.pregunta || ''), channel: 'superagente' }, protocolAgentDependencies(role, clubAdmin));
     res.json(result);
   } catch (error) {
     const message = (error as Error).message;
