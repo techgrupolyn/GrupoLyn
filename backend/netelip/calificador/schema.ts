@@ -3,7 +3,7 @@
 import type { Pool } from 'pg';
 
 export const CALIFICADOR_TABLES = ['objecion_marketing', 'llamada_feedback_humano', 'llamada_evaluacion', 'rubrica_version', 'comercial_rol'] as const;
-export const ROLES_COMERCIALES = ['sdr', 'closer_f2', 'closer_f3'] as const;
+export const ROLES_COMERCIALES = ['sdr', 'closer_f2', 'closer_f3', 'closer_f4'] as const;  // closer_f4: 869fppbcj (reuniones de Meet)
 export type RolComercial = typeof ROLES_COMERCIALES[number];
 
 export async function ensureCalificador(pool: Pool): Promise<void> {

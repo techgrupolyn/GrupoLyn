@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { activarRubrica, listarRubricas, publicarRubrica, RubricaInvalida, validarDefinicion } from '../netelip/calificador/rubrica.ts';
 import { crearReevaluaciones } from '../netelip/calificador/reevaluar.ts';
+import { reevaluarReuniones } from '../reuniones-meet/reevaluar.ts';
 import { comparar, evaluacionesIA, informeCalibracion, leerCalibracion, plantillaCalibracion } from '../netelip/calificador/calibracion.ts';
 import { evaluadorGemini } from '../netelip/calificador/modelo.ts';
 import { configDesdeEnv, procesarSiguienteEvaluacion } from '../netelip/calificador/proceso.ts';
@@ -42,6 +43,12 @@ async function main() {
     case 'reevaluar': {
       const res = await crearReevaluaciones(pool, { codigo: opcion('version') || '', desde: opcion('desde') || '', hasta: opcion('hasta') || '', simular: bandera('simular') });
       console.log(JSON.stringify(res, null, 2));
+      // Rúbricas de closer (869fppbcj): también las reuniones de Meet de esa fase, las «sin rúbrica» incluidas.
+      const reuniones = await reevaluarReuniones(pool, { codigo: opcion('version') || '', desde: opcion('desde'), hasta: opcion('hasta'), simular: bandera('simular') });
+      if (reuniones.fase) {
+        console.log(JSON.stringify({ reuniones }, null, 2));
+        if (bandera('ahora') && (reuniones.por_evaluar || reuniones.reevaluaciones_creadas)) console.log('Para evaluar las reuniones ya: scripts/reuniones-meet.ts reevaluar --version … --ahora');
+      }
       if (bandera('ahora') && res.creadas) {
         // Procesa la cola aquí mismo (útil en local o con los procesos del backend parados).
         const evaluar = evaluadorGemini(process.env);

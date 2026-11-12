@@ -33,7 +33,7 @@ describe('Rúbrica SDR v1 (guion completo, 7 pasos)', () => {
     expect(mal({ criterios: V1.criterios.map((c, i) => ({ ...c, peso: i === 0 ? 10 : c.peso })) })).toThrow(/suman 105/);
     expect(mal({ codigo: 'SDR v2' })).toThrow(RubricaInvalida);
     expect(mal({ errores_criticos: [V1.errores_criticos[0], V1.errores_criticos[0]] })).toThrow(/repetidos/);
-    expect(mal({ rol: 'closer_f4' as never })).toThrow(/rol/);
+    expect(mal({ rol: 'jefe' as never })).toThrow(/rol/);   // closer_f4 ya es válido (869fppbcj)
   });
 
   it('el prompt y el esquema salen de la versión: una v2 cambia el prompt sin tocar código', () => {

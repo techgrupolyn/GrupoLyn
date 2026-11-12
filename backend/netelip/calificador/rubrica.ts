@@ -157,7 +157,7 @@ export function esquemaSalida(r: DefinicionRubrica) {
   };
 }
 
-const ROL_TEXTO: Record<RolComercial, string> = { sdr: 'SDR (primera llamada, Fase 0)', closer_f2: 'closer de Fase 2', closer_f3: 'closer de Fase 3' };
+const ROL_TEXTO: Record<RolComercial, string> = { sdr: 'SDR (primera llamada, Fase 0)', closer_f2: 'closer de Fase 2', closer_f3: 'closer de Fase 3', closer_f4: 'closer de Fase 4 (cierre)' };
 
 /** Instrucciones del sistema: partes fijas (citas, evaluabilidad, salida) + la rúbrica de la versión. */
 export function promptVersionado(r: DefinicionRubrica): string {
