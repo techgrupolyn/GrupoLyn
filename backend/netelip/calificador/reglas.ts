@@ -13,13 +13,17 @@ export type ReglaCritica = typeof REGLAS_CRITICAS[number];
 export const TIPOS_OBJECION = ['precio', 'plazo', 'confianza', 'decisor', 'otra'] as const;
 export type TipoObjecion = typeof TIPOS_OBJECION[number];
 
-export const NOMBRE_REGLA: Record<ReglaCritica, string> = {
+export const NOMBRE_REGLA: Record<string, string> = {
   REGLA_CERO: 'REGLA CERO', LIMITE_PROFESIONAL: 'LÍMITE PROFESIONAL', NO_PREGUNTAR: 'NO PREGUNTAR',
   PRECIO_CERRADO_PRIMERA_REUNION: 'precio cerrado tras la primera reunión', PRECIO_M2_TARIFA: 'precio por m² como tarifa', ALTERAR_PROCESO: 'alterar el proceso',
 };
 
 export type Segmento = { speaker: string | null; start: number; end: number; text: string };
-export type ErrorCritico = { regla: ReglaCritica; cita: string; marca_tiempo: string };
+// En las rúbricas versionadas los códigos salen de la versión (p. ej. EXCEPCION_SIN_AUTORIZACION).
+export type ErrorCritico = { regla: string; cita: string; marca_tiempo: string };
+export type PasoPuntuado = { paso: number; nombre: string; peso: number; aplica: boolean; puntos: number; comentario: string };
+/** Lo que la validación necesita de una rubrica_version (ver rubrica.ts). */
+export type RubricaParaValidar = { criterios: Array<{ paso: number; nombre: string; peso: number }>; errores_criticos: Array<{ codigo: string; nombre: string }> };
 export type Objecion = { tipo: TipoObjecion; cita: string; idea_contenido: string | null };
 export type SalidaModelo = {
   llamada_evaluable: boolean;
@@ -30,6 +34,8 @@ export type SalidaModelo = {
   mejorar: [{ que: string; accion: string }, { que: string; accion: string }];
   duda: { valor: boolean; motivo: string | null };
   objeciones: Objecion[];
+  /** Solo con rúbrica versionada: puntos por paso. La nota sale de aquí, no del modelo. */
+  pasos?: PasoPuntuado[];
 };
 
 export class SalidaInvalida extends Error {}
@@ -67,14 +73,41 @@ const texto = (v: unknown, campo: string, max = 400): string => {
 };
 const textoONull = (v: unknown, max = 400): string | null => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
 
-/** Comprueba el esquema estricto. Lanza SalidaInvalida (el intento cuenta como fallo del modelo). */
-export function validarSalida(raw: string): SalidaModelo {
+/** Nota sobre 100 con los pesos de los pasos que aplican: un paso que no corresponde no resta. */
+export function notaPorPasos(pasos: Array<{ peso: number; aplica: boolean; puntos: number }>): number {
+  const aplican = pasos.filter((p) => p.aplica);
+  const posible = aplican.reduce((n, p) => n + p.peso, 0);
+  return posible ? Math.round(aplican.reduce((n, p) => n + p.puntos, 0) * 100 / posible) : 0;
+}
+
+function validarPasos(raw: unknown, rubrica: RubricaParaValidar, evaluable: boolean): PasoPuntuado[] {
+  const lista = Array.isArray(raw) ? raw : [];
+  return rubrica.criterios.map((c) => {
+    const r = lista.find((x) => Number((x as Record<string, unknown>)?.paso) === c.paso) as Record<string, unknown> | undefined;
+    if (!r) {
+      if (evaluable) throw new SalidaInvalida(`pasos: falta el paso ${c.paso}`);
+      return { paso: c.paso, nombre: c.nombre, peso: c.peso, aplica: false, puntos: 0, comentario: '—' };
+    }
+    const puntos = Number(r.puntos);
+    if (!Number.isInteger(puntos) || puntos < 0 || puntos > c.peso) throw new SalidaInvalida(`pasos[${c.paso}].puntos fuera de 0-${c.peso}`);
+    const aplica = r.aplica !== false;
+    return { paso: c.paso, nombre: c.nombre, peso: c.peso, aplica, puntos: aplica ? puntos : 0, comentario: textoONull(r.comentario, 200) || '—' };
+  });
+}
+
+/**
+ * Comprueba el esquema estricto. Lanza SalidaInvalida (el intento cuenta como fallo del modelo).
+ * Con `rubrica` (versionada), los errores válidos son los de la versión y la nota se calcula con los pasos.
+ */
+export function validarSalida(raw: string, rubrica?: RubricaParaValidar): SalidaModelo {
   let d: Record<string, unknown>;
   try { d = JSON.parse(raw); } catch { throw new SalidaInvalida('la respuesta no es JSON'); }
   if (!d || typeof d !== 'object' || Array.isArray(d)) throw new SalidaInvalida('la respuesta no es un objeto');
   const evaluable = d.llamada_evaluable !== false;
-  const nota = Number(d.nota);
+  const pasos = rubrica ? validarPasos(d.pasos, rubrica, evaluable) : undefined;
+  const nota = pasos ? notaPorPasos(pasos) : Number(d.nota);
   if (!Number.isInteger(nota) || nota < 0 || nota > 100) throw new SalidaInvalida('nota fuera de 0-100');
+  const reglasValidas: readonly string[] = rubrica ? rubrica.errores_criticos.map((e) => e.codigo) : REGLAS_CRITICAS;
   const errores = Array.isArray(d.errores_criticos) ? d.errores_criticos : null;
   if (!errores) throw new SalidaInvalida('errores_criticos no es una lista');
   const bien = Array.isArray(d.bien) ? d.bien : [];
@@ -87,8 +120,8 @@ export function validarSalida(raw: string): SalidaModelo {
     nota,
     errores_criticos: errores.map((e, i) => {
       const r = (e || {}) as Record<string, unknown>;
-      if (!REGLAS_CRITICAS.includes(r.regla as ReglaCritica)) throw new SalidaInvalida(`errores_criticos[${i}].regla desconocida`);
-      return { regla: r.regla as ReglaCritica, cita: texto(r.cita, `errores_criticos[${i}].cita`), marca_tiempo: textoONull(r.marca_tiempo, 12) || '' };
+      if (!reglasValidas.includes(String(r.regla))) throw new SalidaInvalida(`errores_criticos[${i}].regla desconocida`);
+      return { regla: String(r.regla), cita: texto(r.cita, `errores_criticos[${i}].cita`), marca_tiempo: textoONull(r.marca_tiempo, 12) || '' };
     }),
     bien: evaluable ? [texto(bien[0], 'bien[0]', 160), texto(bien[1], 'bien[1]', 160)] : ['—', '—'],
     mejorar: (evaluable ? [0, 1].map((i) => {
@@ -102,6 +135,7 @@ export function validarSalida(raw: string): SalidaModelo {
       const cita = textoONull(r.cita, 400);
       return cita ? [{ tipo, cita, idea_contenido: textoONull(r.idea_contenido, 300) }] : [];
     }),
+    ...(pasos ? { pasos } : {}),
   };
 }
 
@@ -124,7 +158,11 @@ export function citaVerificable(cita: string, transcripcion: string): boolean {
 
 // --- Decisión ---------------------------------------------------------------------------------
 
-export type Contexto = { presupuestoRegistrado: boolean; supervisor: string };
+export type Contexto = {
+  presupuestoRegistrado: boolean; supervisor: string;
+  /** Rúbrica versionada: nota mínima para APTO y nombres legibles de sus errores críticos. */
+  notaApto?: number; nombresReglas?: Record<string, string>;
+};
 export type Decision = {
   errores_criticos: ErrorCritico[];
   errores_descartados: Array<ErrorCritico & { motivo: string }>;
@@ -154,16 +192,50 @@ export function decidir(salida: SalidaModelo, transcripcion: string, ctx: Contex
   const sinCita = descartados.some((e) => e.motivo.startsWith('cita no encontrada'));
   const duda = salida.duda.valor || sinCita;
   const motivoDuda = salida.duda.valor ? salida.duda.motivo : sinCita ? 'el agente señaló un error crítico sin una cita verificable' : null;
-  const apto = salida.nota >= NOTA_APTO && validos.length === 0;
+  const notaApto = ctx.notaApto ?? NOTA_APTO;
+  const nombre = (codigo: string) => ctx.nombresReglas?.[codigo] ?? NOMBRE_REGLA[codigo] ?? codigo;
+  const apto = salida.nota >= notaApto && validos.length === 0;
   const motivos = [
-    validos.length ? `error crítico: ${[...new Set(validos.map((e) => NOMBRE_REGLA[e.regla]))].join(', ')}` : null,
-    salida.nota < NOTA_APTO ? `nota inferior a ${NOTA_APTO}` : null,
+    validos.length ? `error crítico: ${[...new Set(validos.map((e) => nombre(e.regla)))].join(', ')}` : null,
+    salida.nota < notaApto ? `nota inferior a ${notaApto}` : null,
     duda ? `duda: ${motivoDuda}` : null,
   ].filter(Boolean) as string[];
   // Objeciones: la cita debe estar en la transcripción y no llevar datos personales sin enmascarar.
   const objeciones = salida.objeciones.filter((o) => citaVerificable(o.cita, transcripcion) && !containsUnmaskedPersonalData(o.cita)
     && !(o.idea_contenido && (containsUnmaskedPersonalData(o.idea_contenido) || /\[(NOMBRE|TEL[ÉE]FONO|EMAIL|DIRECCI[ÓO]N|DNI|IBAN)\]/i.test(o.idea_contenido))));
   return { errores_criticos: validos, errores_descartados: descartados, apto, escalado: motivos.length > 0, motivo_escalado: motivos.length ? motivos.join('; ') : null, duda, motivo_duda: motivoDuda, objeciones };
+}
+
+// --- Consentimiento de grabación (869fpj8dm) -------------------------------------------------
+
+// Frases con las que alguien se niega a que se grabe. Se buscan en toda la transcripción (las etiquetas de
+// hablante no son fiables), en minúsculas y sin tildes. «No me importa que se grabe» no es una negativa.
+// Las hipótesis del comercial («si no quiere que se grabe…», «si prefieres que no…») no cuentan.
+const NEGATIVAS_GRABACION = [
+  /(?<!\bsi )\bno (?:quiero|quiere|queremos|deseo|me gusta|nos gusta|me gustaria|prefiero|preferimos|acepto|autorizo|consiento|doy permiso para) (?:que )?(?:se |me |la |nos |lo )?(?:grab|registr)/,
+  /(?<!\bsi )\b(?:prefiero|preferimos|preferiria|mejor) que no (?:se |me |la |nos )?grab/,
+  /(?<!\bsi )\bno (?:me |nos |la |lo )?(?:grabes|grabeis|graben)\b/,
+  /\bsin grabar(?:la|me)? (?:por favor|gracias|mejor)/,
+];
+// Respuesta del guion cuando el cliente no quiere: «Sin problema, tomo las notas yo». Una oferta previa
+// («si lo prefieres, tomo yo las notas») no es negativa: hace falta el «sin problema» o similar.
+const RESPUESTA_GUION = /\b(?:sin problema|ningun problema|no hay problema|vale|de acuerdo|perfecto)\b.*\btomo (?:yo )?(?:las |unas )?notas\b/;
+const plano = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[¿?¡!.,;:"«»()]/g, ' ').replace(/\s+/g, ' ');
+const sinMarca = (linea: string) => linea.replace(/^\[[^\]]*\]\s*(?:GRUPO LYN|CLIENTE)?:?\s*/, '').trim().slice(0, 200);
+
+/**
+ * Devuelve la frase en la que se niega la grabación, o null. Si la hay, la llamada no se envía al modelo
+ * (ni ahora ni en una reevaluación), queda «sin consentimiento» y no se guardan objeciones.
+ */
+export function detectarNegativaGrabacion(transcripcion: string): string | null {
+  const lineas = String(transcripcion || '').split('\n');
+  for (let i = 0; i < lineas.length; i++) {
+    const t = plano(lineas[i]);
+    if (NEGATIVAS_GRABACION.some((re) => re.test(t))) return sinMarca(lineas[i]);
+    // «Sin problema, tomo las notas yo» justo después de hablar de la grabación.
+    if (RESPUESTA_GUION.test(t) && lineas.slice(Math.max(0, i - 3), i + 1).some((l) => /grab/.test(plano(l)))) return sinMarca(lineas[i]);
+  }
+  return null;
 }
 
 // --- Feedback al comercial --------------------------------------------------------------------

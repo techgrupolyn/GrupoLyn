@@ -4,6 +4,7 @@
 // Reversión: backend/netelip/schema-down.sql (solo borra las tablas netelip_*).
 import type { Pool } from 'pg';
 import { ensureCalificador } from './calificador/schema.ts';
+import { sembrarRubricas } from './calificador/rubrica.ts';
 import { ensureEntrenador } from './entrenador/schema.ts';
 
 export const NETELIP_TABLES = [
@@ -129,5 +130,6 @@ export async function ensureNetelipCalls(pool: Pool): Promise<void> {
     ALTER TABLE netelip_inbox ADD CONSTRAINT netelip_inbox_kind_check CHECK (kind IN ('callrecording','report','whatsapp_call','call_event')) NOT VALID;
   `);
   await ensureCalificador(pool);
+  await sembrarRubricas(pool);
   await ensureEntrenador(pool);
 }

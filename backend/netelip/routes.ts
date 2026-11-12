@@ -194,14 +194,15 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
            c.agent_extension, COALESCE(NULLIF(CONCAT_WS(' ', e.nombre, e.apellido), ''), x.label) AS agent_name,
            CASE t.status WHEN 'processing' THEN 'pending' ELSE t.status END AS transcription_status,
            t.status = 'processing' AS transcribing, t.progress AS transcription_progress,
-           ev.estado AS evaluation_status, ev.nota AS evaluation_score, ev.apto AS evaluation_pass, ev.escalado AS evaluation_escalated
+           ev.estado AS evaluation_status, ev.nota AS evaluation_score, ev.apto AS evaluation_pass, ev.escalado AS evaluation_escalated, ev.sin_consentimiento AS evaluation_no_consent
     FROM netelip_calls c
     LEFT JOIN clientes cl ON cl.id = c.client_id
     LEFT JOIN crm_leads l ON l.id = c.lead_id
     LEFT JOIN netelip_extensions x ON x.extension = c.agent_extension
     LEFT JOIN empleados e ON e.id = x.empleado_id
     LEFT JOIN netelip_call_transcriptions t ON t.call_id = c.id
-    LEFT JOIN llamada_evaluacion ev ON ev.llamada_id = c.id`;
+    -- Una sola evaluación por fila: la automática más reciente (las reevaluaciones no cambian el listado).
+    LEFT JOIN LATERAL (SELECT * FROM llamada_evaluacion x WHERE x.llamada_id = c.id ORDER BY x.reevaluacion, x.creado_en DESC LIMIT 1) ev ON TRUE`;
 
   type CallRow = Record<string, unknown> & { client_id: string | null; lead_id: string | null; client_name: string | null; lead_name: string | null; agent_extension: string | null; agent_name: string | null };
   const toItem = (row: CallRow) => ({
@@ -217,7 +218,7 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
     transcription_phase: row.transcription_status === 'pending' ? (row.transcribing ? 'processing' : 'queued') : null,
     transcription_progress: row.transcribing && row.transcription_progress !== null ? Number(row.transcription_progress) : null,
     // Calificador interno (869e9y98n): resumen para la tabla; el detalle va en /evaluacion.
-    evaluation: row.evaluation_status ? { status: row.evaluation_status, score: row.evaluation_score ?? null, pass: row.evaluation_pass ?? null, escalated: Boolean(row.evaluation_escalated) } : null,
+    evaluation: row.evaluation_status ? { status: row.evaluation_status, score: row.evaluation_score ?? null, pass: row.evaluation_pass ?? null, escalated: Boolean(row.evaluation_escalated), no_consent: Boolean(row.evaluation_no_consent) } : null,
   });
 
   app.get('/api/netelip/calls', access, async (req, res) => {
