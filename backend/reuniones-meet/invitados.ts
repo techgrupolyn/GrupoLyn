@@ -18,7 +18,8 @@ export const REINTENTO_HORAS = 1;
 
 export type Invitado = { email: string; nombre: string | null; respuesta: string | null; organizador: boolean; interno: boolean };
 type AsistenteCalendar = { email?: string; displayName?: string; responseStatus?: string; organizer?: boolean; resource?: boolean };
-export type EventoCalendar = { id?: string; status?: string; attendees?: AsistenteCalendar[] };
+type MomentoCalendar = { dateTime?: string; date?: string };
+export type EventoCalendar = { id?: string; status?: string; attendees?: AsistenteCalendar[]; start?: MomentoCalendar; end?: MomentoCalendar };
 export type ObtenerToken = (connectionId: string) => Promise<string>;
 export type PedirEvento = (token: string, eventId: string) => Promise<EventoCalendar>;
 
@@ -50,6 +51,19 @@ export function invitadosDelEvento(evento: EventoCalendar, emailsEquipo: Set<str
   return invitados;
 }
 
+/**
+ * Inicio y fin del evento (con hora). Un evento de día entero no tiene hora: no sirve para saber cuándo fue la reunión.
+ * Duración: la del evento, si es coherente (entre 1 minuto y 8 horas).
+ */
+export function horarioDelEvento(evento: EventoCalendar): { inicio: string | null; fin: string | null; duracion_segundos: number | null } {
+  const inicio = evento.start?.dateTime ? new Date(evento.start.dateTime) : null;
+  const fin = evento.end?.dateTime ? new Date(evento.end.dateTime) : null;
+  const valido = (d: Date | null) => (d && Number.isFinite(d.getTime()) ? d : null);
+  const i = valido(inicio); const f = valido(fin);
+  const segundos = i && f ? Math.round((f.getTime() - i.getTime()) / 1000) : null;
+  return { inicio: i?.toISOString() ?? null, fin: f?.toISOString() ?? null, duracion_segundos: segundos && segundos >= 60 && segundos <= 8 * 3600 ? segundos : null };
+}
+
 /** Id del evento si el organizador lo vinculó Calendar (`calendar:<id>`); null si fue a mano. */
 export function eventoDeAsignacion(assignedBy: string | null | undefined): string | null {
   const m = /^calendar:(.+)$/.exec(String(assignedBy || '').trim());
@@ -58,7 +72,7 @@ export function eventoDeAsignacion(assignedBy: string | null | undefined): strin
 
 /** Pide un evento concreto del calendario principal de la cuenta conectada. Solo lectura. */
 export async function eventoCalendar(token: string, eventId: string): Promise<EventoCalendar> {
-  const params = new URLSearchParams({ fields: 'id,status,attendees(email,displayName,responseStatus,organizer,resource)' });
+  const params = new URLSearchParams({ fields: 'id,status,start(dateTime,date),end(dateTime,date),attendees(email,displayName,responseStatus,organizer,resource)' });
   const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}?${params}`, {
     headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000),
   });
@@ -67,7 +81,8 @@ export async function eventoCalendar(token: string, eventId: string): Promise<Ev
 }
 
 type Candidata = { id: string; connection_id: string; scope: string | null; assigned_by: string | null };
-type Resultado = { invitados: Invitado[] | null; motivo: string | null; reintentar: boolean };
+type Horario = ReturnType<typeof horarioDelEvento>;
+type Resultado = { invitados: Invitado[] | null; motivo: string | null; reintentar: boolean; horario?: Horario };
 
 async function consultar(c: Candidata, equipo: Set<string>, obtenerToken: ObtenerToken, pedirEvento: PedirEvento): Promise<Resultado> {
   const eventId = eventoDeAsignacion(c.assigned_by);
@@ -78,7 +93,7 @@ async function consultar(c: Candidata, equipo: Set<string>, obtenerToken: Obtene
   try {
     const evento = await pedirEvento(await obtenerToken(c.connection_id), eventId);
     if (evento.status === 'cancelled') return { invitados: null, motivo: 'El evento de Calendar está cancelado.', reintentar: false };
-    return { invitados: invitadosDelEvento(evento, equipo), motivo: null, reintentar: false };
+    return { invitados: invitadosDelEvento(evento, equipo), motivo: null, reintentar: false, horario: horarioDelEvento(evento) };
   } catch (error) {
     const status = error instanceof ErrorCalendar ? error.status : null;
     // 404/410: el evento ya no existe; no tiene sentido insistir. Lo demás (red, 5xx, token) es temporal.
@@ -118,11 +133,12 @@ export async function guardarInvitados(pool: Consultable, obtenerToken: ObtenerT
     const r = await consultar(c, equipo, tokenCacheado, pedirEvento);
     await pool.query(
       `UPDATE reunion SET invitados = COALESCE($2::jsonb, invitados), invitados_motivo = $3, invitados_reintentar = $4,
-              invitados_en = NOW()
+              invitados_en = NOW(), inicio = COALESCE($5::timestamptz, inicio), fin = COALESCE($6::timestamptz, fin),
+              duracion_segundos = COALESCE(duracion_segundos, $7)
        WHERE id = $1`,
       // Sin tocar actualizado_en: vincularPendientes lo compara con assigned_at para saber si una sin_comercial
       // tiene un organizador nuevo, y moverlo aquí escondería esa asignación.
-      [c.id, r.invitados ? JSON.stringify(r.invitados) : null, r.motivo, r.reintentar],
+      [c.id, r.invitados ? JSON.stringify(r.invitados) : null, r.motivo, r.reintentar, r.horario?.inicio ?? null, r.horario?.fin ?? null, r.horario?.duracion_segundos ?? null],
     );
   }
   return rows.length;

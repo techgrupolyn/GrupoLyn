@@ -4,7 +4,7 @@
 import type { Pool } from 'pg';
 import { adaptarCalificador } from './migracion-calificador.ts';
 
-export const ESTADOS_REUNION = ['pendiente', 'por_evaluar', 'sin_rubrica', 'evaluada', 'sin_comercial', 'sin_consentimiento', 'error'] as const;
+export const ESTADOS_REUNION = ['pendiente', 'por_evaluar', 'sin_rubrica', 'evaluada', 'no_evaluada', 'sin_comercial', 'sin_consentimiento', 'error'] as const;
 export type EstadoReunion = typeof ESTADOS_REUNION[number];
 export const FASES_REUNION = ['F2', 'F3', 'F4'] as const;
 export type FaseReunion = typeof FASES_REUNION[number];
@@ -51,6 +51,22 @@ export async function ensureReunionesMeet(pool: Consultable): Promise<void> {
     -- encola con rubrica_version_id NOT NULL y UNIQUE (reunion_id, rubrica_version_id). TEXT para no depender del
     -- tipo del id de su tabla, que aún no existe; sin FK por lo mismo.
     ALTER TABLE reunion ADD COLUMN IF NOT EXISTS rubrica_version_id TEXT;
+
+    -- Hora de inicio y fin del evento de Calendar (fecha_reunion es solo el día). Se rellenan con los invitados.
+    ALTER TABLE reunion ADD COLUMN IF NOT EXISTS inicio TIMESTAMPTZ;
+    ALTER TABLE reunion ADD COLUMN IF NOT EXISTS fin TIMESTAMPTZ;
+
+    -- Estado no_evaluada: el modelo dice que no es una reunión comercial evaluable, o la transcripción no sirve.
+    DO $$ DECLARE c RECORD; BEGIN
+      FOR c IN SELECT conname FROM pg_constraint WHERE conrelid = to_regclass('reunion') AND contype = 'c'
+                 AND pg_get_constraintdef(oid) LIKE '%sin_consentimiento%' AND pg_get_constraintdef(oid) NOT LIKE '%no_evaluada%' LOOP
+        EXECUTE format('ALTER TABLE reunion DROP CONSTRAINT %I', c.conname);
+      END LOOP;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('reunion') AND conname = 'reunion_estado_check') THEN
+        ALTER TABLE reunion ADD CONSTRAINT reunion_estado_check
+          CHECK (estado IN ('pendiente','por_evaluar','sin_rubrica','evaluada','no_evaluada','sin_comercial','sin_consentimiento','error'));
+      END IF;
+    END $$;
 
     -- Lead de la reunión (la tarea padre de «Contacto de Reforma», por su clickup_task_id), aparte del estado de
     -- evaluación: una reunión sin_rubrica puede tener ya su lead, y el calificador de leads (869fnzbae) lo necesita.

@@ -94,10 +94,54 @@ calificador de llamadas: `[hh:mm:ss] GRUPO LYN: …` / `[hh:mm:ss] CLIENTE: …`
 - `conHablantes = false` si no se reconoce ninguna voz: conviene marcar la evaluación con duda.
 - Formato supuesto a partir de Meet; falta confirmarlo con una transcripción real de un closer.
 
+## Evaluación (`evaluacion.ts`)
+
+1. `encolarReuniones`: cada reunión `por_evaluar` crea su fila `pendiente` en `llamada_evaluacion` con `reunion_id`,
+   `empleado_id`, `rol`, `rubrica_version_id` y `version_rubrica` (código de la versión). Idempotente.
+2. `procesarSiguienteReunion`: coge la siguiente con `reunion_id` (`FOR UPDATE SKIP LOCKED`) y:
+   - si hay negativa a grabar (ahora o en una evaluación anterior) → `no_evaluada` + `sin_consentimiento`, sin modelo;
+   - prepara la transcripción (turnos GRUPO LYN / CLIENTE, datos personales enmascarados);
+   - llama a Gemini con el prompt y el esquema de la rúbrica versionada de Juan, valida la salida y aplica `decidir`
+     (citas verificadas, apto, escalado). Sin hablantes identificados → duda y escalado;
+   - guarda nota, pasos, errores, tokens y objeciones (`evaluacion_id`, `llamada_id` NULL) en una transacción y deja la
+     reunión `evaluada`. Sin feedback por WhatsApp.
+   - Fallos del modelo: reintento a 1, 5 y 15 min; al tercero, `error` y aviso a Tech. Transcripción de más de
+     `REUNIONES_MEET_MAX_CARACTERES` (150.000 por defecto) → `no_evaluada`.
+3. El proceso de cada minuto evalúa como mucho 5 reuniones por vuelta. Sin rúbricas de closer activas no hay ninguna
+   `por_evaluar`: coste cero.
+
+## Reevaluación al activar una rúbrica (`reevaluar.ts`)
+
+`reevaluarReuniones({ codigo, desde?, hasta?, simular? })`, para una rúbrica de closer (`closer_f2|f3|f4-vN`):
+- las reuniones `sin_rubrica` de su fase vuelven a la cola y se vinculan con la versión activa (requiere activarla);
+- las ya evaluadas de esa fase con otra versión reciben una evaluación nueva (`reevaluacion = TRUE`), sin tocar la anterior;
+- nunca entra una reunión con negativa a grabar.
+
+Se lanza con el script de rúbricas de Juan (`scripts/calificador-rubrica.ts reevaluar --version … --desde … --hasta …`,
+que ahora también recorre las reuniones) o con el nuestro:
+
+```bash
+npx tsx --env-file=.env scripts/reuniones-meet.ts reevaluar --version closer_f2-v1 [--desde …] [--hasta …] [--simular] [--ahora]
+npx tsx --env-file=.env scripts/reuniones-meet.ts estado
+npx tsx --env-file=.env scripts/reuniones-meet.ts coste [--desde …] [--hasta …] > coste.md
+```
+
+## Coste (`informe.ts`)
+
+`coste` da, por evaluación, los tokens de entrada y salida, la duración y la versión, y en el resumen la media por
+reunión y por minuto. Con `CALIFICADOR_PRECIO_ENTRADA_1M` y `CALIFICADOR_PRECIO_SALIDA_1M` (precio por millón de
+tokens) añade el coste; sin ellos, solo tokens.
+
+## Hora de la reunión
+
+Al pedir los invitados a Calendar se guardan también `inicio` y `fin` del evento (con hora) y, si la transcripción no
+la daba, la duración. Un evento de día entero no da hora.
+
 ## Pendiente (depende de otros)
 
-- **Procesador de evaluación** (`por_evaluar` → `evaluada`): escribe en `llamada_evaluacion` con `reunion_id`. Las
-  tablas ya lo admiten; falta el procesador y, sobre todo, las rúbricas de F2, F3 y F4 (Alex).
+- **Rúbricas de F2, F3 y F4** (Alex): hasta que existan y se activen, todas las reuniones quedan `sin_rubrica`.
+- **Formato real de las transcripciones e informe de coste medido:** falta una transcripción real de un closer (Jean) y,
+  para el coste real, una rúbrica activa.
 - **`rubrica_version`** la crea el ticket 869fpj8dm (columnas `id`, `fase`, `version`, `activo`, `vigente_desde`). Mientras
   no exista, todas las reuniones quedan `sin_rubrica`.
 - **Búsqueda del lead y fase desde el CRM** (lista de ClickUp «Contacto de Reforma», `ETAPA_CRM`; F2 = e4 VISITA): falta
@@ -113,8 +157,11 @@ calificador de llamadas: `[hh:mm:ss] GRUPO LYN: …` / `[hh:mm:ss] CLIENTE: …`
 
 ## Operación
 
-- `REUNIONES_MEET_ENABLED=false` apaga la ingesta y la vinculación.
-- No llama a ningún modelo: coste cero mientras no haya reuniones `por_evaluar` con evaluación activa.
+- `REUNIONES_MEET_ENABLED=false` apaga todo el proceso; `REUNIONES_MEET_EVALUAR=false` (o `CALIFICADOR_ENABLED=false`)
+  apaga solo la evaluación; `REUNIONES_MEET_INVITADOS=false`, solo la consulta a Calendar.
+- Acceso: las notas de reuniones son datos de desempeño (solo Dirección y Ernesto). Hoy ninguna ruta ni pantalla las
+  muestra; quien las lea (gráfico 5, 869fpj8j3) debe aplicar esa regla.
+- Solo llama al modelo con reuniones `por_evaluar`, es decir, con una rúbrica de closer activa.
 - Reversión: `backend/reuniones-meet/schema-down.sql` (deshace la migración de las tablas del calificador y borra
   `reunion`; lee sus avisos) y revertir los commits.
 - Pruebas: `npx vitest run tests/reuniones-meet.test.ts`. Para la de integración hace falta
