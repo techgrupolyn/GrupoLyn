@@ -3,7 +3,8 @@
 import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
-import { ensureReunionesMeet } from '../reuniones-meet/schema.ts';
+import { enlazarEvaluaciones, ensureReunionesMeet } from '../reuniones-meet/schema.ts';
+import { vincularLeads } from '../reuniones-meet/lead.ts';
 import { ingestarTranscripciones, reabrirSinRubrica, vincularPendientes } from '../reuniones-meet/proceso.ts';
 import { ErrorCalendar, guardarInvitados } from '../reuniones-meet/invitados.ts';
 
@@ -91,12 +92,27 @@ describe.skipIf(!databaseUrl)('Reuniones Meet en PostgreSQL QA local', () => {
       INSERT INTO rubrica_version (rol, fase, version, activo) VALUES ('closer_f2','F2','f2-v1',TRUE)`);
     expect(await reabrirSinRubrica(pool, 'F2')).toBe(1);   // solo la de F2; la que no tiene fase sigue igual
     await vincularPendientes(pool);
-    const { rows } = await client.query(`SELECT titulo, estado, version_rubrica FROM reunion ORDER BY titulo`);
+    const { rows } = await client.query(`SELECT titulo, estado, version_rubrica, rubrica_version_id FROM reunion ORDER BY titulo`);
     expect(rows).toEqual([
-      { titulo: 'F2 · Visita García - Transcripción', estado: 'por_evaluar', version_rubrica: 'f2-v1' },
-      { titulo: 'F3 · Presentación López - Transcripción', estado: 'sin_consentimiento', version_rubrica: null },
-      { titulo: 'Reunión de diseño - Transcripción', estado: 'sin_rubrica', version_rubrica: null },
+      { titulo: 'F2 · Visita García - Transcripción', estado: 'por_evaluar', version_rubrica: 'f2-v1', rubrica_version_id: '1' },
+      { titulo: 'F3 · Presentación López - Transcripción', estado: 'sin_consentimiento', version_rubrica: null, rubrica_version_id: null },
+      { titulo: 'Reunión de diseño - Transcripción', estado: 'sin_rubrica', version_rubrica: null, rubrica_version_id: null },
     ]);
+  });
+
+  it('FK hacia reunion: no hace nada antes de la migración de Juan, se crea después, es idempotente y protege lo evaluado', async () => {
+    await client.query(`CREATE TABLE llamada_evaluacion (id BIGSERIAL PRIMARY KEY, llamada_id BIGINT)`);
+    expect(await enlazarEvaluaciones(pool)).toBe(false);   // aún sin la columna reunion_id
+    await client.query(`ALTER TABLE llamada_evaluacion ADD COLUMN reunion_id BIGINT,
+      ADD CONSTRAINT llamada_evaluacion_origen_unico CHECK ((llamada_id IS NULL) <> (reunion_id IS NULL))`);
+    expect(await enlazarEvaluaciones(pool)).toBe(true);
+    await ensureReunionesMeet(pool);                       // el arranque siguiente no falla ni la duplica
+    expect(await enlazarEvaluaciones(pool)).toBe(true);
+    const { rows: [r] } = await client.query(`SELECT id FROM reunion WHERE google_file_id = 'file-visita'`);
+    await expect(client.query(`INSERT INTO llamada_evaluacion (reunion_id) VALUES (999999)`)).rejects.toThrow(/llamada_evaluacion_reunion_fk/);
+    await client.query(`INSERT INTO llamada_evaluacion (reunion_id) VALUES ($1)`, [r.id]);
+    await expect(client.query(`DELETE FROM reunion WHERE id = $1`, [r.id])).rejects.toThrow(/llamada_evaluacion_reunion_fk/);
+    await client.query(`DELETE FROM llamada_evaluacion`);
   });
 
   it('invitados: guarda los del evento de Calendar, no insiste con el vinculado a mano y reintenta el fallo temporal', async () => {
@@ -131,5 +147,25 @@ describe.skipIf(!databaseUrl)('Reuniones Meet en PostgreSQL QA local', () => {
     await client.query(`UPDATE reunion SET invitados_en = NOW() - INTERVAL '2 hours' WHERE invitados_reintentar`);
     expect(await guardarInvitados(pool, obtenerToken, pedirEvento)).toBe(1);
     expect(pedidos.filter((p) => p === '2')).toHaveLength(2);
+  });
+
+  it('lead: solo tras terminar la consulta de invitados, por los externos, y sin tocar nada si la búsqueda falla', async () => {
+    const pedidos: string[][] = [];
+    const caida = async () => { throw new Error('ClickUp 503'); };
+    // La que no tiene invitados externos se decide sin preguntar a ClickUp; la otra se queda pendiente.
+    expect(await vincularLeads(pool, caida)).toBe(1);
+    expect((await client.query(`SELECT count(*)::int AS n FROM reunion WHERE lead_estado = 'pendiente'`)).rows[0].n).toBe(2);
+
+    const buscarLead = async (emails: string[]) => { pedidos.push(emails); return emails.includes('garcia@gmail.com') ? [{ id: '86lead' }] : []; };
+    expect(await vincularLeads(pool, buscarLead)).toBe(1);
+    expect(pedidos).toEqual([['garcia@gmail.com']]);   // ni el email interno ni la reunión sin invitados piden nada
+    const { rows } = await client.query(`SELECT google_file_id, lead_estado, lead_id, lead_motivo FROM reunion ORDER BY google_file_id`);
+    expect(rows).toEqual([
+      { google_file_id: 'file-diseno', lead_estado: 'sin_lead', lead_id: null, lead_motivo: 'La reunión no tiene invitados externos.' },
+      // su consulta de invitados está pendiente de reintento: aún no se decide
+      { google_file_id: 'file-negativa', lead_estado: 'pendiente', lead_id: null, lead_motivo: null },
+      { google_file_id: 'file-visita', lead_estado: 'vinculado', lead_id: '86lead', lead_motivo: null },
+    ]);
+    expect(await vincularLeads(pool, buscarLead)).toBe(0);
   });
 });

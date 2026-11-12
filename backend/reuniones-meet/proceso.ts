@@ -46,20 +46,23 @@ let avisoRubrica = false;
  * Versión activa de la rúbrica para la fase de la reunión, o null.
  * rubrica_version la crea el ticket 869fpj8dm (Juan). Mientras no exista, o no tenga columna `fase`, no hay
  * rúbrica para ninguna fase de closer y la reunión queda `sin_rubrica` sin llamar al modelo.
- * Columnas supuestas (a confirmar con Juan): version, fase, activo, vigente_desde.
+ * Acordado con Juan (11/11): se elige por `fase` (F0, F2, F3, F4); el rol es informativo. Columnas: id, fase,
+ * version, activo, vigente_desde. Se devuelve el id porque su evaluación se encola con rubrica_version_id.
  */
-export async function rubricaActiva(pool: Consultable, fase: FaseReunion): Promise<string | null> {
+export type RubricaActiva = { id: string; version: string };
+
+export async function rubricaActiva(pool: Consultable, fase: FaseReunion): Promise<RubricaActiva | null> {
   const { rows } = await pool.query<{ existe: boolean; con_fase: boolean }>(
     `SELECT to_regclass('rubrica_version') IS NOT NULL AS existe,
             EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'rubrica_version' AND column_name = 'fase') AS con_fase`,
   );
   if (!rows[0]?.existe || !rows[0]?.con_fase) return null;
   try {
-    const activa = await pool.query<{ version: string }>(
-      `SELECT version::text AS version FROM rubrica_version WHERE activo AND fase = $1 ORDER BY vigente_desde DESC NULLS LAST LIMIT 1`,
+    const activa = await pool.query<RubricaActiva>(
+      `SELECT id::text AS id, version::text AS version FROM rubrica_version WHERE activo AND fase = $1 ORDER BY vigente_desde DESC NULLS LAST LIMIT 1`,
       [fase],
     );
-    return activa.rows[0]?.version ?? null;
+    return activa.rows[0] ?? null;
   } catch (error) {
     if (!avisoRubrica) console.warn('[reuniones-meet] rubrica_version no tiene las columnas esperadas:', (error as Error).message);
     avisoRubrica = true;
@@ -72,12 +75,12 @@ type Organizador = { employee_id: string; email: string | null; activo: boolean 
 
 export type Vinculacion = {
   estado: EstadoReunion; motivo: string | null; empleado_id: string | null; organizador_email: string | null; rol: string | null;
-  fase: FaseReunion | null; fase_origen: 'titulo' | 'crm' | null; version_rubrica: string | null;
+  fase: FaseReunion | null; fase_origen: 'titulo' | 'crm' | null; version_rubrica: string | null; rubrica_version_id: string | null;
 };
 
 /** Decide el estado de una reunión. Orden: consentimiento (definitivo), comercial, fase y rúbrica. */
 export async function decidirVinculacion(pool: Consultable, reunion: Candidata): Promise<Vinculacion> {
-  const vacio: Vinculacion = { estado: 'pendiente', motivo: null, empleado_id: null, organizador_email: null, rol: null, fase: null, fase_origen: null, version_rubrica: null };
+  const vacio: Vinculacion = { estado: 'pendiente', motivo: null, empleado_id: null, organizador_email: null, rol: null, fase: null, fase_origen: null, version_rubrica: null, rubrica_version_id: null };
   const organizadores = await pool.query<Organizador>(
     `SELECT o.employee_id, e.email, e.activo FROM meeting_artifact_organizers o JOIN empleados e ON e.id = o.employee_id WHERE o.artifact_id = $1`,
     [reunion.artifact_id],
@@ -102,9 +105,9 @@ export async function decidirVinculacion(pool: Consultable, reunion: Candidata):
   const conFase = { ...base, rol, fase, fase_origen: fase ? 'titulo' as const : null };
   if (!fase) return { ...conFase, estado: 'sin_rubrica', motivo: 'Sin fase: el título no la indica y el CRM aún no está conectado.' };
 
-  const version = await rubricaActiva(pool, fase);
-  if (!version) return { ...conFase, estado: 'sin_rubrica', motivo: `No hay rúbrica activa para ${fase}.` };
-  return { ...conFase, estado: 'por_evaluar', motivo: null, version_rubrica: version };
+  const rubrica = await rubricaActiva(pool, fase);
+  if (!rubrica) return { ...conFase, estado: 'sin_rubrica', motivo: `No hay rúbrica activa para ${fase}.` };
+  return { ...conFase, estado: 'por_evaluar', motivo: null, version_rubrica: rubrica.version, rubrica_version_id: rubrica.id };
 }
 
 /**
@@ -130,16 +133,16 @@ export async function vincularPendientes(pool: Consultable, lote = LOTE_VINCULAC
     try {
       v = await decidirVinculacion(pool, reunion);
     } catch (error) {
-      v = { estado: 'error', motivo: `No se pudo vincular: ${(error as Error).message}`.slice(0, 500), empleado_id: null, organizador_email: null, rol: null, fase: null, fase_origen: null, version_rubrica: null };
+      v = { estado: 'error', motivo: `No se pudo vincular: ${(error as Error).message}`.slice(0, 500), empleado_id: null, organizador_email: null, rol: null, fase: null, fase_origen: null, version_rubrica: null, rubrica_version_id: null };
     }
     const { rowCount } = await pool.query(
       `UPDATE reunion SET estado = $3, motivo = $4, empleado_id = COALESCE($5, empleado_id), organizador_email = COALESCE($6, organizador_email),
-              rol = $7, fase = $8, fase_origen = $9, version_rubrica = $10,
+              rol = $7, fase = $8, fase_origen = $9, version_rubrica = $10, rubrica_version_id = $13,
               meet_code = COALESCE(meet_code, $11), duracion_segundos = COALESCE(duracion_segundos, $12),
               vinculada_en = NOW(), actualizado_en = NOW()
        WHERE id = $1 AND estado = $2`,
       [reunion.id, reunion.estado, v.estado, v.motivo, v.empleado_id, v.organizador_email, v.rol, v.fase, v.fase_origen, v.version_rubrica,
-        codigoMeet(reunion.titulo, reunion.content_text?.slice(0, 2_000)), duracionAproximada(reunion.content_text)],
+        codigoMeet(reunion.titulo, reunion.content_text?.slice(0, 2_000)), duracionAproximada(reunion.content_text), v.rubrica_version_id],
     );
     cambiadas += rowCount || 0;
   }

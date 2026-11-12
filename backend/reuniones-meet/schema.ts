@@ -45,5 +45,47 @@ export async function ensureReunionesMeet(pool: Consultable): Promise<void> {
     CREATE INDEX IF NOT EXISTS reunion_invitados_pendientes ON reunion(invitados_en NULLS FIRST) WHERE invitados_en IS NULL OR invitados_reintentar;
     CREATE INDEX IF NOT EXISTS reunion_estado ON reunion(estado, actualizado_en);
     CREATE INDEX IF NOT EXISTS reunion_empleado_fecha ON reunion(empleado_id, fecha_reunion DESC);
+
+    -- Id de la versión de rubrica_version encontrada al vincular (acuerdo con Juan, 11/11): la evaluación se
+    -- encola con rubrica_version_id NOT NULL y UNIQUE (reunion_id, rubrica_version_id). TEXT para no depender del
+    -- tipo del id de su tabla, que aún no existe; sin FK por lo mismo.
+    ALTER TABLE reunion ADD COLUMN IF NOT EXISTS rubrica_version_id TEXT;
+
+    -- Lead de la reunión (la tarea padre de «Contacto de Reforma», por su clickup_task_id), aparte del estado de
+    -- evaluación: una reunión sin_rubrica puede tener ya su lead, y el calificador de leads (869fnzbae) lo necesita.
+    ALTER TABLE reunion ADD COLUMN IF NOT EXISTS lead_estado TEXT NOT NULL DEFAULT 'pendiente';
+    ALTER TABLE reunion ADD COLUMN IF NOT EXISTS lead_motivo TEXT;
+    ALTER TABLE reunion ADD COLUMN IF NOT EXISTS lead_en TIMESTAMPTZ;
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'reunion_lead_estado_check' AND conrelid = to_regclass('reunion')) THEN
+        ALTER TABLE reunion ADD CONSTRAINT reunion_lead_estado_check CHECK (lead_estado IN ('pendiente','vinculado','sin_lead'));
+      END IF;
+    END $$;
+    CREATE INDEX IF NOT EXISTS reunion_lead_pendiente ON reunion(id) WHERE lead_estado = 'pendiente';
   `);
+  await enlazarEvaluaciones(pool);
+}
+
+/**
+ * FK llamada_evaluacion.reunion_id → reunion(id). Juan crea la columna y el CHECK en su migración y nosotros el FK
+ * (acuerdo del 11/11). Se aplica en cada arranque y solo cuando la columna ya existe, así que vale antes y después
+ * de su migración. ON DELETE RESTRICT: una reunión evaluada no se puede borrar sin borrar antes su evaluación (hoy
+ * nadie borra artefactos de Drive; las conexiones se revocan, no se eliminan).
+ */
+export async function enlazarEvaluaciones(pool: Consultable): Promise<boolean> {
+  // conrelid + to_regclass: la restricción se busca en la tabla del esquema actual, no por nombre en toda la base.
+  await pool.query(`
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name = 'llamada_evaluacion' AND column_name = 'reunion_id')
+         AND NOT EXISTS (SELECT 1 FROM pg_constraint
+                         WHERE conname = 'llamada_evaluacion_reunion_fk' AND conrelid = to_regclass('llamada_evaluacion')) THEN
+        ALTER TABLE llamada_evaluacion ADD CONSTRAINT llamada_evaluacion_reunion_fk
+          FOREIGN KEY (reunion_id) REFERENCES reunion(id) ON DELETE RESTRICT;
+      END IF;
+    END $$;`);
+  const { rows } = await pool.query<{ aplicado: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'llamada_evaluacion_reunion_fk' AND conrelid = to_regclass('llamada_evaluacion')) AS aplicado`,
+  );
+  return rows[0]?.aplicado === true;
 }

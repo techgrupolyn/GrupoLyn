@@ -24,6 +24,32 @@ comercial y a su fase, y quedan listas para evaluarse con la rúbrica activa de 
 Las `sin_comercial` se revisan solas cuando alguien vincula al organizador a mano o se da de alta un comercial.
 `reabrirSinRubrica(pool, fase)` devuelve a `pendiente` las `sin_rubrica` de una fase tras activar su rúbrica.
 
+## Acuerdos con el calificador de llamadas (Juan, 11/11/2026)
+
+- La rúbrica se elige **por fase** (F0 SDR, F2, F3, F4) en `rubrica_version`; el rol es informativo. `reunion` guarda
+  `version_rubrica` y **`rubrica_version_id`**, porque la evaluación se encola con `rubrica_version_id NOT NULL` y
+  `UNIQUE (reunion_id, rubrica_version_id)`.
+- `sin_rubrica` vive solo en `reunion`: la fila en `llamada_evaluacion` (con `origen = reunion_meet`) se crea cuando
+  hay rúbrica. `sin_consentimiento` se llama igual en las dos tablas.
+- Juan crea `llamada_evaluacion.reunion_id` y su CHECK; **este módulo crea el FK** `llamada_evaluacion_reunion_fk →
+  reunion(id) ON DELETE RESTRICT` (`enlazarEvaluaciones`, en cada arranque y solo si la columna existe).
+- Su cola de llamadas ignora `reunion_meet`: las reuniones tendrán su propio procesador.
+- Feedback por WhatsApp a los closers: excluido hasta que negocio lo decida.
+
+## Lead (Contacto de Reforma)
+
+`vincularLeads` (`lead.ts`) decide `lead_estado` cuando la consulta de invitados ya terminó:
+
+| `lead_estado` | Cuándo |
+|---|---|
+| `pendiente` | Faltan los invitados o la búsqueda (sin `buscarLead` configurado, todas se quedan aquí) |
+| `vinculado` | Los emails externos coinciden con **una** tarea padre de «Contacto de Reforma» → `lead_id` = su `clickup_task_id` |
+| `sin_lead` | Ninguna coincidencia, varias, o la reunión no tiene invitados externos (motivo en `lead_motivo`) |
+
+- La búsqueda en ClickUp entra como dependencia (`createReunionesWorkers(pool, env, { buscarLead })`) y **aún no está
+  implementada**: falta acceso de lectura a la lista y el nombre de su campo de email.
+- Si la búsqueda falla, la reunión sigue `pendiente` y se corta el lote hasta la vuelta siguiente.
+
 ## Invitados (Calendar)
 
 `guardarInvitados` (`invitados.ts`) rellena `reunion.invitados` con los asistentes del evento de Calendar, para buscar
@@ -57,16 +83,17 @@ calificador de llamadas: `[hh:mm:ss] GRUPO LYN: …` / `[hh:mm:ss] CLIENTE: …`
 - **Evaluación con el modelo** (`por_evaluar` → `evaluada`) y escritura en `llamada_evaluacion` con
   `origen = reunion_meet`: requiere la migración de `llamada_evaluacion`, que hoy exige una llamada de Netelip.
   Se acuerda con el dueño del calificador de llamadas.
-- **`rubrica_version`** la crea el ticket 869fpj8dm. Se suponen las columnas `version`, `fase`, `activo` y
-  `vigente_desde`. Si la tabla no existe o no tiene `fase`, todas las reuniones quedan `sin_rubrica`.
-- **Lead y fase desde el CRM** («Contacto de Reforma», `ETAPA_CRM`): `lead_id` queda vacío hasta localizar el CRM;
-  entonces se buscará por los emails externos de `invitados`.
+- **`rubrica_version`** la crea el ticket 869fpj8dm (columnas `id`, `fase`, `version`, `activo`, `vigente_desde`). Mientras
+  no exista, todas las reuniones quedan `sin_rubrica`.
+- **Búsqueda del lead y fase desde el CRM** (lista de ClickUp «Contacto de Reforma», `ETAPA_CRM`; F2 = e4 VISITA): falta
+  acceso a la lista y saber qué valores son F3 y F4. No hay historial de `ETAPA_CRM`: manda el título.
 - **Alta de closers en `comercial_rol`:** hoy su clave es la extensión de Netelip.
 
 ## Operación
 
 - `REUNIONES_MEET_ENABLED=false` apaga la ingesta y la vinculación.
 - No llama a ningún modelo: coste cero mientras no haya reuniones `por_evaluar` con evaluación activa.
-- Reversión: `backend/reuniones-meet/schema-down.sql` (borra solo la tabla `reunion`) y revertir el commit.
+- Reversión: `backend/reuniones-meet/schema-down.sql` (quita el FK de `llamada_evaluacion` y borra `reunion`) y revertir
+  los commits.
 - Pruebas: `npx vitest run tests/reuniones-meet.test.ts`. Para la de integración hace falta
   `QA_TEST_DATABASE_URL=postgres://…@127.0.0.1:15439/lyn_qa_retest`.
