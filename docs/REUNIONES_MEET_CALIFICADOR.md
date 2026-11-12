@@ -222,3 +222,87 @@ QA_LIVE_REUNIONES_CLICKUP=true CLICKUP_API_TOKEN=pk_… QA_CLICKUP_EMAIL_LEAD=<e
   `reunion`; lee sus avisos) y revertir los commits.
 - Pruebas: `npx vitest run tests/reuniones-meet.test.ts`. Para la de integración hace falta
   `QA_TEST_DATABASE_URL=postgres://…@127.0.0.1:15439/lyn_qa_retest`.
+
+## Paso a paso hasta producción
+
+El merge **no despliega**: el CI («Quality Gate») solo pasa los tests. Se despliega a mano, siguiendo
+`docs/DESPLIEGUE_DASHBOARD_GENERAL.md`. Al reiniciar el backend, `ensureReunionesMeet` crea `reunion` y **cambia tablas
+del calificador** (`migracion-calificador.ts`): una migración que no se deshace solo cambiando el código.
+
+### Antes de desplegar
+- [ ] PR fusionado, con el Quality Gate en verde para ese SHA (Backend, Dashboard, Evolution y Extension).
+- [ ] Aprobación de Alejandro Yepez.
+- [ ] Quien despliega sabe que esta versión cambia `llamada_evaluacion`, `objecion_marketing`, `comercial_rol` y
+      `rubrica_version` (todo aditivo; ver «Migración de las tablas del calificador»).
+- [ ] Fuera del horario de llamadas: el reinicio corta las llamadas de Netelip en curso.
+
+### Respaldo (obligatorio: `deploy.sh` no lo hace)
+```bash
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+B=/var/backups/lyn/pre-reuniones-meet-$STAMP
+install -d -m 0700 "$B"
+runuser -u postgres -- pg_dump -Fc superagente > "$B/superagente.dump"
+pg_restore --list "$B/superagente.dump" >/dev/null && echo "Respaldo verificado: $B"
+```
+
+### Variables (opcionales) en `/etc/lyn/backend.env`, entre comillas
+Ninguna es necesaria para arrancar. Ver el bloque comentado en `deploy/env/backend.production.env.example`.
+- `CLICKUP_API_TOKEN`: activa la búsqueda del lead. Sin él, `lead_estado` se queda en `pendiente`.
+- `REUNIONES_MEET_ETAPAS`: añadir F3 y F4 cuando se confirmen (por defecto `e4:F2`).
+- La clave de Gemini es la que ya usa el calificador (`GOOGLE_GEMINI_API_KEY`).
+
+### Desplegar
+Primero, actualizar `/opt/lyn` con el SHA fusionado. Comprobar antes si es un repositorio git
+(`git -C /opt/lyn rev-parse --is-inside-work-tree`), porque las guías del equipo no coinciden:
+- **Si lo es:** `git pull --ff-only`, como en `docs/DESPLIEGUE_DASHBOARD_GENERAL.md` (paso 2), deteniéndose si hay
+  cambios locales.
+- **Si no lo es:** `git archive` del SHA, comparación con `rsync -n` y copia sin `.env` ni ajustes de producción, como en
+  `docs/NETELIP_LLAMADAS.md` («Paso a paso hasta producción», pasos 1, 2 y 4).
+
+Después:
+```bash
+sudo bash /opt/lyn/deploy/scripts/preflight.sh
+sudo bash /opt/lyn/deploy/scripts/deploy.sh
+```
+
+### Comprobar (solo lectura)
+```bash
+sudo journalctl -u lyn-backend -n 200 --no-pager | grep -E "reuniones|reuniones_meet"
+```
+- Debe aparecer `{"msg":"reuniones_meet","nuevas":…}` en la primera vuelta. La primera vez importa todas las
+  transcripciones ya sincronizadas, en lotes, y consulta Calendar a 20 por minuto.
+- Si sale «comercial_rol tiene empleados repetidos», la restricción `UNIQUE (empleado_id)` no se aplicó: corregir los
+  duplicados y reiniciar.
+
+```sql
+-- Migración aplicada
+SELECT to_regclass('reunion') IS NOT NULL AS tabla_reunion;
+SELECT conname FROM pg_constraint
+WHERE conname IN ('llamada_evaluacion_origen_check', 'llamada_evaluacion_reunion_fk', 'objecion_marketing_origen_check',
+                  'comercial_rol_rol_check', 'comercial_rol_empleado_id_key', 'rubrica_version_rol_check')
+ORDER BY conname;                                   -- 6 filas (5 si había empleados repetidos)
+-- Reuniones por estado (hoy, sin rúbricas de closer: sin_rubrica, sin_comercial, sin_consentimiento)
+SELECT estado, fase, COUNT(*) FROM reunion GROUP BY 1, 2 ORDER BY 1, 2;
+-- El calificador de llamadas sigue evaluando
+SELECT estado, COUNT(*) FROM llamada_evaluacion WHERE creado_en > NOW() - INTERVAL '1 day' AND llamada_id IS NOT NULL GROUP BY 1;
+```
+
+### Después del despliegue
+1. **Ernesto como comercial de sus reuniones.** Su ficha ya existe (extensión 115). Falta su `empleado_id`:
+   ```sql
+   SELECT id, extension_netelip, empleado_id, rol FROM comercial_rol WHERE extension_netelip = '115';
+   UPDATE comercial_rol SET empleado_id = (SELECT id FROM empleados WHERE LOWER(email) = LOWER('<email de Ernesto>') AND activo)
+   WHERE extension_netelip = '115' AND empleado_id IS NULL;
+   ```
+   Las reuniones que quedaron `sin_comercial` se revisan solas en la vuelta siguiente.
+2. **Antes de activar la primera rúbrica de closer:** los closers, informados por escrito de que sus reuniones se
+   evalúan con IA. Después: `scripts/calificador-rubrica.ts publicar … --activar` y `reevaluar --version …`.
+3. **Coste:** tras las primeras reuniones evaluadas, `scripts/reuniones-meet.ts coste`.
+
+### Si falla
+- **Apagar sin desplegar:** `REUNIONES_MEET_ENABLED="false"` en `/etc/lyn/backend.env` y reiniciar el backend. Las tablas
+  quedan como están.
+- **Volver atrás:** PR de revert y, si hace falta deshacer el esquema, `backend/reuniones-meet/schema-down.sql`, que
+  falla sin borrar nada si ya hay datos de reuniones. Si no basta, restaurar el respaldo, siguiendo «Si falla: volver
+  atrás» de `docs/DESPLIEGUE_DASHBOARD_GENERAL.md`.
+
