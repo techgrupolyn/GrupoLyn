@@ -62,8 +62,21 @@ en cada arranque y comprueba cada paso. Juan la revisa antes de pasar a `main`.
 | `vinculado` | Los emails externos coinciden con **una** tarea padre de «Contacto de Reforma» → `lead_id` = su `clickup_task_id` |
 | `sin_lead` | Ninguna coincidencia, varias, o la reunión no tiene invitados externos (motivo en `lead_motivo`) |
 
-- La búsqueda en ClickUp entra como dependencia (`createReunionesWorkers(pool, env, { buscarLead })`) y **aún no está
-  implementada**: falta acceso de lectura a la lista y el nombre de su campo de email.
+- La búsqueda está en `clickup.ts` (solo lectura, API v2): pide los campos de la lista una vez, filtra las tareas por el
+  campo de email de cada invitado externo, se queda con las tareas **padre** y comprueba el email sin mayúsculas. Devuelve
+  también la `ETAPA_CRM` del lead, que se guarda en `reunion.lead_etapa`.
+- Se activa con `CLICKUP_API_TOKEN`. Nombres por defecto, **tomados del ticket sin poder comprobarlos** (no hay acceso a la
+  lista): lista `901211441576`, campo `email`, campo `ETAPA_CRM`. Se cambian con `REUNIONES_MEET_CLICKUP_LISTA`,
+  `REUNIONES_MEET_CLICKUP_CAMPO_EMAIL` y `REUNIONES_MEET_CLICKUP_CAMPO_ETAPA`. Si el campo de email no existe, la búsqueda
+  falla y las reuniones siguen `pendiente` (no se marca «sin lead» por error).
+- El teléfono (`contact_phone_number`) no se usa: Calendar no da el teléfono de los invitados.
+
+### Fase desde el CRM
+
+Manda el título. Si no la dice, se usa la **etapa actual** del lead (no hay historial de etapas): por defecto solo
+`e4 → F2` (lo que dice el ticket). Las de F3 y F4 se añaden con `REUNIONES_MEET_ETAPAS=e4:F2,e6:F3,e9:F4` (valores de
+ejemplo; los reales, a confirmar). Si una reunión había quedado `sin_rubrica` por falta de fase y su lead trae una etapa
+conocida, vuelve a `pendiente` y se vincula con `fase_origen = crm`.
 - Si la búsqueda falla, la reunión sigue `pendiente` y se corta el lote hasta la vuelta siguiente.
 
 ## Invitados (Calendar)
@@ -93,6 +106,16 @@ calificador de llamadas: `[hh:mm:ss] GRUPO LYN: …` / `[hh:mm:ss] CLIENTE: …`
   y su nombre se enmascara junto con teléfonos, emails y direcciones (`enmascarar` de Juan).
 - `conHablantes = false` si no se reconoce ninguna voz: conviene marcar la evaluación con duda.
 - Formato supuesto a partir de Meet; falta confirmarlo con una transcripción real de un closer.
+
+## Formato real de las transcripciones (confirmado el 12/11/2026)
+
+- Título generado por Meet: `Reunión del 9 nov 2026 a las 10:25 GMT-05:00 - Transcripción` (sin fase si el evento no
+  la lleva). Sin línea de asistentes.
+- Marcas `hh:mm:ss` solas en su línea; turnos `Nombre de la cuenta: texto`.
+- Los hablantes son **cuentas de Google**, a menudo compartidas y con números («Tech Grupo LYN», «Interiorista Lyn 15»):
+  un nombre con «LYN» habla por GRUPO LYN; también los invitados internos de Calendar.
+- Pie: `La transcripción finalizó después de hh:mm:ss` (duración exacta) y un aviso; no se envían al modelo.
+- Se enmascaran los clientes que hablan y los invitados externos de Calendar aunque solo se mencionen.
 
 ## Evaluación (`evaluacion.ts`)
 
@@ -140,12 +163,12 @@ la daba, la duración. Un evento de día entero no da hora.
 ## Pendiente (depende de otros)
 
 - **Rúbricas de F2, F3 y F4** (Alex): hasta que existan y se activen, todas las reuniones quedan `sin_rubrica`.
-- **Formato real de las transcripciones e informe de coste medido:** falta una transcripción real de un closer (Jean) y,
-  para el coste real, una rúbrica activa.
+- **Una transcripción de un closer con un cliente** (el formato ya se confirmó con una reunión interna) y, para el coste
+  real, una rúbrica activa.
 - **`rubrica_version`** la crea el ticket 869fpj8dm (columnas `id`, `fase`, `version`, `activo`, `vigente_desde`). Mientras
   no exista, todas las reuniones quedan `sin_rubrica`.
-- **Búsqueda del lead y fase desde el CRM** (lista de ClickUp «Contacto de Reforma», `ETAPA_CRM`; F2 = e4 VISITA): falta
-  acceso a la lista y saber qué valores son F3 y F4. No hay historial de `ETAPA_CRM`: manda el título.
+- **Comprobar contra la lista real** los nombres de los campos y el filtro por email (hecho con la API simulada), y
+  saber qué etapas son F3 y F4: requiere acceso a «Contacto de Reforma» y un `CLICKUP_API_TOKEN`.
 - **Alta de los closers en `comercial_rol`:** de momento por SQL (acordado con Juan; la ruta del Dashboard llegará cuando
   haya más closers sin extensión). Una fila por persona; el rol es informativo, porque la rúbrica sale de la fase:
 

@@ -49,3 +49,22 @@ export function duracionAproximada(transcripcion: string | null | undefined): nu
   }
   return maximo;
 }
+
+/**
+ * Etapas de ETAPA_CRM («e4 VISITA») → fase de la reunión. Por defecto solo la que da el ticket: e4 = F2. Las de F3 y F4
+ * se añaden sin desplegar con REUNIONES_MEET_ETAPAS, por ejemplo «e4:F2,e6:F3,e9:F4».
+ */
+export function mapaEtapas(env: NodeJS.ProcessEnv = process.env): Record<string, FaseReunion> {
+  const mapa: Record<string, FaseReunion> = { e4: 'F2' };
+  for (const par of String(env.REUNIONES_MEET_ETAPAS || '').split(',')) {
+    const [codigo, fase] = par.split(':').map((x) => x.trim());
+    if (codigo && /^F[234]$/i.test(fase || '')) mapa[codigo.toLowerCase()] = fase.toUpperCase() as FaseReunion;
+  }
+  return mapa;
+}
+
+/** «e4 VISITA», «E4» o «e4» → F2, según el mapa. Sin etapa o sin correspondencia: null. */
+export function faseDeEtapa(etapa: string | null | undefined, mapa: Record<string, FaseReunion> = mapaEtapas()): FaseReunion | null {
+  const codigo = String(etapa || '').trim().split(/[\s·.:-]+/)[0]?.toLowerCase();
+  return codigo ? mapa[codigo] ?? null : null;
+}

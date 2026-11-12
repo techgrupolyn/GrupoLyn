@@ -3,35 +3,36 @@
 // «Contacto de Reforma» y se guarda su clickup_task_id, el mismo identificador que usa el esquema de Mateo (N-1.1),
 // porque el calificador de leads (869fnzbae) recibe la reunión con el lead ya puesto.
 //
-// La búsqueda en ClickUp llega como dependencia (`BuscarLead`): falta acceso de lectura a la lista y el nombre de su
-// campo de email (pregunta a Jean). Sin ella, las reuniones se quedan con lead_estado = 'pendiente'.
+// La búsqueda en ClickUp (clickup.ts) llega como dependencia (`BuscarLead`). Sin token de ClickUp, las reuniones se
+// quedan con lead_estado = 'pendiente'. El lead trae su ETAPA_CRM, que da la fase si el título no la dice.
 //
 //   lead_estado  pendiente   aún sin decidir (faltan los invitados o la búsqueda)
 //                vinculado   un único contacto coincide → lead_id
 //                sin_lead    ninguno o varios: no se adivina (869fnzbae no escribe nada en ningún lead)
 import type { Pool } from 'pg';
 import type { Invitado } from './invitados.ts';
+import { faseDeEtapa } from './reglas.ts';
 
 type Consultable = Pick<Pool, 'query'>;
 
 export const LOTE_LEADS = 20;
 
 /** Tareas padre de «Contacto de Reforma» cuyo email coincide con alguno de los dados (en minúsculas). */
-export type BuscarLead = (emails: string[]) => Promise<Array<{ id: string }>>;
+export type BuscarLead = (emails: string[]) => Promise<Array<{ id: string; etapa?: string | null }>>;
 
-export type DecisionLead = { lead_estado: 'vinculado' | 'sin_lead'; lead_id: string | null; lead_motivo: string | null };
+export type DecisionLead = { lead_estado: 'vinculado' | 'sin_lead'; lead_id: string | null; lead_motivo: string | null; lead_etapa: string | null };
 
 /** Solo los invitados externos sirven: los internos son del equipo y coincidirían con cualquier lead suyo. */
 export function emailsExternos(invitados: Invitado[] | null | undefined): string[] {
   return [...new Set((invitados || []).filter((i) => !i.interno && i.email).map((i) => i.email.trim().toLowerCase()))];
 }
 
-export function decidirLead(externos: string[], candidatos: Array<{ id: string }>): DecisionLead {
-  if (!externos.length) return { lead_estado: 'sin_lead', lead_id: null, lead_motivo: 'La reunión no tiene invitados externos.' };
+export function decidirLead(externos: string[], candidatos: Array<{ id: string; etapa?: string | null }>): DecisionLead {
+  if (!externos.length) return { lead_estado: 'sin_lead', lead_id: null, lead_motivo: 'La reunión no tiene invitados externos.', lead_etapa: null };
   const ids = [...new Set(candidatos.map((c) => String(c.id || '').trim()).filter(Boolean))];
-  if (ids.length === 1) return { lead_estado: 'vinculado', lead_id: ids[0], lead_motivo: null };
-  if (!ids.length) return { lead_estado: 'sin_lead', lead_id: null, lead_motivo: 'Ningún contacto de «Contacto de Reforma» coincide con los invitados.' };
-  return { lead_estado: 'sin_lead', lead_id: null, lead_motivo: `Coinciden ${ids.length} contactos (${ids.slice(0, 5).join(', ')}): no se elige uno a ciegas.` };
+  if (ids.length === 1) return { lead_estado: 'vinculado', lead_id: ids[0], lead_motivo: null, lead_etapa: candidatos.find((c) => String(c.id).trim() === ids[0])?.etapa ?? null };
+  if (!ids.length) return { lead_estado: 'sin_lead', lead_id: null, lead_motivo: 'Ningún contacto de «Contacto de Reforma» coincide con los invitados.', lead_etapa: null };
+  return { lead_estado: 'sin_lead', lead_id: null, lead_motivo: `Coinciden ${ids.length} contactos (${ids.slice(0, 5).join(', ')}): no se elige uno a ciegas.`, lead_etapa: null };
 }
 
 /**
@@ -56,9 +57,14 @@ export async function vincularLeads(pool: Consultable, buscarLead: BuscarLead, l
       console.warn('[reuniones-meet] No se pudo buscar el lead:', (error as Error).message);
       break;
     }
+    // Si la reunión quedó sin_rubrica por no tener fase y la etapa del lead la da, vuelve a pendiente para que la
+    // vinculación la tome del CRM (P-01: manda el título; el CRM, cuando el título no la dice).
+    const reabrir = decision.lead_estado === 'vinculado' && faseDeEtapa(decision.lead_etapa) !== null;
     const { rowCount } = await pool.query(
-      `UPDATE reunion SET lead_estado = $2, lead_id = $3, lead_motivo = $4, lead_en = NOW() WHERE id = $1 AND lead_estado = 'pendiente'`,
-      [r.id, decision.lead_estado, decision.lead_id, decision.lead_motivo],
+      `UPDATE reunion SET lead_estado = $2, lead_id = $3, lead_motivo = $4, lead_etapa = $5, lead_en = NOW(),
+              estado = CASE WHEN $6 AND estado = 'sin_rubrica' AND fase IS NULL THEN 'pendiente' ELSE estado END
+       WHERE id = $1 AND lead_estado = 'pendiente'`,
+      [r.id, decision.lead_estado, decision.lead_id, decision.lead_motivo, decision.lead_etapa, reabrir],
     );
     decididas += rowCount || 0;
   }

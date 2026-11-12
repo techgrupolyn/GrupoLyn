@@ -8,7 +8,7 @@
 // La evaluación con el modelo (estado `por_evaluar` → `evaluada`) llega cuando existan las rúbricas de los
 // closers y la migración de llamada_evaluacion acordada con Juan. Hasta entonces ninguna reunión llama al modelo.
 import type { Pool } from 'pg';
-import { codigoMeet, duracionAproximada, faseDelTitulo, niegaGrabacion } from './reglas.ts';
+import { codigoMeet, duracionAproximada, faseDeEtapa, faseDelTitulo, niegaGrabacion } from './reglas.ts';
 import type { EstadoReunion, FaseReunion } from './schema.ts';
 
 type Consultable = Pick<Pool, 'query'>;
@@ -69,7 +69,7 @@ export async function rubricaActiva(pool: Consultable, fase: FaseReunion): Promi
   }
 }
 
-type Candidata = { id: string; artifact_id: string; titulo: string; estado: EstadoReunion; content_text: string | null };
+type Candidata = { id: string; artifact_id: string; titulo: string; estado: EstadoReunion; content_text: string | null; lead_etapa?: string | null };
 type Organizador = { employee_id: string; email: string | null; activo: boolean };
 
 export type Vinculacion = {
@@ -100,9 +100,11 @@ export async function decidirVinculacion(pool: Consultable, reunion: Candidata):
   if (!rol) return { ...base, estado: 'sin_comercial', motivo: 'El organizador no está dado de alta como comercial.' };
 
   // P-01: el título del evento manda. La fase del lead en el CRM ese día queda pendiente (CRM sin localizar).
-  const fase = faseDelTitulo(reunion.titulo);
-  const conFase = { ...base, rol, fase, fase_origen: fase ? 'titulo' as const : null };
-  if (!fase) return { ...conFase, estado: 'sin_rubrica', motivo: 'Sin fase: el título no la indica y el CRM aún no está conectado.' };
+  // P-01: manda el título; si no la dice, la etapa del lead en el CRM (la actual: no hay historial de etapas).
+  const faseTitulo = faseDelTitulo(reunion.titulo);
+  const fase = faseTitulo ?? faseDeEtapa(reunion.lead_etapa);
+  const conFase = { ...base, rol, fase, fase_origen: faseTitulo ? 'titulo' as const : fase ? 'crm' as const : null };
+  if (!fase) return { ...conFase, estado: 'sin_rubrica', motivo: 'Sin fase: ni el título ni la etapa del lead en el CRM la indican.' };
 
   const rubrica = await rubricaActiva(pool, fase);
   if (!rubrica) return { ...conFase, estado: 'sin_rubrica', motivo: `No hay rúbrica activa para ${fase}.` };
@@ -116,7 +118,7 @@ export async function decidirVinculacion(pool: Consultable, reunion: Candidata):
  */
 export async function vincularPendientes(pool: Consultable, lote = LOTE_VINCULACION): Promise<number> {
   const { rows } = await pool.query<Candidata>(
-    `SELECT r.id, r.artifact_id, r.titulo, r.estado, a.content_text
+    `SELECT r.id, r.artifact_id, r.titulo, r.estado, a.content_text, r.lead_etapa
      FROM reunion r JOIN google_drive_artifacts a ON a.id = r.artifact_id
      WHERE r.estado = 'pendiente'
         OR (r.estado = 'sin_comercial' AND (

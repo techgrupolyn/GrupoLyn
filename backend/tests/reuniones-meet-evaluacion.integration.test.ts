@@ -10,6 +10,7 @@ import { ensureReunionesMeet } from '../reuniones-meet/schema.ts';
 import { ingestarTranscripciones, vincularPendientes } from '../reuniones-meet/proceso.ts';
 import { encolarReuniones, procesarSiguienteReunion } from '../reuniones-meet/evaluacion.ts';
 import { reevaluarReuniones } from '../reuniones-meet/reevaluar.ts';
+import { vincularLeads } from '../reuniones-meet/lead.ts';
 import { conCoste, costePorReunion, informeCoste } from '../reuniones-meet/informe.ts';
 
 const databaseUrl = process.env.QA_TEST_DATABASE_URL;
@@ -190,6 +191,57 @@ describe.skipIf(!databaseUrl)('Evaluación de reuniones de Meet en PostgreSQL QA
     expect(evs.map((e) => [e.version_rubrica, e.reevaluacion, e.estado])).toEqual([['closer_f2-v1', false, 'evaluada'], ['closer_f2-v2', true, 'evaluada']]);
   });
 
+  it('Formato real de Meet: cuentas de empresa como GRUPO LYN y el cliente invitado enmascarado aunque solo se mencione', async () => {
+    const titulo = 'F2 · Visita Ruiz (9 nov 2026 a las 10:25 GMT-05:00) - Transcripción';
+    await nuevaReunion(titulo, `${titulo}
+00:00:01
+
+Tech Grupo LYN: Buenas, ¿empezamos con la visita?
+Interiorista Lyn 15: Sí. Marta Ruiz me dijo que me preocupa que la obra se alargue meses.
+
+
+00:00:09
+
+Tech Grupo LYN: Te propongo el martes a las diez para la presentación.
+Interiorista Lyn 15: Perfecto, se lo paso.
+
+
+La transcripción finalizó después de 00:11:26
+
+Esta transcripción editable se generó por computadora y puede contener errores.`);
+    await ingestarYVincular();
+    const r = await reunionDe(titulo);
+    await client.query(`UPDATE reunion SET invitados = $2::jsonb WHERE id = $1`,
+      [r.id, JSON.stringify([{ email: 'marta@example.com', nombre: 'Marta Ruiz', interno: false }])]);
+    await encolarReuniones(pool);
+    const { evaluar, recibidos } = evaluadorFalso();
+    expect(await procesarSiguienteReunion(pool, evaluar, CONFIG)).toBe('evaluada');
+    const enviado = recibidos[0].user;
+    expect(enviado).not.toMatch(/Marta|Ruiz|Tech Grupo|Interiorista|finalizó|editable/);
+    expect(enviado.split(/\r?\n/).filter((l) => l.startsWith('[')).every((l) => /\] GRUPO LYN: /.test(l))).toBe(true);
+    expect(enviado).toContain('11 min');   // duración exacta del pie: 00:11:26
+  });
+
+  it('Fase desde el CRM: sin fase en el título, la etapa e4 del lead la hace F2 y se evalúa', async () => {
+    const titulo = 'Reunión del 10 nov 2026 a las 17:00 GMT+01:00 - Transcripción';
+    await nuevaReunion(titulo, 'Ernesto Pérez: Os enseño la distribución.\nLaura Gil: Me preocupa que la obra se alargue meses.\nLaura Gil: Gracias.');
+    await ingestarYVincular();
+    expect(await reunionDe(titulo)).toMatchObject({ estado: 'sin_rubrica', fase: null, motivo: 'Sin fase: ni el título ni la etapa del lead en el CRM la indican.' });
+    const r = await reunionDe(titulo);
+    await client.query(`UPDATE reunion SET invitados = $2::jsonb, invitados_en = NOW() WHERE id = $1`,
+      [r.id, JSON.stringify([{ email: 'laura@example.com', nombre: 'Laura Gil', interno: false }])]);
+    const pedidos: string[][] = [];
+    const buscarLead = async (emails: string[]) => { pedidos.push(emails); return [{ id: '86laura', etapa: 'e4 VISITA' }]; };
+    expect(await vincularLeads(pool, buscarLead)).toBeGreaterThanOrEqual(1);
+    expect(pedidos).toContainEqual(['laura@example.com']);
+    expect(await reunionDe(titulo)).toMatchObject({ lead_estado: 'vinculado', lead_id: '86laura', lead_etapa: 'e4 VISITA', estado: 'pendiente' });
+    await ingestarYVincular();
+    expect(await reunionDe(titulo)).toMatchObject({ estado: 'por_evaluar', fase: 'F2', fase_origen: 'crm', version_rubrica: 'closer_f2-v2' });
+    await encolarReuniones(pool);
+    const { evaluar } = evaluadorFalso();
+    expect(await procesarSiguienteReunion(pool, evaluar, CONFIG)).toBe('evaluada');
+  });
+
   it('El modelo falla: reintenta y, a la tercera, la reunión queda en error sin perder nada', async () => {
     await nuevaReunion('F2 · Visita Falla - Transcripción', 'Ernesto Pérez: Buenas.\nEva Sanz: Hola, me preocupa que la obra se alargue meses.\nEva Sanz: Gracias.');
     await ingestarYVincular();
@@ -205,7 +257,7 @@ describe.skipIf(!databaseUrl)('Evaluación de reuniones de Meet en PostgreSQL QA
 
   it('Coste: tokens por reunión e informe, con y sin precio configurado', async () => {
     const filas = await costePorReunion(pool);
-    expect(filas.length).toBe(14);   // 12 F3 + visita García (v1 y v2)
+    expect(filas.length).toBe(16);   // 12 F3 + visita García (v1 y v2) + visita Ruiz + la de fase por CRM
     const conPrecio = conCoste(filas, { entradaPorMillon: 0.5, salidaPorMillon: 3 });
     expect(conPrecio[0].coste).toBe(0.0084);   // 12.000 × 0,5 + 800 × 3 = 8.400 por millón
     const informe = informeCoste(conPrecio, { entradaPorMillon: 0.5, salidaPorMillon: 3 }, '2026-11-12');

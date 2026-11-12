@@ -15,7 +15,7 @@ describe('emailsExternos', () => {
 describe('decidirLead', () => {
   it('un único contacto (aunque coincidan dos invitados con él) → vinculado', () => {
     expect(decidirLead(['garcia@gmail.com', 'pareja@gmail.com'], [{ id: '86abc' }, { id: '86abc' }]))
-      .toEqual({ lead_estado: 'vinculado', lead_id: '86abc', lead_motivo: null });
+      .toEqual({ lead_estado: 'vinculado', lead_id: '86abc', lead_motivo: null, lead_etapa: null });
   });
 
   it('ninguno → sin_lead', () => {

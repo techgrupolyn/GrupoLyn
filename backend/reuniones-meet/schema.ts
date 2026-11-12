@@ -73,6 +73,7 @@ export async function ensureReunionesMeet(pool: Consultable): Promise<void> {
     ALTER TABLE reunion ADD COLUMN IF NOT EXISTS lead_estado TEXT NOT NULL DEFAULT 'pendiente';
     ALTER TABLE reunion ADD COLUMN IF NOT EXISTS lead_motivo TEXT;
     ALTER TABLE reunion ADD COLUMN IF NOT EXISTS lead_en TIMESTAMPTZ;
+    ALTER TABLE reunion ADD COLUMN IF NOT EXISTS lead_etapa TEXT;                    -- ETAPA_CRM del lead al vincularlo
     DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'reunion_lead_estado_check' AND conrelid = to_regclass('reunion')) THEN
         ALTER TABLE reunion ADD CONSTRAINT reunion_lead_estado_check CHECK (lead_estado IN ('pendiente','vinculado','sin_lead'));

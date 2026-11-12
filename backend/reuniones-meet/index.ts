@@ -10,6 +10,7 @@ import type { Pool } from 'pg';
 import { evaluadorGemini, type Evaluador } from '../netelip/calificador/modelo.ts';
 import { configReunionesDesdeEnv, encolarReuniones, procesarSiguienteReunion } from './evaluacion.ts';
 import { guardarInvitados, type ObtenerToken } from './invitados.ts';
+import { configClickUpDesdeEnv, crearBuscadorLeads } from './clickup.ts';
 import { vincularLeads, type BuscarLead } from './lead.ts';
 import { ingestarTranscripciones, vincularPendientes } from './proceso.ts';
 
@@ -22,7 +23,7 @@ const INTERVALO_MS = 60_000;
  * tokenGoogle: el token de la conexión de Drive (server.ts). Sin él no se consultan invitados.
  * buscarLead: búsqueda en «Contacto de Reforma» (ClickUp). Sin ella, lead_estado se queda en 'pendiente'.
  */
-export type DependenciasReuniones = { tokenGoogle?: ObtenerToken; buscarLead?: BuscarLead; evaluar?: Evaluador | null };
+export type DependenciasReuniones = { tokenGoogle?: ObtenerToken; buscarLead?: BuscarLead | null; evaluar?: Evaluador | null };
 
 /** Reuniones evaluadas como mucho por vuelta: cada una es una llamada a Gemini de 10.000–15.000 tokens. */
 export const EVALUACIONES_POR_VUELTA = 5;
@@ -33,6 +34,8 @@ export function createReunionesWorkers(pool: Pool, env: NodeJS.ProcessEnv = proc
   const evaluar = deps.evaluar !== undefined ? deps.evaluar
     : env.CALIFICADOR_ENABLED === 'false' || env.REUNIONES_MEET_EVALUAR === 'false' ? null : evaluadorGemini(env);
   const configEvaluacion = configReunionesDesdeEnv(env);
+  // Lead en «Contacto de Reforma»: el de los tests, o ClickUp si hay CLICKUP_API_TOKEN.
+  const buscarLead = deps.buscarLead !== undefined ? deps.buscarLead : crearBuscadorLeads(configClickUpDesdeEnv(env));
   let enCurso = false;
   const ciclo = async () => {
     if (enCurso) return;
@@ -44,7 +47,7 @@ export function createReunionesWorkers(pool: Pool, env: NodeJS.ProcessEnv = proc
       for (let n; (n = await vincularPendientes(pool)) > 0;) vinculadas += n;
       // Un lote por vuelta (no en bucle): cada reunión es una llamada a Calendar y no hay prisa.
       const invitados = deps.tokenGoogle && env.REUNIONES_MEET_INVITADOS !== 'false' ? await guardarInvitados(pool, deps.tokenGoogle) : 0;
-      const leads = deps.buscarLead ? await vincularLeads(pool, deps.buscarLead) : 0;
+      const leads = buscarLead ? await vincularLeads(pool, buscarLead) : 0;
       let evaluadas = 0;
       if (evaluar) {
         await encolarReuniones(pool);
