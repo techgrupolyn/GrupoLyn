@@ -36,7 +36,7 @@ describe.skipIf(!databaseUrl)('Reuniones Meet en PostgreSQL QA local', () => {
       CREATE TABLE comercial_rol (extension_netelip TEXT PRIMARY KEY, empleado_id VARCHAR(255) REFERENCES empleados(id), nombre TEXT NOT NULL, rol TEXT NOT NULL,
         activo BOOLEAN NOT NULL DEFAULT TRUE, creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(), actualizado_en TIMESTAMPTZ NOT NULL DEFAULT NOW());
 
-      INSERT INTO empleados VALUES ('ernesto','Ernesto','ernesto@grupolyn.com',TRUE), ('diseno','Diseño','diseno@grupolyn.com',TRUE);
+      INSERT INTO empleados VALUES ('ernesto','Ernesto','ernesto@lyn.example',TRUE), ('diseno','Diseño','diseno@lyn.example',TRUE);
       INSERT INTO comercial_rol (extension_netelip, empleado_id, nombre, rol) VALUES ('meet-ernesto','ernesto','Ernesto','closer_f2');
       INSERT INTO google_drive_connections VALUES ('00000000-0000-0000-0000-00000000c001',NULL), ('00000000-0000-0000-0000-00000000c002',NULL);
       INSERT INTO google_drive_folders VALUES ('00000000-0000-0000-0000-00000000f001','00000000-0000-0000-0000-00000000c001',TRUE),
@@ -126,7 +126,7 @@ describe.skipIf(!databaseUrl)('Reuniones Meet en PostgreSQL QA local', () => {
     const pedirEvento = async (_token: string, eventId: string) => {
       pedidos.push(eventId);
       if (eventId === '2') throw new ErrorCalendar('Calendar respondió 503 al pedir el evento.', 503);
-      return { id: eventId, attendees: [{ email: 'ERNESTO@grupolyn.com', organizer: true }, { email: 'garcia@gmail.com', displayName: 'Familia García' }] };
+      return { id: eventId, attendees: [{ email: 'ERNESTO@lyn.example', organizer: true }, { email: 'garcia@example.com', displayName: 'Familia García' }] };
     };
     const tokens: string[] = [];
     const obtenerToken = async (id: string) => { tokens.push(id); return 'token'; };
@@ -137,8 +137,8 @@ describe.skipIf(!databaseUrl)('Reuniones Meet en PostgreSQL QA local', () => {
     const fila = async (archivo: string) => (await client.query(
       `SELECT invitados, invitados_motivo, invitados_reintentar FROM reunion WHERE google_file_id = $1`, [archivo])).rows[0];
     expect(await fila('file-visita')).toEqual({ invitados_motivo: null, invitados_reintentar: false, invitados: [
-      { email: 'ernesto@grupolyn.com', nombre: null, respuesta: null, organizador: true, interno: true },
-      { email: 'garcia@gmail.com', nombre: 'Familia García', respuesta: null, organizador: false, interno: false },
+      { email: 'ernesto@lyn.example', nombre: null, respuesta: null, organizador: true, interno: true },
+      { email: 'garcia@example.com', nombre: 'Familia García', respuesta: null, organizador: false, interno: false },
     ] });
     expect(await fila('file-diseno')).toMatchObject({ invitados: [], invitados_reintentar: false, invitados_motivo: 'Organizador vinculado a mano: no hay evento de Calendar.' });
     expect(await fila('file-negativa')).toMatchObject({ invitados: [], invitados_reintentar: true });
@@ -158,9 +158,9 @@ describe.skipIf(!databaseUrl)('Reuniones Meet en PostgreSQL QA local', () => {
     expect(await vincularLeads(pool, caida)).toBe(1);
     expect((await client.query(`SELECT count(*)::int AS n FROM reunion WHERE lead_estado = 'pendiente'`)).rows[0].n).toBe(2);
 
-    const buscarLead = async (emails: string[]) => { pedidos.push(emails); return emails.includes('garcia@gmail.com') ? [{ id: '86lead' }] : []; };
+    const buscarLead = async (emails: string[]) => { pedidos.push(emails); return emails.includes('garcia@example.com') ? [{ id: '86lead' }] : []; };
     expect(await vincularLeads(pool, buscarLead)).toBe(1);
-    expect(pedidos).toEqual([['garcia@gmail.com']]);   // ni el email interno ni la reunión sin invitados piden nada
+    expect(pedidos).toEqual([['garcia@example.com']]);   // ni el email interno ni la reunión sin invitados piden nada
     const { rows } = await client.query(`SELECT google_file_id, lead_estado, lead_id, lead_motivo FROM reunion ORDER BY google_file_id`);
     expect(rows).toEqual([
       { google_file_id: 'file-diseno', lead_estado: 'sin_lead', lead_id: null, lead_motivo: 'La reunión no tiene invitados externos.' },

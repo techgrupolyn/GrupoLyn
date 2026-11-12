@@ -28,9 +28,9 @@ describe('crearBuscadorLeads', () => {
   it('busca por el campo de email, solo tareas padre, sin mayúsculas, y devuelve la etapa por su nombre', async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(respuesta(CAMPOS))
-      .mockResolvedValueOnce(respuesta({ tasks: [tarea('86lead', 'Garcia@Gmail.com', 3), tarea('86sub', 'garcia@gmail.com', 3, '86lead'), tarea('86otro', 'otra@gmail.com', 0)] }));
+      .mockResolvedValueOnce(respuesta({ tasks: [tarea('86lead', 'Garcia@Example.com', 3), tarea('86sub', 'garcia@example.com', 3, '86lead'), tarea('86otro', 'otra@example.com', 0)] }));
     const buscar = crearBuscadorLeads(config, fetcher as unknown as typeof fetch)!;
-    expect(await buscar(['garcia@gmail.com'])).toEqual([{ id: '86lead', etapa: 'e4 VISITA' }]);
+    expect(await buscar(['garcia@example.com'])).toEqual([{ id: '86lead', etapa: 'e4 VISITA' }]);
     const [urlCampos, init] = fetcher.mock.calls[0];
     expect(urlCampos).toBe('https://api.clickup.com/api/v2/list/901211441576/field');
     expect(init.headers.Authorization).toBe('pk_test');
@@ -38,7 +38,7 @@ describe('crearBuscadorLeads', () => {
     const url = new URL(fetcher.mock.calls[1][0]);
     expect(url.pathname).toBe('/api/v2/list/901211441576/task');
     expect(url.searchParams.get('subtasks')).toBe('false');
-    expect(JSON.parse(url.searchParams.get('custom_fields')!)).toEqual([{ field_id: 'f-email', operator: '=', value: 'garcia@gmail.com' }]);
+    expect(JSON.parse(url.searchParams.get('custom_fields')!)).toEqual([{ field_id: 'f-email', operator: '=', value: 'garcia@example.com' }]);
   });
 
   it('los campos de la lista se piden una sola vez; una tarea con el mismo lead en dos emails cuenta una vez', async () => {

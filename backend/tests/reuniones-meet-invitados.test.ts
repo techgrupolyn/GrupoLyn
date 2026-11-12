@@ -5,15 +5,15 @@ import { ErrorCalendar, eventoCalendar, eventoDeAsignacion, invitadosDelEvento }
 describe('invitadosDelEvento', () => {
   it('quita salas y repetidos, normaliza el email y marca quién es del equipo', () => {
     const evento = { attendees: [
-      { email: 'Ernesto@GrupoLyn.com', displayName: 'Ernesto Pérez', responseStatus: 'accepted', organizer: true },
-      { email: 'maria.garcia@gmail.com', responseStatus: 'needsAction' },
-      { email: 'MARIA.GARCIA@gmail.com' },
+      { email: 'Ernesto@Lyn.example', displayName: 'Ernesto Pérez', responseStatus: 'accepted', organizer: true },
+      { email: 'maria.garcia@example.com', responseStatus: 'needsAction' },
+      { email: 'MARIA.GARCIA@example.com' },
       { email: 'c_123@resource.calendar.google.com', displayName: 'Sala 1', resource: true },
       { email: 'no-es-un-email' },
     ] };
-    expect(invitadosDelEvento(evento, new Set(['ernesto@grupolyn.com']))).toEqual([
-      { email: 'ernesto@grupolyn.com', nombre: 'Ernesto Pérez', respuesta: 'accepted', organizador: true, interno: true },
-      { email: 'maria.garcia@gmail.com', nombre: null, respuesta: 'needsAction', organizador: false, interno: false },
+    expect(invitadosDelEvento(evento, new Set(['ernesto@lyn.example']))).toEqual([
+      { email: 'ernesto@lyn.example', nombre: 'Ernesto Pérez', respuesta: 'accepted', organizador: true, interno: true },
+      { email: 'maria.garcia@example.com', nombre: null, respuesta: 'needsAction', organizador: false, interno: false },
     ]);
   });
 

@@ -33,7 +33,7 @@ describe.skipIf(!databaseUrl)('Migración del calificador para reuniones en Post
       CREATE TABLE google_drive_connections (id UUID PRIMARY KEY, revoked_at TIMESTAMPTZ);
       CREATE TABLE google_drive_artifacts (id UUID PRIMARY KEY, connection_id UUID, folder_id UUID, google_file_id TEXT, name TEXT,
         artifact_type TEXT, content_text TEXT, source_modified_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW());
-      INSERT INTO empleados VALUES ('sdr','Laura','laura@grupolyn.com',TRUE), ('ernesto','Ernesto','ernesto@grupolyn.com',TRUE), ('nuevo','Raúl','raul@grupolyn.com',TRUE);
+      INSERT INTO empleados VALUES ('sdr','Laura','laura@lyn.example',TRUE), ('ernesto','Ernesto','ernesto@lyn.example',TRUE), ('nuevo','Raúl','raul@lyn.example',TRUE);
       INSERT INTO google_drive_artifacts (id, google_file_id, name, artifact_type) VALUES ('00000000-0000-0000-0000-0000000000a1','f1','F2 · Visita','transcript');`);
     // Estado de producción antes de la migración: las tablas de Juan tal cual, con datos.
     await ensureCalificador(pool);
@@ -108,8 +108,8 @@ describe.skipIf(!databaseUrl)('Migración del calificador para reuniones en Post
     const alta = `INSERT INTO comercial_rol (empleado_id, nombre, rol)
       SELECT id, nombre, $2 FROM empleados WHERE LOWER(email) = $1 AND activo
       ON CONFLICT (empleado_id) DO UPDATE SET rol = EXCLUDED.rol, activo = TRUE, actualizado_en = NOW()`;
-    await client.query(alta, ['ernesto@grupolyn.com', 'closer_f3']);
-    await client.query(alta, ['ernesto@grupolyn.com', 'closer_f2']);
+    await client.query(alta, ['ernesto@lyn.example', 'closer_f3']);
+    await client.query(alta, ['ernesto@lyn.example', 'closer_f2']);
     expect((await client.query(`SELECT rol, extension_netelip FROM comercial_rol WHERE empleado_id = 'ernesto'`)).rows).toEqual([{ rol: 'closer_f2', extension_netelip: null }]);
   });
 

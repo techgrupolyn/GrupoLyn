@@ -67,7 +67,7 @@ describe('mismaPersona', () => {
 });
 
 describe('prepararTranscripcion', () => {
-  const lista = prepararTranscripcion(DOC_MEET, ['Ernesto Pérez', 'ernesto.perez@grupolyn.com']);
+  const lista = prepararTranscripcion(DOC_MEET, ['Ernesto Pérez', 'ernesto.perez@lyn.example']);
 
   it('deja el formato de Juan: [hh:mm:ss] GRUPO LYN / CLIENTE, con el minuto de cada turno', () => {
     const lineas = lista.transcripcion.split('\n');

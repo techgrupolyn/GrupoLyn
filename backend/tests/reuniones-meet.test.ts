@@ -26,7 +26,7 @@ const COMERCIAL = /FROM comercial_rol WHERE empleado_id/;
 const EXISTE_RUBRICA = /to_regclass\('rubrica_version'\)/;
 const VERSION_ACTIVA = /FROM rubrica_version WHERE activo/;
 
-const ernesto = { employee_id: 'emp-ernesto', email: 'Ernesto@GrupoLyn.com', activo: true };
+const ernesto = { employee_id: 'emp-ernesto', email: 'Ernesto@Lyn.example', activo: true };
 const reunion = (over: Partial<{ titulo: string; content_text: string | null }> = {}) => ({
   id: '1', artifact_id: 'art-1', estado: 'pendiente' as const,
   titulo: 'F2 · Visita García (abc-defg-hij) - Transcripción',
@@ -71,7 +71,7 @@ describe('Reuniones Meet · estado de cada reunión (criterios del ticket)', () 
   it('sin rúbrica para el rol: queda sin_rubrica y no se consulta ningún modelo', async () => {
     const { pool } = poolFalso([[ORGANIZADOR, { rows: [ernesto] }], [COMERCIAL, { rows: [{ rol: 'closer_f2' }] }], [EXISTE_RUBRICA, { rows: [{ existe: false, con_fase: false }] }]]);
     const v = await decidirVinculacion(pool, reunion());
-    expect(v).toMatchObject({ estado: 'sin_rubrica', fase: 'F2', fase_origen: 'titulo', rol: 'closer_f2', empleado_id: 'emp-ernesto', organizador_email: 'ernesto@grupolyn.com', version_rubrica: null });
+    expect(v).toMatchObject({ estado: 'sin_rubrica', fase: 'F2', fase_origen: 'titulo', rol: 'closer_f2', empleado_id: 'emp-ernesto', organizador_email: 'ernesto@lyn.example', version_rubrica: null });
     expect(v.motivo).toBe('No hay rúbrica activa para F2.');
   });
 

@@ -85,7 +85,7 @@ describe.skipIf(!databaseUrl)('Evaluación de reuniones de Meet en PostgreSQL QA
         name VARCHAR(1024) NOT NULL, artifact_type VARCHAR(40) NOT NULL, content_text TEXT, source_modified_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
       CREATE TABLE meeting_reviews (artifact_id UUID PRIMARY KEY, meeting_date DATE);
       CREATE TABLE meeting_artifact_organizers (artifact_id UUID PRIMARY KEY, employee_id VARCHAR(255) NOT NULL, assigned_by TEXT NOT NULL, assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
-      INSERT INTO empleados VALUES ('ernesto','Ernesto','Pérez','ernesto@grupolyn.com',TRUE);
+      INSERT INTO empleados VALUES ('ernesto','Ernesto','Pérez','ernesto@lyn.example',TRUE);
       INSERT INTO google_drive_connections VALUES ('00000000-0000-0000-0000-00000000c001', NULL);
       INSERT INTO google_drive_folders VALUES ('00000000-0000-0000-0000-00000000f001','00000000-0000-0000-0000-00000000c001',TRUE);`);
     // Un pg.Pool real con el mismo esquema: así se prueba también la transacción con conexión propia.
