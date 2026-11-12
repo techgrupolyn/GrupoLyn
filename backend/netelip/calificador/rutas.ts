@@ -40,13 +40,22 @@ export function registerCalificador(app: Express, deps: Deps): void {
     const id = idLlamada(req.params.id);
     if (!id) return res.status(400).json({ error: 'Identificador de llamada no válido.' });
     try {
-      const { rows: [ev] } = await pool.query(
+      // Principal: la evaluación automática (la que recibió el comercial). Las reevaluaciones van en `otras`.
+      const { rows: todas } = await pool.query(
         `SELECT e.id, e.estado, e.motivo_no_evaluada, e.nota, e.apto, e.errores_criticos, e.bien, e.mejorar, e.escalado, e.motivo_escalado,
                 e.duda, e.motivo_duda, e.feedback_texto, e.version_rubrica, e.modelo, e.enviado_en, e.envio_error, e.creado_en, e.actualizado_en,
-                e.rol, r.nombre AS comercial
-         FROM llamada_evaluacion e LEFT JOIN comercial_rol r ON r.extension_netelip = e.extension_netelip WHERE e.llamada_id = $1`, [id]);
+                e.rol, r.nombre AS comercial, e.puntuacion_pasos, e.sin_consentimiento, e.reevaluacion,
+                v.codigo AS rubrica_codigo, v.fuente AS rubrica_fuente, v.errores_criticos AS rubrica_errores
+         FROM llamada_evaluacion e LEFT JOIN comercial_rol r ON r.extension_netelip = e.extension_netelip
+         LEFT JOIN rubrica_version v ON v.id = e.rubrica_version_id
+         WHERE e.llamada_id = $1 ORDER BY e.reevaluacion, e.creado_en DESC`, [id]);
       res.setHeader('Cache-Control', 'no-store');
-      if (!ev) return res.json({ evaluation: null, can_supervise: canSupervise(deps.role(res), env) });
+      const [principal, ...resto] = todas;
+      if (!principal) return res.json({ evaluation: null, can_supervise: canSupervise(deps.role(res), env) });
+      const { rubrica_codigo, rubrica_fuente, rubrica_errores, ...ev } = principal;
+      ev.rubrica = rubrica_codigo ? { codigo: rubrica_codigo, fuente: rubrica_fuente, errores: (rubrica_errores || []).map(({ codigo, nombre }: { codigo: string; nombre: string }) => ({ codigo, nombre })) } : null;
+      ev.otras = resto.map((o) => ({ id: o.id, estado: o.estado, nota: o.nota, apto: o.apto, version_rubrica: o.version_rubrica, reevaluacion: o.reevaluacion,
+        sin_consentimiento: o.sin_consentimiento, errores_criticos: (o.errores_criticos || []).map(({ regla }: { regla: string }) => regla), creado_en: o.creado_en }));
       const allowed = deps.canReadTranscripts(deps.role(res));
       const [{ rows: feedback }, { rows: objeciones }] = await Promise.all([
         pool.query('SELECT id, autor_nombre, texto, enviado_en, envio_error, creado_en FROM llamada_feedback_humano WHERE evaluacion_id = $1 ORDER BY creado_en', [ev.id]),

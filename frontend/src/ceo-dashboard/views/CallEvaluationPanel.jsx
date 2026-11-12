@@ -6,19 +6,63 @@ import { formatMadridDateTime } from '../netelipFormat';
 const RULE_LABEL = {
   REGLA_CERO: 'REGLA CERO', LIMITE_PROFESIONAL: 'LÍMITE PROFESIONAL', NO_PREGUNTAR: 'NO PREGUNTAR',
   PRECIO_CERRADO_PRIMERA_REUNION: 'Precio cerrado tras la primera reunión', PRECIO_M2_TARIFA: 'Precio por m² como tarifa', ALTERAR_PROCESO: 'Alterar el proceso',
+  EXCEPCION_SIN_AUTORIZACION: 'Excepción sin autorización',
 };
 const OBJECTION_LABEL = { precio: 'Precio', plazo: 'Plazo', confianza: 'Confianza', decisor: 'Decisor', otra: 'Otra' };
 const ROLE_LABEL = { sdr: 'SDR', closer_f2: 'Closer Fase 2', closer_f3: 'Closer Fase 3' };
 const box = 'rounded border border-[#2E2E2E] bg-[#141414] p-3';
 const label = 'font-mono text-[10px] uppercase tracking-[.12em] text-[#737373]';
+const NO_CONSENT_TEXT = 'Sin consentimiento: el cliente no autorizó la grabación. La llamada no se evalúa con IA y no se guardan objeciones.';
+
+// Nombre legible del error crítico: primero el de la versión de la rúbrica, luego el fijo.
+const ruleLabel = (rubrica, codigo) => rubrica?.errores?.find((item) => item.codigo === codigo)?.nombre || RULE_LABEL[codigo] || codigo;
 
 /** Nota compacta para la tabla de llamadas. */
 export function EvaluationBadge({ evaluation }) {
   if (!evaluation) return <span className="text-xs text-[#4A4A4A]">—</span>;
   if (evaluation.status === 'pendiente' || evaluation.status === 'procesando') return <span className="text-xs text-amber-200">Evaluando…</span>;
+  if (evaluation.status === 'no_evaluada' && evaluation.no_consent) return <span className="text-xs text-[#737373]">Sin consentimiento</span>;
   if (evaluation.status === 'no_evaluada') return <span className="text-xs text-[#737373]">No evaluada</span>;
   const tone = evaluation.pass ? 'border-emerald-300/40 text-emerald-100' : 'border-red-400/40 text-red-200';
   return <span className="inline-flex items-center gap-1.5"><span className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${tone}`}>{evaluation.score}/100</span>{evaluation.escalated && <span title="Escalada al supervisor" className="text-[11px] text-amber-200">⚠️</span>}</span>;
+}
+
+function StepScores({ steps }) {
+  return <div className={box}>
+    <p className={label}>Nota por paso</p>
+    <ul className="mt-2 divide-y divide-[#2E2E2E]">{steps.map((step) => {
+      const pct = step.aplica && step.peso > 0 ? Math.max(0, Math.min(100, (step.puntos / step.peso) * 100)) : 0;
+      return <li key={step.paso} className={`py-2 first:pt-0 last:pb-0 ${step.aplica ? '' : 'opacity-50'}`}>
+        <div className="flex items-baseline justify-between gap-3 text-xs">
+          <p className="min-w-0 text-[#D4D4D4]"><span className="font-mono text-[#737373]">{step.paso}.</span> {step.nombre}</p>
+          <p className="shrink-0 font-mono text-[#F2F2F2]">{step.aplica ? `${step.puntos}/${step.peso}` : <span className="text-[#737373]">No aplica</span>}</p>
+        </div>
+        {step.aplica && <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-[#2E2E2E]"><div className={`h-full rounded-full ${pct >= 70 ? 'bg-emerald-300/70' : pct >= 40 ? 'bg-amber-300/70' : 'bg-red-400/70'}`} style={{ width: `${pct}%` }} /></div>}
+        {step.comentario && <p className="mt-1 text-[11px] leading-4 text-[#BFBFBF]">{step.comentario}</p>}
+      </li>;
+    })}</ul>
+  </div>;
+}
+
+function OtherEvaluations({ items, rubrica }) {
+  if (!items?.length) return null;
+  return <details className={box}>
+    <summary className="cursor-pointer text-xs text-[#BFBFBF]">Otras evaluaciones ({items.length})</summary>
+    <ul className="mt-2 space-y-2">{items.map((item) => {
+      const pending = item.estado === 'pendiente' || item.estado === 'procesando';
+      return <li key={item.id} className="rounded border border-[#2E2E2E] bg-[#0D0D0D] p-2 text-xs">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-[#F2F2F2]">{item.version_rubrica}</span>
+          {item.reevaluacion && <span className="text-[10px] text-[#737373]">Reevaluación</span>}
+          {item.estado === 'evaluada' && item.nota != null
+            ? <span className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${item.apto ? 'border-emerald-300/40 text-emerald-100' : 'border-red-400/40 text-red-200'}`}>{item.nota}/100 · {item.apto ? 'Apto' : 'No apto'}</span>
+            : <span className={pending ? 'text-amber-200' : 'text-[#737373]'}>{pending ? 'Evaluando…' : item.sin_consentimiento ? 'Sin consentimiento' : item.estado === 'no_evaluada' ? 'No evaluada' : item.estado}</span>}
+          <span className="ml-auto text-[10px] text-[#737373]">{formatMadridDateTime(item.creado_en)}</span>
+        </div>
+        {item.errores_criticos?.length > 0 && <p className="mt-1 text-red-200">{item.errores_criticos.map((codigo) => ruleLabel(rubrica, codigo)).join(' · ')}</p>}
+      </li>;
+    })}</ul>
+  </details>;
 }
 
 function HumanFeedback({ evaluation, callId, canSupervise, onSaved }) {
@@ -66,8 +110,13 @@ export default function CallEvaluationPanel({ callId, transcriptionStatus }) {
   if (!data) return <p className="text-xs text-[#737373]" role="status">Cargando evaluación…</p>;
   const evaluation = data.evaluation;
   if (!evaluation) return <p className={`${box} text-xs text-[#737373]`}>{transcriptionStatus === 'completed' ? 'Esta llamada no se evalúa: la extensión no tiene un comercial configurado o la llamada dura menos de 60 segundos.' : 'La evaluación empezará cuando la transcripción esté lista (solo para comerciales configurados).'}</p>;
-  if (evaluation.estado === 'pendiente' || evaluation.estado === 'procesando') return <p role="status" className="rounded border border-amber-300/30 bg-amber-300/[.06] p-3 text-xs text-amber-100">Evaluando la llamada con la rúbrica de Fase 0. El resultado aparecerá aquí en unos minutos.</p>;
-  if (evaluation.estado === 'no_evaluada') return <p className={`${box} text-xs text-[#BFBFBF]`}>No evaluada: {evaluation.motivo_no_evaluada || 'sin motivo registrado'}.</p>;
+  if (evaluation.estado === 'pendiente' || evaluation.estado === 'procesando') return <p role="status" className="rounded border border-amber-300/30 bg-amber-300/[.06] p-3 text-xs text-amber-100">Evaluando la llamada con la rúbrica vigente. El resultado aparecerá aquí en unos minutos.</p>;
+  if (evaluation.estado === 'no_evaluada') return <div className="space-y-3">
+    {evaluation.sin_consentimiento
+      ? <p role="note" className="rounded border border-amber-300/30 bg-amber-300/[.06] p-3 text-xs text-amber-100">{NO_CONSENT_TEXT}</p>
+      : <p className={`${box} text-xs text-[#BFBFBF]`}>No evaluada: {evaluation.motivo_no_evaluada || 'sin motivo registrado'}.</p>}
+    <OtherEvaluations items={evaluation.otras} rubrica={evaluation.rubrica} />
+  </div>;
 
   const quotes = data.quotes_access === 'granted';
   return <div className="space-y-3">
@@ -77,11 +126,14 @@ export default function CallEvaluationPanel({ callId, transcriptionStatus }) {
       {evaluation.escalado && <span className="rounded-full border border-amber-300/50 px-2 py-0.5 text-[11px] text-amber-100">⚠️ Escalada al supervisor</span>}
       <p className="ml-auto text-[10px] text-[#737373]">{evaluation.comercial || 'Comercial'} · {ROLE_LABEL[evaluation.rol] || evaluation.rol}</p>
       {evaluation.escalado && <p className="w-full text-xs text-amber-100">Motivo: {evaluation.motivo_escalado}</p>}
+      <p className="w-full text-[10px] text-[#737373]">Rúbrica <span title={evaluation.rubrica?.fuente || undefined} className="font-mono text-[#BFBFBF]">{evaluation.version_rubrica}</span>{evaluation.reevaluacion ? ' · reevaluación' : ''}</p>
     </div>
+
+    {evaluation.puntuacion_pasos?.length > 0 && <StepScores steps={evaluation.puntuacion_pasos} />}
 
     <div>
       <p className={label}>Errores críticos</p>
-      {evaluation.errores_criticos?.length ? <ul className="mt-2 space-y-2">{evaluation.errores_criticos.map((item, index) => <li key={index} className="rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-100"><p className="font-semibold">{RULE_LABEL[item.regla] || item.regla}{item.marca_tiempo && <span className="ml-2 font-mono font-normal text-red-200/70">{item.marca_tiempo}</span>}</p>{quotes && item.cita && <p className="mt-1 leading-5 text-red-100/90">«{item.cita}»</p>}</li>)}</ul> : <p className="mt-2 text-xs text-emerald-200">No se detectan errores críticos.</p>}
+      {evaluation.errores_criticos?.length ? <ul className="mt-2 space-y-2">{evaluation.errores_criticos.map((item, index) => <li key={index} className="rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-100"><p className="font-semibold">{ruleLabel(evaluation.rubrica, item.regla)}{item.marca_tiempo && <span className="ml-2 font-mono font-normal text-red-200/70">{item.marca_tiempo}</span>}</p>{quotes && item.cita && <p className="mt-1 leading-5 text-red-100/90">«{item.cita}»</p>}</li>)}</ul> : <p className="mt-2 text-xs text-emerald-200">No se detectan errores críticos.</p>}
       {evaluation.duda && <p className="mt-2 text-xs text-amber-200">Duda del agente: {evaluation.motivo_duda}</p>}
     </div>
 
@@ -92,7 +144,9 @@ export default function CallEvaluationPanel({ callId, transcriptionStatus }) {
 
     {evaluation.objeciones?.length > 0 && <div><p className={label}>Objeciones del cliente</p><ul className="mt-2 space-y-2">{evaluation.objeciones.map((item) => <li key={item.id} className={box}><p className="text-[10px] text-[#737373]">{OBJECTION_LABEL[item.tipo] || item.tipo}</p>{quotes && item.cita && <p className="mt-1 text-xs leading-5 text-[#D4D4D4]">«{item.cita}»</p>}{quotes && item.idea_contenido && <p className="mt-1 text-xs text-amber-100">💡 {item.idea_contenido}</p>}</li>)}</ul></div>}
 
-    <details className={box}><summary className="cursor-pointer text-xs text-[#BFBFBF]">Mensaje enviado al comercial{evaluation.enviado_en ? ` · ${formatMadridDateTime(evaluation.enviado_en)}` : evaluation.envio_error ? ' · no se pudo enviar' : ' · visible solo aquí'}</summary><p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-[#D4D4D4]">{evaluation.feedback_texto}</p>{evaluation.envio_error && <p className="mt-2 text-[10px] text-red-200">{evaluation.envio_error}</p>}<p className="mt-2 text-[10px] text-[#737373]">Rúbrica {evaluation.version_rubrica} · {evaluation.modelo}. Evaluación orientativa: no se usa para sanciones ni retribución sin revisión humana.</p></details>
+    <details className={box}><summary className="cursor-pointer text-xs text-[#BFBFBF]">Mensaje enviado al comercial{evaluation.enviado_en ? ` · ${formatMadridDateTime(evaluation.enviado_en)}` : evaluation.envio_error ? ' · no se pudo enviar' : ' · visible solo aquí'}</summary><p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-[#D4D4D4]">{evaluation.feedback_texto}</p>{evaluation.envio_error && <p className="mt-2 text-[10px] text-red-200">{evaluation.envio_error}</p>}<p className="mt-2 text-[10px] text-[#737373]">Rúbrica <span title={evaluation.rubrica?.fuente || undefined} className="font-mono font-semibold text-[#BFBFBF]">{evaluation.version_rubrica}</span> · {evaluation.modelo}. Evaluación orientativa: no se usa para sanciones ni retribución sin revisión humana.</p></details>
+
+    <OtherEvaluations items={evaluation.otras} rubrica={evaluation.rubrica} />
 
     <HumanFeedback evaluation={evaluation} callId={callId} canSupervise={data.can_supervise} onSaved={() => setReload((value) => value + 1)} />
   </div>;

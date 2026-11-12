@@ -37,7 +37,7 @@ export function registerEntrenador(app: Express, deps: Deps): void {
       const { rows: versiones } = await pool.query(`SELECT ${COLUMNAS} FROM entrenador_version ORDER BY numero DESC LIMIT 50`);
       const vigente = versiones.find((v) => v.estado === 'lista') || null;
       const { rows: [{ n }] } = await pool.query<{ n: number }>(
-        `SELECT COUNT(*)::int AS n FROM llamada_evaluacion WHERE estado = 'evaluada' AND ($1::timestamptz IS NULL OR actualizado_en > $1)`, [vigente?.periodo_hasta ?? null]);
+        `SELECT COUNT(*)::int AS n FROM llamada_evaluacion WHERE estado = 'evaluada' AND NOT reevaluacion AND ($1::timestamptz IS NULL OR actualizado_en > $1)`, [vigente?.periodo_hasta ?? null]);
       const { rows: [publicado] } = await pool.query(
         `SELECT numero, drive_url, drive_en_carpeta, drive_publicado_en FROM entrenador_version WHERE drive_url IS NOT NULL ORDER BY drive_publicado_en DESC LIMIT 1`);
       res.setHeader('Cache-Control', 'no-store');

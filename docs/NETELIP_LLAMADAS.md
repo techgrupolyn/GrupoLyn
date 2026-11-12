@@ -107,7 +107,7 @@ Se elige con `NETELIP_TRANSCRIPTION_ENGINE` y se cambia reiniciando el backend. 
 
 ## Calificador interno de llamadas (ticket 869e9y98n)
 
-Cuando termina la transcripción de una llamada de un **comercial configurado** (pestaña *Comerciales evaluados* o tabla `comercial_rol`) que dura **60 s o más**, Gemini la evalúa con la rúbrica de Fase 0 y:
+Cuando termina la transcripción de una llamada de un **comercial configurado** (pestaña *Comerciales evaluados* o tabla `comercial_rol`) que dura **60 s o más**, Gemini la evalúa con la rúbrica vigente de su rol y:
 
 1. guarda la nota, los errores críticos con su cita, 2 aciertos, 2 mejoras con acción, las objeciones y las ideas de marketing (`llamada_evaluacion`, `objecion_marketing`);
 2. envía al comercial un feedback de 5 líneas y 600 caracteres como máximo por WhatsApp y, si se escala, el mismo mensaje a la vez al supervisor;
@@ -121,7 +121,7 @@ Lo que decide el código, no el modelo (`backend/netelip/calificador/reglas.ts`)
 - **Apto** = nota ≥ 80 y ningún error crítico. **Escalado** = algún error crítico, nota < 80 o duda (P-01, pendiente de confirmar).
 - Hasta 3 intentos con el modelo (1, 5 y 15 min). Después queda «no evaluada» con el motivo, sin feedback, y se avisa a tecnología.
 
-La rúbrica está versionada en `backend/netelip/calificador/rubrica-v1.md` (`VERSION_RUBRICA` en `modelo.ts`). Viene del «Contexto unificado del Entrenador de llamadas Fase 0» de Jean Parra (05/11/2026), adaptada a llamadas reales. Para cambiarla, crea `rubrica-v2.md` y sube la versión: cada evaluación guarda la versión con la que se hizo.
+Las rúbricas están versionadas en la tabla `rubrica_version` (869fpj8dm): el SDR usa `sdr-v1`, los 7 pasos del «Guion completo SDR», y los roles sin versión propia (closers) siguen con la fija `fase0-v1` (`backend/netelip/calificador/rubrica-v1.md`, del «Contexto unificado del Entrenador» de Jean). Publicar un guion nuevo, reevaluar llamadas y calibrar: [CALIFICADOR_RUBRICAS.md](CALIFICADOR_RUBRICAS.md).
 
 | Variable | Valor |
 |---|---|

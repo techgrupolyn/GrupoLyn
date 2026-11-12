@@ -1,7 +1,10 @@
-// Llamada a Gemini para el calificador: rúbrica versionada (rubrica-v1.md), temperatura 0 y salida
-// JSON con esquema estricto. Mismo endpoint y forma de respuesta que protocol-gemini.ts.
+// Llamada a Gemini para el calificador: temperatura 0 y salida JSON con esquema estricto. Mismo endpoint y
+// forma de respuesta que protocol-gemini.ts. Dos rúbricas: la versionada de la tabla rubrica_version
+// (869fpj8dm), con prompt y esquema construidos desde la versión, y la fija fase0-v1 (rubrica-v1.md) para los
+// roles que aún no tienen versión.
 import { readFileSync } from 'node:fs';
 import { REGLAS_CRITICAS, TIPOS_OBJECION } from './reglas.ts';
+import { esquemaSalida, promptVersionado, type DefinicionRubrica } from './rubrica.ts';
 
 export const VERSION_RUBRICA = 'fase0-v1';
 const RUBRICA = readFileSync(new URL('./rubrica-v1.md', import.meta.url), 'utf8');
@@ -43,13 +46,51 @@ export function promptSistema(): string {
   return `${RUBRICA}\n\n${EJEMPLO}`;
 }
 
+/**
+ * Prompt de una rúbrica versionada. El ejemplo solo enseña la forma de la salida (pasos con aplica/puntos);
+ * los puntos del ejemplo son ilustrativos y se recalculan con los pesos de la versión.
+ */
+export function promptSistemaVersionado(r: DefinicionRubrica): string {
+  const pasos = r.criterios.map((c, i) => ({
+    paso: c.paso, aplica: i < 3 || i === r.criterios.length - 2,
+    puntos: i < 3 || i === r.criterios.length - 2 ? Math.round(c.peso * (i === 0 ? 1 : 0.5)) : 0,
+    comentario: i < 3 || i === r.criterios.length - 2 ? 'Evidencia breve de lo que hizo en este paso' : 'No se llegó a este paso: la llamada se cerró antes',
+  }));
+  const reglaCero = r.errores_criticos.find((e) => e.codigo === 'REGLA_CERO');
+  const salida = {
+    llamada_evaluable: true, motivo_no_evaluable: null, pasos,
+    errores_criticos: reglaCero ? [{ regla: 'REGLA_CERO', cita: 'pues lo hablas con tu mujer y ya me dices', marca_tiempo: '00:02:50' }] : [],
+    bien: ['Apertura clara: te presentas y partes de su solicitud', 'Confirmas que es buen momento antes de seguir'],
+    mejorar: [{ que: 'Cerraste sin fecha ni siguiente contacto', accion: 'Ante «lo pienso», propón día y hora para volver a hablar' },
+      { que: 'No retomaste su prioridad al proponer', accion: 'Conecta la sesión con lo que más le preocupa' }],
+    duda: { valor: false, motivo: null },
+    objeciones: [{ tipo: 'plazo', cita: 'Me da miedo que la obra se alargue meses.', idea_contenido: 'Vídeo: cómo planificamos una reforma integral para cumplir el plazo pactado' }],
+  };
+  return `${promptVersionado(r)}
+
+## Ejemplo de la forma de la salida (no es una llamada real)
+
+Contexto: rol ${r.rol} · llamada saliente · 3 min
+[00:00:04] GRUPO LYN: Hola [NOMBRE], soy Laura de Grupo LYN, te llamo por la solicitud de reforma que nos dejaste. ¿Te pillo bien?
+[00:00:09] CLIENTE: Sí, dime.
+[00:00:40] CLIENTE: Es un piso de 90 metros en Alicante, queremos cambiar la cocina y los baños.
+[00:02:30] CLIENTE: Me da miedo que la obra se alargue meses.
+[00:02:50] GRUPO LYN: Vale, pues lo hablas con tu mujer y ya me dices.
+
+Salida:
+${JSON.stringify(salida)}`;
+}
+
+export { esquemaSalida };
+
 export function promptUsuario(args: { rol: string; direccion: string; duracionSegundos: number; presupuestoRegistrado: boolean; transcripcion: string }): string {
   const min = Math.max(1, Math.round(args.duracionSegundos / 60));
   return `Contexto: rol ${args.rol} · llamada ${args.direccion === 'outbound' ? 'saliente' : 'entrante'} · ${min} min · presupuesto_registrado: ${args.presupuestoRegistrado ? 'sí' : 'no'}\n\nTranscripción:\n${args.transcripcion}`;
 }
 
 export type RespuestaModelo = { text: string; model: string; inputTokens: number | null; outputTokens: number | null };
-export type Evaluador = (system: string, user: string) => Promise<RespuestaModelo>;
+/** `schema`: esquema de salida de esta llamada (rúbrica versionada); si falta, el del evaluador. */
+export type Evaluador = (system: string, user: string, schema?: object) => Promise<RespuestaModelo>;
 
 export class ModeloNoDisponible extends Error {}
 
@@ -59,7 +100,7 @@ export function evaluadorGemini(env: NodeJS.ProcessEnv = process.env, fetcher: t
   const apiKey = env.GOOGLE_GEMINI_API_KEY?.trim() || env.GOOGLE_API_KEY?.trim() || '';
   if (!apiKey) return null;
   const model = env.CALIFICADOR_MODEL?.trim() || env.GOOGLE_GEMINI_FLASH_MODEL?.trim() || 'gemini-3.6-flash';
-  return async (system, user) => {
+  return async (system, user, schemaLlamada) => {
     let response: Response;
     try {
       response = await fetcher('https://generativelanguage.googleapis.com/v1beta/interactions', {
@@ -67,7 +108,7 @@ export function evaluadorGemini(env: NodeJS.ProcessEnv = process.env, fetcher: t
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({ model, input: user, system_instruction: system, store: false,
           generation_config: { temperature: 0, thinking_level: env.CALIFICADOR_THINKING_LEVEL?.trim() || 'low', max_output_tokens: opciones.maxOutputTokens ?? 4096 },
-          response_format: { type: 'text', mime_type: 'application/json', schema: opciones.schema ?? SCHEMA } }),
+          response_format: { type: 'text', mime_type: 'application/json', schema: schemaLlamada ?? opciones.schema ?? SCHEMA } }),
         signal: AbortSignal.timeout(opciones.timeoutMs ?? 90_000),
       });
     } catch (error) { throw new ModeloNoDisponible(`sin respuesta de Gemini: ${(error as Error).message}`); }
