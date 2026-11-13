@@ -219,6 +219,7 @@ describe('Panel de marketing · acceso y rutas', () => {
   it('solo Dirección ve el panel', () => {
     expect(canAccessMarketing({ rol: 'superadmin' })).toBe(true);
     expect(canAccessMarketing({ rol: 'employee:Director General' })).toBe(true);
+    expect(canAccessMarketing({ rol: 'employee:superadmin' })).toBe(true); // superadmin del directorio (QA CAL-09)
     expect(canAccessMarketing({ rol: 'employee:comercial' })).toBe(false);
   });
 

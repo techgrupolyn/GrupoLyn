@@ -288,6 +288,12 @@ describe('Marketing · API', () => {
     expect((await request(server).get('/api/marketing/panel')).status).toBe(403);
   });
 
+  it('un superadmin del directorio (employee:superadmin) ve y edita el panel (QA CAL-09)', async () => {
+    const res = await request(app('employee:superadmin').server).get('/api/marketing/panel');
+    expect(res.status).toBe(200);
+    expect(res.body.permisos).toEqual({ editar: true, nota: true });
+  });
+
   it('Dirección ve el panel con la nota comercial; la nota no se consulta sin permiso', async () => {
     const { server, queries } = app('employee:director');
     const res = await request(server).get('/api/marketing/panel');

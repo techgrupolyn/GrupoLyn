@@ -58,7 +58,7 @@ export function canAccessNetelipCalls(user) {
 
 // Panel de marketing: Dirección (épico 869fny1et). Debe coincidir con MARKETING_ACCESS_ROLES del backend
 // (backend/marketing/routes.ts) si no se cambia por entorno.
-export const MARKETING_ACCESS_ROLES = ['superadmin', 'admin', 'ceo', 'employee:director', 'employee:director_general'];
+export const MARKETING_ACCESS_ROLES = ['superadmin', 'employee:superadmin', 'admin', 'ceo', 'employee:director', 'employee:director_general'];
 
 export function canAccessMarketing(user) {
   const role = String(user?.rol || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');

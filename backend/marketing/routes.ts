@@ -19,9 +19,10 @@ const normalizeRole = (role: unknown) =>
 const enLista = (lista: string, role: unknown) => lista.split(',').map(normalizeRole).filter(Boolean).includes(normalizeRole(role));
 
 // El panel lo ven Dirección y quien Alex indique; la nota comercial (desempeño de empleados), solo Dirección y Ernesto.
-const DEFAULT_ACCESS_ROLES = 'superadmin,admin,ceo,employee:director,employee:director_general';
-const DEFAULT_NOTA_ROLES = 'superadmin,admin,ceo,employee:director,employee:director_general';
-const DEFAULT_EDIT_ROLES = 'superadmin,admin,ceo';
+// employee:superadmin: superadmin que viene del directorio (QA CAL-09).
+const DEFAULT_ACCESS_ROLES = 'superadmin,employee:superadmin,admin,ceo,employee:director,employee:director_general';
+const DEFAULT_NOTA_ROLES = 'superadmin,employee:superadmin,admin,ceo,employee:director,employee:director_general';
+const DEFAULT_EDIT_ROLES = 'superadmin,employee:superadmin,admin,ceo';
 
 export const canAccessMarketing = (role: unknown, env: NodeJS.ProcessEnv = process.env) => enLista(env.MARKETING_ACCESS_ROLES || DEFAULT_ACCESS_ROLES, role);
 export const canSeeNota = (role: unknown, env: NodeJS.ProcessEnv = process.env) => enLista(env.MARKETING_NOTA_ROLES || DEFAULT_NOTA_ROLES, role);
