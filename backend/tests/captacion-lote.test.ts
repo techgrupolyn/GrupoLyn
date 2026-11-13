@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RespuestaModelo } from '../netelip/calificador/modelo.ts';
 import { ClickUpClient, ESCALA_ORDEN, RANGO_ORDEN } from '../netelip/captacion/clickup.ts';
 import { ejecutarLote, esVivo, type OpcionesLote } from '../netelip/captacion/lote.ts';
+import { registrarPresupuestoFormulario } from '../netelip/captacion/repositorio.ts';
 import { ensureNetelipCalls } from '../netelip/schema.ts';
 import { abrirBaseAislada, hayBaseDePruebas, type BaseAislada } from './helpers/captacion-base.ts';
 import { FRASE, salidaModelo, TRANSCRIPCION_BASE, type OpcionesSalida } from './helpers/captacion-llamadas.ts';
@@ -236,6 +237,85 @@ describe.skipIf(!hayBaseDePruebas)('captación · lote · de punta a punta', () 
     const informe = await lote({ escribirMaximo: 1 });
     expect(informe.escrituras[0]).toMatchObject({ resultado: 'escrito', campos: 5, detalle: 'indice_orden (el campo no existe en la lista)' });
     expect(posts().some((p) => p.ruta.includes('f-indice'))).toBe(false);
+  });
+
+  // Lo que ClickUp recibió de una tarjeta: campo → valor del POST.
+  const escritoDe = (id: string) =>
+    Object.fromEntries(posts().filter((p) => p.ruta.startsWith(`/task/${id}/`)).map((p) => [p.ruta.split('/')[4], (p.cuerpo as { value: unknown }).value]));
+
+  it('presupuesto del formulario: un lead con llamada SIN importe toma el rango que marcó en la web (valor central) como presupuesto del cliente', async () => {
+    tareas({ id: 'f1', nombre: 'Lead F1', telefono: '+34600000001', etapa: ETAPA.viabilidad, tipoContacto: 0, presupuestoFormulario: 1 });
+    guiones.set(await llamada({ id: 'u1', telefono: '+34600000001' }), { presupuesto: null });
+    const informe = await lote({ escribirMaximo: 1 });
+    expect(informe.resumen.presupuestoFormulario).toBe(1);
+    expect(informe.filas[0]).toMatchObject({ estado: 'procesada', categoria: 'A' });
+    // «40.000 € - 100.000 €» cuenta como 70.000 €; la fuente que se muestra es «Formulario».
+    expect(escritoDe('f1')).toMatchObject({ 'f-pres': 70_000, 'f-pond': 70_000, 'f-fuente': 'o-fuente-0', 'f-indice': 500_070_000 });
+  });
+
+  it('«Más de 200.000 €» cuenta como 200.000 € pero NO da A+ si la llamada no dice nada del presupuesto (A+ exige el criterio Presupuesto en A o B)', async () => {
+    tareas({ id: 'f2', nombre: 'Lead F2', telefono: '+34600000002', etapa: ETAPA.viabilidad, tipoContacto: 0, presupuestoFormulario: 3 });
+    guiones.set(await llamada({ id: 'u2', telefono: '+34600000002' }), { presupuesto: null });
+    const informe = await lote({ escribirMaximo: 1 });
+    expect(informe.filas[0]).toMatchObject({ categoria: 'A' });
+    expect(escritoDe('f2')).toMatchObject({ 'f-pres': 200_000, 'f-pond': 200_000 });
+  });
+
+  it('un importe que el cliente dice en una llamada posterior sustituye al del formulario (RN-8)', async () => {
+    tareas({ id: 'f3', nombre: 'Lead F3', telefono: '+34600000003', etapa: ETAPA.viabilidad, presupuestoFormulario: 0 });
+    await llamada({ id: 'u3', telefono: '+34600000003' }); // el cliente dice 90.000–110.000 €
+    const informe = await lote({ escribirMaximo: 1 });
+    expect(informe.filas[0]).toMatchObject({ categoria: 'A+' });
+    // «Menos de 40.000 €» (20.000 €) del formulario queda guardado, pero manda la llamada: 100.000 € y fuente «Llamada».
+    expect(escritoDe('f3')).toMatchObject({ 'f-pres': 100_000, 'f-pond': 100_000, 'f-fuente': 'o-fuente-1' });
+    expect(await contar("lead_presupuesto_evento WHERE fuente = 'formulario'")).toBe(1);
+  });
+
+  it('una cifra que dice LYN en la llamada NO pisa al presupuesto del formulario, aunque sea posterior', async () => {
+    tareas({ id: 'f4', nombre: 'Lead F4', telefono: '+34600000004', etapa: ETAPA.viabilidad, presupuestoFormulario: 2 });
+    guiones.set(await llamada({ id: 'u4', telefono: '+34600000004' }), { presupuesto: { min: 50_000, max: 60_000 }, emisor: 'lyn' });
+    const informe = await lote({ escribirMaximo: 1 });
+    expect(informe.filas[0]).toMatchObject({ categoria: 'A+' });
+    expect(escritoDe('f4')).toMatchObject({ 'f-pres': 150_000, 'f-pond': 150_000, 'f-fuente': 'o-fuente-0' });
+    expect(await contar("lead_presupuesto_evento WHERE emisor = 'lyn'")).toBe(1);
+  });
+
+  it('repetir el lote no duplica el presupuesto del formulario', async () => {
+    tareas({ id: 'f5', nombre: 'Lead F5', telefono: '+34600000005', etapa: ETAPA.viabilidad, presupuestoFormulario: 1 });
+    await llamada({ id: 'u5', telefono: '+34600000005' });
+    expect((await lote()).resumen.presupuestoFormulario).toBe(1);
+    expect((await lote()).resumen.presupuestoFormulario).toBe(0);
+    expect(await contar("lead_presupuesto_evento WHERE fuente = 'formulario'")).toBe(1);
+  });
+
+  it('el formulario solo se registra en leads VIVOS y, sin llamada, deja el dato pero no califica ni escribe nada (sin letra)', async () => {
+    tareas(
+      { id: 'muerto', nombre: 'Lead muerto', telefono: '+34600000006', etapa: ETAPA.rechazado, presupuestoFormulario: 2 },
+      { id: 'sinllamada', nombre: 'Lead sin llamada', telefono: '+34600000007', etapa: ETAPA.viabilidad, presupuestoFormulario: 3 },
+    );
+    const informe = await lote({ escribirMaximo: 5 });
+    expect(informe.resumen.presupuestoFormulario).toBe(1);
+    expect(await contar("lead_presupuesto_evento WHERE clickup_task_id = 'muerto'")).toBe(0);
+    expect(await contar("lead_presupuesto_evento WHERE clickup_task_id = 'sinllamada'")).toBe(1);
+    expect(informe.escrituras).toEqual([]);
+    expect(posts()).toEqual([]);
+    expect(await contar('lead_calificacion_historial')).toBe(0);
+  });
+
+  it('el evento del formulario es del cliente, con la fecha de creación de la tarjeta y la opción elegida como cita', async () => {
+    expect(await registrarPresupuestoFormulario(base, { clickupTaskId: 'x1', opcion: '100.000 € - 200.000 €', fechaInteraccion: '2026-11-10T09:00:00.000Z' })).toBe(true);
+    expect(await registrarPresupuestoFormulario(base, { clickupTaskId: 'x1', opcion: '100.000 € - 200.000 €', fechaInteraccion: '2026-11-10T09:00:00.000Z' })).toBe(false);
+    const { rows } = await base.query('SELECT fuente, tipo, valor_min::int AS min, valor_max::int AS max, valor_vigente::int AS vig, emisor, cita_textual, interaccion_id, registrado_por, fecha_interaccion FROM lead_presupuesto_evento WHERE clickup_task_id = $1', ['x1']);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ fuente: 'formulario', tipo: 'rango', min: 100_000, max: 200_000, vig: 150_000, emisor: 'cliente', cita_textual: '100.000 € - 200.000 €', interaccion_id: 'formulario:x1', registrado_por: 'sistema' });
+    expect(new Date(rows[0]!.fecha_interaccion as string).toISOString()).toBe('2026-11-10T09:00:00.000Z');
+    // Cada lead tiene su propio evento: otro lead con formulario no choca con el primero.
+    expect(await registrarPresupuestoFormulario(base, { clickupTaskId: 'x4', opcion: 'Más de 200.000 €', fechaInteraccion: '2026-11-11T09:00:00.000Z' })).toBe(true);
+    expect(await contar("lead_presupuesto_evento WHERE fuente = 'formulario'")).toBe(2);
+    // Una opción que no es de las 4 no deja nada guardado.
+    expect(await registrarPresupuestoFormulario(base, { clickupTaskId: 'x2', opcion: 'Prefiero no decirlo', fechaInteraccion: '2026-11-10T09:00:00.000Z' })).toBe(false);
+    expect(await registrarPresupuestoFormulario(base, { clickupTaskId: 'x3', opcion: null, fechaInteraccion: '2026-11-10T09:00:00.000Z' })).toBe(false);
+    expect(await contar("lead_presupuesto_evento WHERE clickup_task_id IN ('x2', 'x3')")).toBe(0);
   });
 
   const dosLeads = async () => {

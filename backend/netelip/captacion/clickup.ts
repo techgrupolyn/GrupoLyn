@@ -15,6 +15,8 @@ export const NOMBRES_CAMPOS = {
   fuente_presupuesto: 'Fuente del presupuesto',
   desglose: 'Desglose de calificación',
   indice_orden: 'Índice de orden',
+  /** Solo se LEE: lo escribe el flujo de n8n con el rango que marca el cliente en el formulario web. */
+  presupuesto_formulario: 'Presupuesto formulario',
   telefono: 'contact_phone_number',
   email: 'email',
   etapa: 'ETAPA_CRM',
@@ -241,7 +243,7 @@ export function indiceOrdenDe(categoria: Categoria, ponderado: number | null): n
 
 export interface CambioCampo {
   /** Clave de las escrituras del motor (categoria, presupuesto…). */
-  clave: keyof Omit<typeof NOMBRES_CAMPOS, 'telefono' | 'email' | 'etapa' | 'tipo_reforma' | 'tipo_contacto'>;
+  clave: keyof Omit<typeof NOMBRES_CAMPOS, 'telefono' | 'email' | 'etapa' | 'tipo_reforma' | 'tipo_contacto' | 'presupuesto_formulario'>;
   campoId: string;
   valor: string | number;
 }

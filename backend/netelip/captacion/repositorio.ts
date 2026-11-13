@@ -9,6 +9,7 @@ import {
 import { CRITERIOS_IDS, type AgregacionConfig, type CriterioConfig, type CriterioId, type Nivel, type NivelONE } from './matriz.ts';
 import {
   calificar,
+  presupuestoDelFormulario,
   presupuestoVigente,
   validarEscrituras,
   valorVigenteDe,
@@ -201,6 +202,29 @@ export async function registrarAlcanceProvisional(
      ON CONFLICT (clickup_task_id, criterio_id) WHERE origen = 'formulario_provisional' DO NOTHING
      RETURNING id`,
     [datos.clickupTaskId, datos.nivel as Nivel, datos.fechaInteraccion],
+  );
+  return res.rows.length > 0;
+}
+
+/**
+ * Presupuesto que el cliente marcó en el formulario web (fuente «formulario», emisor cliente). Un solo evento por lead:
+ * la fecha es la de creación de la tarjeta, así que cualquier llamada posterior que traiga un importe del cliente lo
+ * sustituye (RN-8). Repetirlo no duplica. Una opción que no es una de las 4 no se guarda (devuelve false).
+ */
+export async function registrarPresupuestoFormulario(
+  db: Db,
+  datos: { clickupTaskId: string; opcion: string | null; fechaInteraccion: string },
+): Promise<boolean> {
+  const p = presupuestoDelFormulario(datos.opcion);
+  if (p === null) return false;
+  const res = await db.query(
+    `INSERT INTO lead_presupuesto_evento
+       (clickup_task_id, fuente, tipo, valor_min, valor_max, valor_vigente, moneda, emisor, cita_textual,
+        interaccion_id, fecha_interaccion, registrado_por)
+     VALUES ($1, 'formulario', $2, $3, $4, $5, 'EUR', 'cliente', $6, $7, $8, 'sistema')
+     ON CONFLICT ON CONSTRAINT lead_presupuesto_evento_interaccion_uq DO NOTHING
+     RETURNING id`,
+    [datos.clickupTaskId, p.tipo, p.valorMin, p.valorMax, p.valorVigente, datos.opcion, `formulario:${datos.clickupTaskId}`, datos.fechaInteraccion],
   );
   return res.rows.length > 0;
 }

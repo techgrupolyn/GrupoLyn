@@ -23,6 +23,8 @@ export interface OpcionesSalida {
   plazoMeses?: number;
   /** Rango de presupuesto; por defecto 90.000–110.000. */
   presupuesto?: { min: number; max: number } | null;
+  /** Quién dice el importe: por defecto el cliente. Con «lyn» es una cifra del comercial (no cuenta como presupuesto). */
+  emisor?: 'cliente' | 'lyn';
   /** Cita del criterio Decisor; por defecto la frase real. Una que no está en la llamada se descarta. */
   citaDecisor?: string;
   /** Marca «presupuesto insuficiente sin solución» con una cita que no está en la llamada (va a revisión manual). */
@@ -36,7 +38,7 @@ export function salidaModelo(interaccionId: string, o: OpcionesSalida = {}): str
     interaccion_id: interaccionId,
     presupuesto: p === null
       ? { detectado: false }
-      : { detectado: true, tipo: 'rango', min: p.min, max: p.max, moneda: 'EUR', emisor: 'cliente', cita: FRASE.presupuesto, marca_tiempo: '00:02:10' },
+      : { detectado: true, tipo: 'rango', min: p.min, max: p.max, moneda: 'EUR', emisor: o.emisor ?? 'cliente', cita: FRASE.presupuesto, marca_tiempo: '00:02:10' },
     presupuesto_insuficiente_sin_solucion: o.noAptoInventado
       ? { valor: true, cita: 'No llegamos ni a la mitad de eso en ningún caso', marca_tiempo: '00:02:30' }
       : { valor: false, cita: null, marca_tiempo: null },

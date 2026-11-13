@@ -61,7 +61,7 @@ const informe: InformeLote = {
     { clickupTaskId: 'g', nombre: 'G', resultado: 'no_vivo', campos: 0, detalle: null },
     { clickupTaskId: 'f', nombre: 'F', resultado: 'error', campos: 0, detalle: 'x' },
   ],
-  resumen: { leadsEnLista: 2066, leadsVivos: 320, alcanceProvisional: 215, llamadas: 2, porEstado: { procesada: 1, sin_lead: 1 }, leadsCalificados: 1, porCategoria: { 'A+': 1 } },
+  resumen: { leadsEnLista: 2066, leadsVivos: 320, alcanceProvisional: 215, presupuestoFormulario: 12, llamadas: 2, porEstado: { procesada: 1, sin_lead: 1 }, leadsCalificados: 1, porCategoria: { 'A+': 1 } },
 };
 
 describe('captación · lote-cli · informe', () => {
@@ -78,7 +78,7 @@ describe('captación · lote-cli · informe', () => {
   it('el resumen de pantalla solo lleva totales: ni nombres ni frases', () => {
     const texto = resumenTexto(informe);
     expect(texto).toBe([
-      'Leads en la lista: 2066 (vivos 320) · Alcance provisional nuevo: 215',
+      'Leads en la lista: 2066 (vivos 320) · Alcance provisional nuevo: 215 · Presupuesto del formulario nuevo: 12',
       'Llamadas procesadas: 2 → procesada 1 · sin_lead 1',
       'Leads calificados: 1 → A+ 1',
       'Escritura en ClickUp: 1 leads escritos · 1 en simulacro · 1 sin cupo · 1 no vivos (no se escriben) · 1 con error',
@@ -134,7 +134,7 @@ describe('captación · lote-cli · informe', () => {
   });
 
   it('un informe vacío da solo la cabecera y un resumen con guiones', () => {
-    const vacio: InformeLote = { filas: [], escrituras: [], resumen: { leadsEnLista: 0, leadsVivos: 0, alcanceProvisional: 0, llamadas: 0, porEstado: {}, leadsCalificados: 0, porCategoria: {} } };
+    const vacio: InformeLote = { filas: [], escrituras: [], resumen: { leadsEnLista: 0, leadsVivos: 0, alcanceProvisional: 0, presupuestoFormulario: 0, llamadas: 0, porEstado: {}, leadsCalificados: 0, porCategoria: {} } };
     expect(informeCsv(vacio).split('\r\n')).toHaveLength(2);
     expect(resumenTexto(vacio)).toContain('Llamadas procesadas: 0 → —');
   });

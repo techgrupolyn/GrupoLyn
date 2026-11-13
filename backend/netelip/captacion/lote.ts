@@ -11,7 +11,7 @@ import {
   type CampoLista, type ClickUpClient, type TareaClickUp,
 } from './clickup.ts';
 import { evaluarLlamadaCaptacion, interaccionDe, type EntradaLlamada, type ResultadoLlamada } from './proceso.ts';
-import { registrarAlcanceProvisional, type Db } from './repositorio.ts';
+import { registrarAlcanceProvisional, registrarPresupuestoFormulario, type Db } from './repositorio.ts';
 import type { LeadCandidato } from './vinculacion.ts';
 
 /** Última etapa en la que un lead sigue vivo. Las finales son e14 GANADO, e15 PERDIDO, e16 RECHAZADO y e18 PASE. */
@@ -84,6 +84,8 @@ export interface InformeLote {
     leadsEnLista: number;
     leadsVivos: number;
     alcanceProvisional: number;
+    /** Leads cuyo rango de «Presupuesto formulario» se registró como presupuesto del cliente en esta pasada. */
+    presupuestoFormulario: number;
     llamadas: number;
     porEstado: Record<string, number>;
     leadsCalificados: number;
@@ -136,6 +138,24 @@ export async function sembrarAlcanceProvisional(pool: Pool, tareas: readonly Tar
   return nuevos;
 }
 
+/**
+ * Registra como presupuesto del cliente el rango que marcó en el formulario web («Presupuesto formulario»). La fecha es la
+ * de creación de la tarjeta: una llamada posterior en la que el cliente diga un importe lo sustituye. Repetirlo no duplica.
+ * Solo deja el dato: no califica ni escribe a nadie (un lead sin llamada sigue sin letra).
+ */
+export async function sembrarPresupuestoFormulario(pool: Pool, tareas: readonly TareaClickUp[]): Promise<number> {
+  let nuevos = 0;
+  await conDb(pool, async (db) => {
+    for (const t of tareas) {
+      const opcion = t.campos[NOMBRES_CAMPOS.presupuesto_formulario];
+      if (typeof opcion !== 'string') continue;
+      const fecha = new Date(t.creadaEn || 0).toISOString();
+      if (await registrarPresupuestoFormulario(db, { clickupTaskId: t.id, opcion, fechaInteraccion: fecha })) nuevos += 1;
+    }
+  });
+  return nuevos;
+}
+
 async function citasDe(pool: Pool, interaccionId: string): Promise<CitaLote[]> {
   const { rows } = await pool.query<{ criterio_id: string; nivel: string; cita: string }>(
     `SELECT criterio_id, nivel, cita FROM lead_criterio_evaluacion
@@ -161,6 +181,7 @@ export async function ejecutarLote(o: OpcionesLote): Promise<InformeLote> {
   registro(`ClickUp: ${tareas.length} leads, ${vivos.length} vivos`);
 
   const alcanceProvisional = await sembrarAlcanceProvisional(o.pool, vivos);
+  const presupuestoFormulario = await sembrarPresupuestoFormulario(o.pool, vivos);
   const candidatos: LeadCandidato[] = (o.candidatos === 'todos' ? tareas : vivos).map(aLeadCandidato);
 
   const ultima = new Map<string, Extract<ResultadoLlamada, { estado: 'procesada' }>>();
@@ -268,6 +289,7 @@ export async function ejecutarLote(o: OpcionesLote): Promise<InformeLote> {
       leadsEnLista: tareas.length,
       leadsVivos: vivos.length,
       alcanceProvisional,
+      presupuestoFormulario,
       llamadas: filas.length,
       porEstado: contar(filas, (f) => f.estado),
       leadsCalificados: ultima.size,

@@ -103,7 +103,7 @@ export function resumenTexto(i: InformeLote): string {
   const escritosIds = ids('escrito');
   const conErrorIds = ids('error');
   return [
-    `Leads en la lista: ${r.leadsEnLista} (vivos ${r.leadsVivos}) · Alcance provisional nuevo: ${r.alcanceProvisional}`,
+    `Leads en la lista: ${r.leadsEnLista} (vivos ${r.leadsVivos}) · Alcance provisional nuevo: ${r.alcanceProvisional} · Presupuesto del formulario nuevo: ${r.presupuestoFormulario}`,
     `Llamadas procesadas: ${r.llamadas} → ${cuentas(r.porEstado)}`,
     `Leads calificados: ${r.leadsCalificados} → ${cuentas(r.porCategoria)}`,
     `Escritura en ClickUp: ${escritas} leads escritos · ${i.escrituras.filter((e) => e.resultado === 'simulado').length} en simulacro · ${i.escrituras.filter((e) => e.resultado === 'sin_cupo').length} sin cupo · ${i.escrituras.filter((e) => e.resultado === 'no_vivo').length} no vivos (no se escriben) · ${i.escrituras.filter((e) => e.resultado === 'error').length} con error`,

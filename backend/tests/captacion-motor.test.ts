@@ -5,9 +5,11 @@ import {
   crearEventoPresupuesto,
   cuentaComoPresupuesto,
   decidirWebhook,
+  FORMULARIO_PRESUPUESTO,
   ordenarPorPotencial,
   planificarCargaInicial,
   ponderadoDe,
+  presupuestoDelFormulario,
   presupuestoVigente,
   validarEscrituras,
   valorVigenteDe,
@@ -32,6 +34,41 @@ const evento = (valor: number | [number, number], fechaInteraccion: string, extr
 const D10 = '2026-11-10T10:00:00Z';
 const D12 = '2026-11-12T10:00:00Z';
 const D13 = '2026-11-13T10:00:00Z';
+
+describe('Presupuesto del formulario web · los 4 rangos del selector', () => {
+  it('cada opción da su presupuesto: los cerrados el valor central, «menos de» la mitad y «más de» el piso', () => {
+    expect(presupuestoDelFormulario('Menos de 40.000 €')).toEqual({ tipo: 'abierto_inferior', valorMin: null, valorMax: 40_000, valorVigente: 20_000 });
+    expect(presupuestoDelFormulario('40.000 € - 100.000 €')).toEqual({ tipo: 'rango', valorMin: 40_000, valorMax: 100_000, valorVigente: 70_000 });
+    expect(presupuestoDelFormulario('100.000 € - 200.000 €')).toEqual({ tipo: 'rango', valorMin: 100_000, valorMax: 200_000, valorVigente: 150_000 });
+    expect(presupuestoDelFormulario('Más de 200.000 €')).toEqual({ tipo: 'abierto_superior', valorMin: 200_000, valorMax: null, valorVigente: 200_000 });
+    expect(FORMULARIO_PRESUPUESTO).toEqual({ menosDe: 40_000, corteMedio: 100_000, masDe: 200_000 });
+  });
+
+  it('da igual el guion (– o -), el espacio duro, las mayúsculas, los puntos de millar o el símbolo €', () => {
+    for (const texto of ['40.000 € – 100.000 €', '40.000 € - 100.000 €', '40000-100000', '  40.000\u00a0€ – 100.000\u00a0€  ', '40.000€-100.000€']) {
+      expect(presupuestoDelFormulario(texto)?.valorVigente, texto).toBe(70_000);
+    }
+    for (const texto of ['MÁS DE 200.000 €', 'mas de 200000', 'Más de 200.000€']) expect(presupuestoDelFormulario(texto)?.valorVigente, texto).toBe(200_000);
+    for (const texto of ['MENOS DE 40.000 €', 'menos de 40000']) expect(presupuestoDelFormulario(texto)?.valorVigente, texto).toBe(20_000);
+  });
+
+  it('lo que no es una de las 4 opciones NO inventa un presupuesto', () => {
+    for (const raro of [null, undefined, '', '   ', 'Prefiero no decirlo', 'Menos de 50.000 €', 'Más de 300.000 €', '40.000 € - 90.000 €', '100.000 € - 300.000 €', 'De 40.000 a 100.000 y 200.000', '200.000 €']) {
+      expect(presupuestoDelFormulario(raro as string | null | undefined), String(raro)).toBeNull();
+    }
+  });
+
+  it('el presupuesto del formulario es del CLIENTE: lo manda la llamada posterior del cliente, pero no una cifra de LYN', () => {
+    const formulario = evento([100_000, 200_000], '2026-11-01T10:00:00Z', { fuente: 'formulario', emisor: 'cliente', registradoPor: 'sistema', valorVigente: 150_000 });
+    expect(presupuestoVigente([formulario])?.valorVigente).toBe(150_000);
+    // Una llamada posterior en la que el cliente dice otro importe lo sustituye (RN-8).
+    expect(presupuestoVigente([formulario, evento(60_000, D10, { emisor: 'cliente' })])?.valorVigente).toBe(60_000);
+    // Una cifra que dice LYN, aunque sea posterior, NO pisa al del cliente.
+    expect(presupuestoVigente([formulario, evento([60_000, 80_000], D12, { emisor: 'lyn' })])?.valorVigente).toBe(150_000);
+    // Y un evento antiguo del cliente procesado tarde no pisa al del formulario si es anterior.
+    expect(presupuestoVigente([formulario, evento(10_000, '2026-10-01T10:00:00Z', { emisor: 'cliente' })])?.valorVigente).toBe(150_000);
+  });
+});
 
 describe('Escenario 1 · Valor central de un rango', () => {
   it('40.000 a 70.000 € da 55.000 €', () => {

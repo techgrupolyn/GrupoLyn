@@ -49,6 +49,45 @@ export function valorVigenteDe(p: {
   throw new Error('Rango abierto: la regla del valor vigente está pendiente (P-04); informa valorVigente a mano');
 }
 
+/**
+ * Los 4 rangos del selector «¿Qué inversión tienes prevista para tu reforma?» del formulario web. Los dos extremos son
+ * abiertos y no tienen una regla del ticket (P-04): «Menos de 40.000 €» cuenta como la mitad y «Más de 200.000 €» como
+ * el piso, que es lo único seguro. Los dos rangos cerrados usan el valor central (RN-7).
+ */
+export const FORMULARIO_PRESUPUESTO = { menosDe: 40_000, corteMedio: 100_000, masDe: 200_000 } as const;
+
+export interface PresupuestoDelFormulario {
+  tipo: TipoPresupuesto;
+  valorMin: number | null;
+  valorMax: number | null;
+  valorVigente: number;
+}
+
+/**
+ * Traduce la opción elegida en el formulario a un presupuesto. Reconoce la opción por sus números y por «menos» o «más»,
+ * no por el texto exacto: los dos guiones del selector (– y -), los puntos de millar y los espacios no cambian el resultado.
+ * Una opción que no es una de las 4 devuelve null (no se inventa un presupuesto).
+ */
+export function presupuestoDelFormulario(opcion: string | null | undefined): PresupuestoDelFormulario | null {
+  if (typeof opcion !== 'string' || opcion.trim() === '') return null;
+  const t = opcion.toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ');
+  const n = (t.match(/\d+/g) ?? []).map(Number);
+  const { menosDe, corteMedio, masDe } = FORMULARIO_PRESUPUESTO;
+  if (/menos/.test(t) && n.length === 1 && n[0] === menosDe) {
+    return { tipo: 'abierto_inferior', valorMin: null, valorMax: menosDe, valorVigente: Math.round(menosDe / 2) };
+  }
+  if (/m[aá]s/.test(t) && n.length === 1 && n[0] === masDe) {
+    return { tipo: 'abierto_superior', valorMin: masDe, valorMax: null, valorVigente: masDe };
+  }
+  if (n.length === 2 && n[0] === menosDe && n[1] === corteMedio) {
+    return { tipo: 'rango', valorMin: menosDe, valorMax: corteMedio, valorVigente: valorVigenteDe({ tipo: 'rango', valorMin: menosDe, valorMax: corteMedio }) };
+  }
+  if (n.length === 2 && n[0] === corteMedio && n[1] === masDe) {
+    return { tipo: 'rango', valorMin: corteMedio, valorMax: masDe, valorVigente: valorVigenteDe({ tipo: 'rango', valorMin: corteMedio, valorMax: masDe }) };
+  }
+  return null;
+}
+
 export interface DatosEvento {
   id: string;
   fuente: Fuente;

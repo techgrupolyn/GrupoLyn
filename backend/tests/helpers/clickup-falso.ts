@@ -22,6 +22,7 @@ export const CAMPOS_FALSOS = [
   { id: 'f-tcon', name: 'Tipo de Contacto', type: 'drop_down', type_config: { options: opciones(['Reforma_integral_de_vivienda', 'Reforma_global_de_vivienda_(salvo_algunas_estancias)', 'REFORMA'], 'o-tcon') } },
   { id: 'f-tref', name: 'tipo_reforma', type: 'drop_down', type_config: { options: opciones(['Integral', 'Parcial'], 'o-tref') } },
   { id: 'f-indice', name: 'Índice de orden', type: 'number', type_config: {} },
+  { id: 'f-presf', name: 'Presupuesto formulario', type: 'drop_down', type_config: { options: opciones(['Menos de 40.000 €', '40.000 € - 100.000 €', '100.000 € - 200.000 €', 'Más de 200.000 €'], 'o-presf') } },
 ];
 
 export interface TareaFalsa {
@@ -34,6 +35,8 @@ export interface TareaFalsa {
   tipoContacto?: number;
   /** Posición en las opciones de tipo_reforma (0 = Integral, 1 = Parcial). */
   tipoReforma?: number;
+  /** Posición en las opciones de «Presupuesto formulario» (0 = Menos de 40.000 €, 1 = 40-100.000 €, 2 = 100-200.000 €, 3 = Más de 200.000 €). */
+  presupuestoFormulario?: number;
   /** Id de la tarea padre: es una subtarea. */
   padre?: string;
   cerrada?: boolean;
@@ -50,6 +53,7 @@ export function aTareaClickUp(t: TareaFalsa): Record<string, unknown> {
   if (t.email) cf.push(campo('email', t.email));
   if (t.tipoContacto !== undefined) cf.push(campo('Tipo de Contacto', t.tipoContacto));
   if (t.tipoReforma !== undefined) cf.push(campo('tipo_reforma', t.tipoReforma));
+  if (t.presupuestoFormulario !== undefined) cf.push(campo('Presupuesto formulario', t.presupuestoFormulario));
   return {
     id: t.id, name: t.nombre, date_created: '1762000000000', ...(t.padre ? { parent: t.padre } : {}),
     status: { status: t.cerrada ? 'perdido' : 'en curso', type: t.cerrada ? 'closed' : 'open' },
