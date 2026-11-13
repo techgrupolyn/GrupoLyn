@@ -27,6 +27,7 @@ import { meetingReviewChain, meetingEmployeeRoles, meetingStageRecipientConditio
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
 import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
 import { createReunionesWorkers, ensureReunionesMeet } from './reuniones-meet/index.ts';
+import { createMarketingWorker, ensureMarketing, registerMarketing } from './marketing/index.ts';
 import { idCarpetaDrive } from './netelip/entrenador/drive.ts';
 import { ensureProjectMeetingSchema, registerProjectMeetingRoutes, refreshProjectMeetings, syncProjectMeeting } from './meeting-project-workflow.ts';
 import { exactActionProject, reconcileMeetingActionProjects } from './meeting-project-linking.ts';
@@ -1038,6 +1039,7 @@ async function ensureDatabaseSchema(): Promise<void> {
   await ensureSummaryJobs(pool);
   await ensureNetelipCalls(pool);
   await ensureReunionesMeet(pool);
+  await ensureMarketing(pool);
   await ensureWhatsAppReliability(pool);
   await pool.query(
     `INSERT INTO usuarios (usuario, contraseña, password_hash, nombre, rol)
@@ -8902,6 +8904,7 @@ async function bootstrap() {
   setInterval(() => void runSummaryQueue(), 5_000).unref();
   if (process.env.NETELIP_WORKERS_ENABLED !== 'false') netelipWorkers.start();
   reunionesWorkers.start();
+  marketingWorker.start();
   if (EVOLUTION_BACKGROUND_SYNC_ENABLED) await bootEvolution();
 }
 
@@ -9090,6 +9093,16 @@ registerNetelipCalls(app, {
   actor: (res) => ({ id: meetingAuditIdentity(res).id, nombre: meetingAuditActor(res) }),
   enviar: enviarWhatsAppCalificador,
   entrenadorDrive: ENTRENADOR_DRIVE_CARPETA && ENTRENADOR_DRIVE_CUENTA ? { carpetaId: ENTRENADOR_DRIVE_CARPETA, token: entrenadorDriveToken } : null,
+});
+// Panel de marketing (869fny1et): gasto de Windsor + leads agregados de ClickUp + nota del calificador.
+const marketingWorker = createMarketingWorker(pool, process.env);
+registerMarketing(app, {
+  pool, admin: requireCeoAuth,
+  role: (res) => String((res.locals.ceoSession as CeoSession | undefined)?.rol || ''),
+  fail: (res, error) => {
+    console.error('[marketing] Error en la API:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudo completar la operación del panel de marketing.' });
+  },
 });
 registerDashboardOperations(app, {
   pool, admin: requireCeoAuth, actor: meetingAuditActor, identity: meetingAuditIdentity,
