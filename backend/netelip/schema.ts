@@ -6,6 +6,7 @@ import type { Pool } from 'pg';
 import { ensureCalificador } from './calificador/schema.ts';
 import { sembrarRubricas } from './calificador/rubrica.ts';
 import { ensureEntrenador } from './entrenador/schema.ts';
+import { ensureCaptacion } from './captacion/schema.ts';
 
 export const NETELIP_TABLES = [
   'netelip_audio_deletion_requests', 'netelip_call_reports', 'netelip_call_transcriptions',
@@ -132,4 +133,5 @@ export async function ensureNetelipCalls(pool: Pool): Promise<void> {
   await ensureCalificador(pool);
   await sembrarRubricas(pool);
   await ensureEntrenador(pool);
+  await ensureCaptacion(pool);
 }
