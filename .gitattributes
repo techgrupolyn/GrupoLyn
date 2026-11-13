@@ -1,0 +1,6 @@
+# Texto normalizado a LF en el repositorio; cada uno lo saca con los saltos de su sistema (core.autocrlf).
+* text=auto
+
+# Documentos que el código lee y compara byte a byte (p. ej. backend/netelip/entrenador/base-v0.txt):
+# siempre LF, también en Windows.
+backend/netelip/**/*.txt text eol=lf

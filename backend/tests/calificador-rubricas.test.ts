@@ -134,8 +134,30 @@ describe('Evaluación con la rúbrica vigente', () => {
     expect(JSON.parse(String(update.params[16]))).toHaveLength(7);
   });
 
-  it('sin versión en la fila (closer sin rúbrica propia) sigue con fase0-v1', async () => {
-    const { pool, queries } = fakePool({ ...JOB, rubrica_version_id: null, rol: 'closer_f2' });
+  it('CAL-06: una fila pendiente de un closer sin rúbrica propia no va al modelo ni usa fase0-v1', async () => {
+    const { pool, queries } = fakePool({ ...JOB, rubrica_version_id: null, rol: 'closer_f2', extension_netelip: '115' });
+    const evaluar = async () => { throw new Error('no debería llamar al modelo'); };
+    expect(await procesarSiguienteEvaluacion(pool, evaluar, CONFIG)).toBe('no_evaluada');
+    const update = queries.find((q) => /SET estado = 'no_evaluada'/.test(q.sql))!;
+    expect(update.params[1]).toBe('sin rúbrica para el rol closer_f2');
+    expect(queries.some((q) => /SET estado = 'evaluada'/.test(q.sql))).toBe(false);
+  });
+
+  it('CAL-06: un closer con rúbrica activa se evalúa con ella', async () => {
+    const { pool, queries } = fakePool({ ...JOB, rol: 'closer_f2', extension_netelip: '115', rubrica_version_id: '3' });
+    let sistema = '';
+    const evaluar = async (s: string) => { sistema = s; return { text: salida(), model: 'm', inputTokens: 1, outputTokens: 1 }; };
+    expect(await procesarSiguienteEvaluacion(pool, evaluar, CONFIG)).toBe('evaluada');
+    expect(sistema).toContain('rúbrica sdr-v1'); // FILA_V1 hace de rúbrica del closer en el simulado
+    expect(queries.find((q) => /SET estado = 'evaluada'/.test(q.sql))!.params[12]).toBe('sdr-v1');
+  });
+
+  it('CAL-05: sdr-v1 no tiene el error crítico de precio cerrado tras la primera reunión (era de fase0-v1)', () => {
+    expect(V1.errores_criticos.map((e) => e.codigo)).not.toContain('PRECIO_CERRADO_PRIMERA_REUNION');
+  });
+
+  it('sin versión en la fila, el SDR sigue con fase0-v1', async () => {
+    const { pool, queries } = fakePool({ ...JOB, rubrica_version_id: null, rol: 'sdr' });
     const evaluar = async (_s: string, _u: string, sch?: object) => {
       expect(sch).toBeUndefined();
       return { text: JSON.stringify({ llamada_evaluable: true, motivo_no_evaluable: null, nota: 84, errores_criticos: [], bien: ['a uno', 'b dos'], mejorar: [{ que: 'x', accion: 'y' }, { que: 'z', accion: 'w' }], duda: { valor: false, motivo: null }, objeciones: [] }), model: 'm', inputTokens: 1, outputTokens: 1 };
