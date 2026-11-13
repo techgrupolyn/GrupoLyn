@@ -6,7 +6,8 @@ import type { Pool } from 'pg';
 export const ENTRENADOR_TABLES = ['entrenador_version'] as const;
 
 /** Versión 0: el «Contexto unificado» original de Jean Parra (05/11/2026), tal cual. */
-export const DOCUMENTO_BASE = readFileSync(new URL('./base-v0.txt', import.meta.url), 'utf8');
+// Saltos de línea LF aunque git lo haya sacado con CRLF (core.autocrlf en Windows): el texto se compara byte a byte.
+export const DOCUMENTO_BASE = readFileSync(new URL('./base-v0.txt', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 export async function ensureEntrenador(pool: Pool): Promise<void> {
   await pool.query(`

@@ -1233,7 +1233,8 @@ function requireCeoAuth(req: Request, res: Response, next: NextFunction): void {
 
 export function isCeoAdministratorRole(role: unknown): boolean {
   const normalized = String(role || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');
-  return ['superadmin', 'admin', 'ceo', 'employee:director', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(normalized);
+  // employee:superadmin / employee:admin: los roles superadmin y admin del directorio de Supabase (CAL-09).
+  return ['superadmin', 'admin', 'ceo', 'employee:superadmin', 'employee:admin', 'employee:director', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(normalized);
 }
 
 export function isCeoMeetingAccessRole(role: unknown): boolean {

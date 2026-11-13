@@ -11,6 +11,7 @@ import { madridDay, partiesFromRecording, parsePropfind, pickRecording } from '.
 import { buildEngine, GeminiEngine, parseGeminiTranscript, TranscriptionError, whisperTimeoutMinutes } from '../netelip/transcription.ts';
 import type { VdriveClient } from '../netelip/vdrive.ts';
 import { canAccessNetelipCalls, canReadTranscripts } from '../netelip/routes.ts';
+import { canSupervise } from '../netelip/calificador/rutas.ts';
 
 const BASE = {
   uniqueid: '1791201600.1', src: '600111222', dst: '201', userexten: '201', status: 'ANSWERED', duration: '95',
@@ -259,6 +260,15 @@ describe('Netelip · permisos y WhatsApp', () => {
   it('solo Director, superadmin y admin ven el historial de llamadas', () => {
     for (const role of ['superadmin', 'admin', 'employee:director', 'employee:director_general', 'Employee:Director General']) expect(canAccessNetelipCalls(role, {})).toBe(true);
     for (const role of ['ceo', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:pmc_proyectos', 'consulta_publica', '']) expect(canAccessNetelipCalls(role, {})).toBe(false);
+  });
+
+  it('CAL-09: el superadmin y el admin del directorio (employee:…) ven el historial, leen el texto y supervisan', () => {
+    for (const role of ['employee:superadmin', 'employee:admin', 'Employee:Superadmin']) {
+      expect(canAccessNetelipCalls(role, {})).toBe(true);
+      expect(canReadTranscripts(role, {})).toBe(true);
+      expect(canSupervise(role, {})).toBe(true);
+    }
+    expect(canAccessNetelipCalls('employee:admin_general', {})).toBe(false);
   });
 
   it('P6: por defecto leen el texto los mismos roles, y nunca alguien sin acceso a la sección', () => {
