@@ -6,14 +6,13 @@ import { canalDelLead, normalizarLetra } from './atribucion.ts';
 import type { Fetch } from './windsor.ts';
 
 const API = 'https://api.clickup.com/api/v2';
-export const LISTA_CONTACTO_REFORMA = '901211441576';
-
 export type ClickupConfig = { token: string; lista: string; sal: string };
 
 export function clickupConfigDesdeEnv(env: NodeJS.ProcessEnv): ClickupConfig | null {
   const token = String(env.CLICKUP_API_TOKEN || '').trim();
-  if (!token) return null;
-  return { token, lista: env.MARKETING_CLICKUP_LIST?.trim() || LISTA_CONTACTO_REFORMA, sal: env.MARKETING_HASH_SALT || 'lyn-panel-marketing' };
+  const lista = String(env.MARKETING_CLICKUP_LIST || '').trim();
+  if (!token || !lista) return null;
+  return { token, lista, sal: env.MARKETING_HASH_SALT || 'lyn-panel-marketing' };
 }
 
 type CampoClickup = { name?: string; type?: string; value?: unknown; type_config?: { options?: Array<{ id?: string; name?: string; label?: string; orderindex?: number }> } };

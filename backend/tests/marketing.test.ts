@@ -53,9 +53,9 @@ describe('Marketing · reglas de atribución', () => {
   });
 
   it('zona: gana la zona que aparece antes en el nombre de la campaña', () => {
-    expect(zonaDeCampana('alicante Altest3 M Marzo 2, GRUPO LYN _ LEAD FORM … MURCIA _ Final', ZONAS)).toBe('Alicante');
-    expect(zonaDeCampana('murcia test3 2.0 … MURCIA', ZONAS)).toBe('Murcia');
-    expect(zonaDeCampana('Costa Sureste', ZONAS)).toBe('Sureste');
+    expect(zonaDeCampana('alicante prueba 1 _ FORMULARIO _ MURCIA', ZONAS)).toBe('Alicante');
+    expect(zonaDeCampana('murcia prueba 2 _ MURCIA', ZONAS)).toBe('Murcia');
+    expect(zonaDeCampana('Campaña Sureste', ZONAS)).toBe('Sureste');
     expect(zonaDeCampana('Marca', ZONAS)).toBe('Sin zona');
   });
 
@@ -156,7 +156,7 @@ describe('Marketing · ClickUp', () => {
     const f = (async (u: string) => (u.includes('/task?')
       ? jsonRes({ tasks: [], last_page: true })
       : jsonRes({ err: 'You do not have access to this Space', ECODE: 'ACCESS_065' }, 401))) as typeof fetch;
-    await expect(leerLeads({ token: 't', lista: '901211441576', sal: 's' }, f)).rejects.toThrow('sin acceso a la lista 901211441576 (ACCESS_065: You do not have access to this Space)');
+    await expect(leerLeads({ token: 't', lista: 'L1', sal: 's' }, f)).rejects.toThrow('sin acceso a la lista L1 (ACCESS_065: You do not have access to this Space)');
   });
 
   it('una lectura vacía no borra los leads guardados', async () => {
@@ -225,7 +225,7 @@ describe('Marketing · árbol y agregados', () => {
     const reglas = [...ZONAS, { patron: 'creacion de marca', valor: 'Marca (Alicante y Murcia)', prioridad: 100 }, { patron: 'ofertas de trabajo', valor: 'Excluida', prioridad: 100 }];
     const r = construirArbol({
       periodos, zonas: reglas, familias: FAMILIAS,
-      gasto: [gasto({}), gasto({ campana_id: 'c9', campana: 'Ofertas de trabajo', anuncio_id: 'a9', gasto: 50 }), gasto({ campana_id: 'c8', campana: 'Creación de marca alicante y murcia', anuncio_id: 'a8' })],
+      gasto: [gasto({}), gasto({ campana_id: 'c9', campana: 'Ofertas de trabajo', anuncio_id: 'a9', gasto: 50 }), gasto({ campana_id: 'c8', campana: 'Creación de marca alicante', anuncio_id: 'a8' })],
       leads: [lead({ utm_campaign: 'Ofertas de trabajo' })],
     });
     const zonas = r.tree.children!.find((c) => c.id === 'meta')!.children!.map((z) => z.name);
@@ -261,7 +261,7 @@ describe('Marketing · árbol y agregados', () => {
 describe('Marketing · carga diaria', () => {
   it('antes de la hora o sin claves no hay nada pendiente; después, las fuentes sin carga correcta hoy', async () => {
     const pool = { query: async () => ({ rows: [{ fuente: 'windsor' }] }) } as unknown as Pool;
-    const env = { WINDSOR_API_KEY: 'k', CLICKUP_API_TOKEN: 't', MARKETING_CARGA_HORA: '6' };
+    const env = { WINDSOR_API_KEY: 'k', CLICKUP_API_TOKEN: 't', MARKETING_CLICKUP_LIST: 'L1', MARKETING_CARGA_HORA: '6' };
     expect(await fuentesPendientesHoy(pool, env, new Date('2026-11-17T04:00:00Z'))).toEqual([]); // 05:00 en Madrid
     expect(await fuentesPendientesHoy(pool, env, new Date('2026-11-17T06:00:00Z'))).toEqual(['clickup']);
     expect(await fuentesPendientesHoy(pool, {}, new Date('2026-11-17T06:00:00Z'))).toEqual([]);

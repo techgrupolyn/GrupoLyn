@@ -133,7 +133,7 @@ export function registerMarketing(app: Express, deps: Deps): void {
     const fuentes = pedidas.filter((f: unknown): f is Fuente => f === 'windsor' || f === 'clickup');
     try {
       const resultados = await ejecutarCarga(pool, env, fuentes);
-      if (!resultados.length) return res.status(409).json({ error: 'No hay ninguna fuente configurada (WINDSOR_API_KEY, CLICKUP_API_TOKEN).' });
+      if (!resultados.length) return res.status(409).json({ error: 'No hay ninguna fuente configurada (WINDSOR_API_KEY, CLICKUP_API_TOKEN y MARKETING_CLICKUP_LIST).' });
       res.json({ resultados });
     } catch (error) { fail(res, error); }
   });

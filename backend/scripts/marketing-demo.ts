@@ -27,7 +27,7 @@ async function crear() {
   const campanas = [
     { canal: 'meta', id: 'demo-m1', nombre: 'DEMO alicante Integral · Captación', anuncios: [['120200000000001', 'Casa Idan · reel'], ['120200000000002', 'Reformas de cocinas · antes y después'], ['120200000000003', 'Reformas de cocinas · antes y después']] },
     { canal: 'meta', id: 'demo-m2', nombre: 'DEMO murcia Integral · Captación', anuncios: [['120200000000011', 'Reel Hooks Abril'], ['120200000000012', 'AT4 · control de la reforma']] },
-    { canal: 'meta', id: 'demo-m3', nombre: 'DEMO Costa Sureste', anuncios: [['120200000000021', 'Tu hogar como siempre lo soñaste']] },
+    { canal: 'meta', id: 'demo-m3', nombre: 'DEMO Campaña Sureste', anuncios: [['120200000000021', 'Tu hogar como siempre lo soñaste']] },
     { canal: 'google', id: 'demo-g1', nombre: 'DEMO Alicante Búsqueda integrales', anuncios: [] },
     { canal: 'google', id: 'demo-g2', nombre: 'DEMO Murcia Búsqueda integrales', anuncios: [] },
   ];

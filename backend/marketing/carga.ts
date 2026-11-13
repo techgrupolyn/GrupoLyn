@@ -78,7 +78,7 @@ export function createMarketingWorker(pool: Pool, env: NodeJS.ProcessEnv = proce
     start() {
       if (env.MARKETING_CARGA_ENABLED === 'false') return;
       if (!windsorConfigDesdeEnv(env)) console.warn('[marketing] Sin WINDSOR_API_KEY: el panel no tendrá gasto');
-      if (!clickupConfigDesdeEnv(env)) console.warn('[marketing] Sin CLICKUP_API_TOKEN: el panel no tendrá leads');
+      if (!clickupConfigDesdeEnv(env)) console.warn('[marketing] Sin CLICKUP_API_TOKEN o MARKETING_CLICKUP_LIST: el panel no tendrá leads de ClickUp');
       void ciclo();
       setInterval(() => void ciclo(), INTERVALO_MS).unref();
     },

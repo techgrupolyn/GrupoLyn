@@ -36,7 +36,7 @@ Todo es agregado o seudónimo: **ningún nombre, teléfono ni email de un lead**
 | Tabla | Origen | Contenido |
 |---|---|---|
 | `mk_gasto_diario` | Windsor.ai (solo lectura) | Gasto, clics e impresiones por día y anuncio (Meta) o campaña (Google) |
-| `mk_lead` | ClickUp, lista «Contacto de Reforma» (`901211441576`), solo tareas padre | Hash del lead, fecha de alta, canal, UTM, letra de entrada y vigente, importe, etapa y si llegó a visita / diseño / seguimiento / ganado |
+| `mk_lead` | ClickUp, lista «Contacto de Reforma» (`MARKETING_CLICKUP_LIST`), solo tareas padre | Hash del lead, fecha de alta, canal, UTM, letra de entrada y vigente, importe, etapa y si llegó a visita / diseño / seguimiento / ganado |
 | `mk_valor_letra`, `mk_curva_maduracion` | Tabla central de ponderaciones (editable en el panel) | A++, A+ y A = 1 · B 0,75 · C 0,45 · D 0,15 · No apto 0; curvas iniciales del mockup |
 | `mk_zona_regla`, `mk_familia_creativa` | Reglas editables (`PUT /api/marketing/reglas`) | Zona por nombre de campaña (gana la que aparece antes) y familia por nombre de anuncio |
 | `mk_carga` | Registro | Cada carga, con su resultado |
@@ -67,9 +67,10 @@ Diaria e idempotente (`backend/marketing/carga.ts`): cada 15 minutos comprueba s
 | Variable | Uso |
 |---|---|
 | `WINDSOR_API_KEY` | Clave de Windsor. Sin ella no hay gasto |
-| `MARKETING_WINDSOR_META_ACCOUNTS` | Opcional: limita las cuentas (`select_accounts`) |
+| `MARKETING_WINDSOR_META_ACCOUNTS` | Opcional: limita las cuentas (`select_accounts`, número de cuenta sin prefijo) |
 | `MARKETING_WINDSOR_GOOGLE` | `true` cuando Google Ads esté conectado en Windsor |
 | `CLICKUP_API_TOKEN` | Token con lectura de «Contacto de Reforma». Sin acceso al espacio, la carga queda en error con `ACCESS_065` |
+| `MARKETING_CLICKUP_LIST` | Id de la lista «Contacto de Reforma» en ClickUp. Obligatorio para cargar leads |
 | `MARKETING_HASH_SALT` | Sal del hash de los leads. No cambiarla: los leads se recrean y se pierde la letra de entrada |
 | `MARKETING_CARGA_HORA` / `MARKETING_CARGA_ENABLED` | Hora de la carga diaria / `false` para apagarla |
 | `MARKETING_ACCESS_ROLES` | Quién ve el panel. Por defecto superadmin, admin, ceo, director y director general. Debe coincidir con `MARKETING_ACCESS_ROLES` de `frontend/src/ceo-dashboard/CeoLogin.jsx` |
@@ -83,7 +84,7 @@ Diaria e idempotente (`backend/marketing/carga.ts`): cada 15 minutos comprueba s
 ## Pendiente
 
 - **Datos**: acceso de solo lectura del token a «Contacto de Reforma»; atribución en Tally y en los anuncios (869fnzbwu); histórico de letras (N-1.2) para el gráfico 4; Google Ads en Windsor.
-- **Windsor, comprobado en real (12/11/2026):** la carga por API trae 5.694 filas por anuncio (74.830 € de Meta del 01/04 al 12/11, 11 campañas y 316 anuncios), con los campos que espera el código. Falta comprobar contra la lista real los campos de ClickUp (`canal`, `ETAPA_CRM`, `T_e*`, `Categoría`/`valoracion_interna`, `presupuesto_estimado`, `utm_*`).
+- **Windsor, comprobado en real (12/11/2026):** la carga por API trae el gasto y los leads de Meta por anuncio con los campos que espera el código. Falta comprobar contra la lista real los campos de ClickUp (`canal`, `ETAPA_CRM`, `T_e*`, `Categoría`/`valoracion_interna`, `presupuesto_estimado`, `utm_*`).
 - **Producto y Dirección**: P-01, P-03, P-04, P-06, P-08 del épico; qué es A++ y si «No apto» va en el gráfico 1.
 
 Depende del PR #33 (rúbricas del calificador): el gráfico 5 usa la columna `llamada_evaluacion.reevaluacion`.
