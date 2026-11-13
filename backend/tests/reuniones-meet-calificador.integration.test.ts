@@ -26,7 +26,8 @@ describe.skipIf(!databaseUrl)('Migración del calificador para reuniones en Post
     await client.query(`CREATE SCHEMA ${ESQUEMA}; SET search_path TO ${ESQUEMA};
       CREATE TABLE empleados (id VARCHAR(255) PRIMARY KEY, nombre VARCHAR(255) NOT NULL, email VARCHAR(255), activo BOOLEAN NOT NULL DEFAULT TRUE);
       CREATE TABLE clientes (id VARCHAR(255) PRIMARY KEY, nombre TEXT, apellido TEXT);
-      CREATE TABLE crm_leads (id UUID PRIMARY KEY, name TEXT);
+      CREATE TABLE crm_leads (id UUID PRIMARY KEY, name TEXT, client_id VARCHAR(255));
+      CREATE TABLE proyectos (id VARCHAR(255) PRIMARY KEY, cliente_id VARCHAR(255), direccion TEXT);
       CREATE TABLE netelip_calls (id BIGSERIAL PRIMARY KEY, agent_extension TEXT, direction TEXT, duration_seconds INTEGER,
         occurred_at TIMESTAMPTZ DEFAULT NOW(), lead_id UUID, client_id VARCHAR(255));
       CREATE TABLE netelip_call_transcriptions (call_id BIGINT PRIMARY KEY, status TEXT, text TEXT, segments JSONB);

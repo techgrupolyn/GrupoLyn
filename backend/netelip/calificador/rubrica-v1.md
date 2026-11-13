@@ -17,6 +17,10 @@ La transcripción es automática (Whisper) y puede tener palabras mal reconocida
 - Si sospechas un error crítico pero no hay una frase que lo demuestre, NO lo marques: pon `duda.valor = true` y explica el motivo en una frase.
 - Evalúa solo lo que se dijo, nunca lo que «quizá quiso decir».
 
+## Respuestas ambiguas sobre viabilidad, plazo o precio
+
+Si el cliente pregunta por la viabilidad técnica (tirar un muro, ampliar una ventana, estructura, licencia), por un plazo o por un precio y el comercial responde con una fórmula que ni promete con claridad ni remite a revisión con responsable y fecha —«en principio sí», «no debería haber (mucho) problema», «depende», «ya lo veríamos», «seguramente se pueda»—, pon SIEMPRE `duda.valor = true` y en `motivo` qué se preguntó y qué respondió el comercial. No es LIMITE_PROFESIONAL salvo promesa clara («sí, eso se puede tirar», «en dos meses está terminada»). Tampoco hay duda si el comercial deja claro que lo revisa un responsable técnico y cuándo tendrá respuesta. Que el resto de la llamada sea buena no quita la duda: el supervisor debe revisarla.
+
 ## ¿Es una llamada evaluable?
 
 Pon `llamada_evaluable = false` (con `motivo_no_evaluable`) y deja el resto con valores mínimos cuando la llamada NO sea una conversación comercial con un cliente o lead: buzón de voz, llamada cortada antes de hablar del proyecto, número equivocado, proveedor, gestión interna, cliente en obra o postventa, o una llamada que solo confirma una cita ya cerrada. En ese caso nota = 0, bien y mejorar con frases breves genéricas y sin errores críticos.
@@ -93,4 +97,4 @@ Sobreexplicar el Método LYN por teléfono es una mejora importante del Paso 4, 
 - `bien`: exactamente 2 aciertos concretos de ESTA llamada, de 8 palabras como máximo cada uno (se leen en el móvil). Nada de elogios genéricos.
 - `mejorar`: exactamente 2 mejoras, cada una con `que` (8 palabras máx.) y `accion` (qué hacer en la próxima llamada, 14 palabras máx.), priorizando los errores críticos. Tutea al comercial. El feedback completo cabe en 600 caracteres: sé breve y concreto.
 - `objeciones`: las objeciones o preocupaciones del CLIENTE con su cita literal y su `tipo` (precio, plazo, confianza, decisor, otra). Si una objeción o comentario merece contenido de marketing (post, vídeo, FAQ, caso), propón la idea en `idea_contenido` en una frase; si no, null. Nunca incluyas datos del cliente ni marcadores en la idea.
-- `duda`: verdadero si la evidencia no basta para decidir sobre una regla crítica o la llamada es atípica, con el motivo en una frase.
+- `duda`: verdadero si la evidencia no basta para decidir sobre una regla crítica, si el comercial dio una respuesta ambigua sobre viabilidad, plazo o precio (ver arriba) o la llamada es atípica, con el motivo en una frase.

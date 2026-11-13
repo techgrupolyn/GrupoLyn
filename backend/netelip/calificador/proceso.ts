@@ -46,7 +46,7 @@ type Trabajo = {
   rubrica_version_id: string | null; reevaluacion: boolean; sin_consentimiento_previo: boolean;
   direction: string; duration_seconds: number; occurred_at: Date;
   t_status: string | null; t_text: string | null; segments: Segmento[] | null;
-  lead_name: string | null; client_name: string | null;
+  lead_name: string | null; client_name: string | null; client_addresses?: string[] | null;
 };
 
 async function noEvaluada(pool: Pool, id: string, motivo: string): Promise<'no_evaluada'> {
@@ -78,7 +78,9 @@ export async function procesarSiguienteEvaluacion(pool: Pool, evaluar: Evaluador
      RETURNING e.id, e.llamada_id, e.intentos, e.rol, e.extension_netelip, e.rubrica_version_id, e.reevaluacion,
        EXISTS (SELECT 1 FROM llamada_evaluacion x WHERE x.llamada_id = e.llamada_id AND x.sin_consentimiento) AS sin_consentimiento_previo,
        c.direction, c.duration_seconds, c.occurred_at,
-       t.status AS t_status, t.text AS t_text, t.segments, l.name AS lead_name, CONCAT_WS(' ', cl.nombre, cl.apellido) AS client_name`,
+       t.status AS t_status, t.text AS t_text, t.segments, l.name AS lead_name, CONCAT_WS(' ', cl.nombre, cl.apellido) AS client_name,
+       -- crm_leads y clientes no guardan dirección: la que hay es la de las obras del cliente (proyectos.direccion).
+       ARRAY(SELECT p.direccion FROM proyectos p WHERE p.cliente_id = COALESCE(c.client_id, l.client_id) AND NULLIF(TRIM(p.direccion), '') IS NOT NULL) AS client_addresses`,
   );
   if (!rows.length) return null;
   const job = rows[0];
@@ -92,7 +94,7 @@ export async function procesarSiguienteEvaluacion(pool: Pool, evaluar: Evaluador
   }
   const turnos = transcripcionPorTurnos(job.segments, job.t_text || '');
   if (!turnos.trim()) return noEvaluada(pool, job.id, 'la grabación no contiene conversación');
-  const transcripcion = enmascarar(turnos, [job.lead_name || '', job.client_name || '']);
+  const transcripcion = enmascarar(turnos, [job.lead_name || '', job.client_name || ''], job.client_addresses || []);
   // El cliente no autoriza la grabación: no se envía al modelo ni se guardan objeciones (869fpj8dm).
   if (detectarNegativaGrabacion(transcripcion)) return sinConsentimiento(pool, job.id);
   // P-05: crm_leads aún no guarda el presupuesto del lead; mientras no exista, nunca consta como registrado.
