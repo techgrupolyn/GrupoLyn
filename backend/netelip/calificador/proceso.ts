@@ -8,6 +8,7 @@ import {
   type Segmento,
 } from './reglas.ts';
 import { rubricaPorId } from './rubrica.ts';
+import { motivoSinRubrica, ROL_CON_RUBRICA_FIJA } from './encolar.ts';
 
 export const MAX_INTENTOS = 3;
 const BACKOFF_SEGUNDOS = [60, 300, 900];
@@ -84,6 +85,8 @@ export async function procesarSiguienteEvaluacion(pool: Pool, evaluar: Evaluador
   const job = rows[0];
   // Una llamada marcada «sin consentimiento» no vuelve a ir al modelo, tampoco en una reevaluación.
   if (job.sin_consentimiento_previo) return sinConsentimiento(pool, job.id);
+  // CAL-06: fila pendiente anterior al cambio de un rol sin rúbrica propia. fase0-v1 es solo del SDR.
+  if (!job.rubrica_version_id && job.rol !== ROL_CON_RUBRICA_FIJA) return noEvaluada(pool, job.id, motivoSinRubrica(job.rol));
   if (job.t_status === 'failed' || !job.t_status) return noEvaluada(pool, job.id, 'transcripción no disponible');
   if (job.t_status !== 'completed') {
     // Aún transcribiendo: se vuelve a mirar en un minuto sin gastar intento.
@@ -97,7 +100,7 @@ export async function procesarSiguienteEvaluacion(pool: Pool, evaluar: Evaluador
   if (detectarNegativaGrabacion(transcripcion)) return sinConsentimiento(pool, job.id);
   // P-05: crm_leads aún no guarda el presupuesto del lead; mientras no exista, nunca consta como registrado.
   const presupuestoRegistrado = false;
-  // Rúbrica versionada de la fila (la activa al encolar, o la pedida en una reevaluación); sin ella, fase0-v1.
+  // Rúbrica versionada de la fila (la activa al encolar, o la pedida en una reevaluación); sin ella, fase0-v1 (SDR).
   const rubrica = job.rubrica_version_id ? await rubricaPorId(pool, job.rubrica_version_id) : null;
   if (job.rubrica_version_id && !rubrica) return noEvaluada(pool, job.id, `no existe la rúbrica ${job.rubrica_version_id}`);
 

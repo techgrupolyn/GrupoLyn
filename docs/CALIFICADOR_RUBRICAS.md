@@ -3,7 +3,7 @@
 El calificador interno de llamadas puntúa con la **rúbrica vigente del rol**, guardada en la tabla `rubrica_version`, no en el código. Cambiar el guion es publicar una versión nueva: **no hace falta desplegar**.
 
 - **SDR:** `sdr-v1`, los 7 pasos del «Guion completo SDR» con sus pesos (5 · 25 · 15 · 20 · 10 · 10 · 15) y 3 errores críticos (REGLA CERO, LÍMITE PROFESIONAL y EXCEPCIÓN SIN AUTORIZACIÓN). Se carga sola la primera vez desde `backend/netelip/calificador/rubricas/sdr-v1.json`.
-- **Closers (F2 y F3):** hasta que tengan versión propia siguen con la rúbrica fija `fase0-v1` (`rubrica-v1.md`).
+- **Closers (F2, F3 y F4):** no se evalúan hasta que tengan versión propia activa (CAL-06). Sus llamadas quedan «No evaluada» con el motivo «sin rúbrica para el rol closer_f2» (o el que corresponda). Si la rúbrica se activa en los 2 días siguientes a la transcripción, la llamada se evalúa con ella. La rúbrica fija `fase0-v1` (`rubrica-v1.md`) solo se usa para el SDR si no tuviera versión activa.
 - **Nota:** el modelo puntúa cada paso (0 hasta su peso, o «no aplica» según el tipo de llamada) y **el código** calcula la nota sobre 100 con los pasos que aplican. Apto: nota ≥ `nota_apto` (80) y sin errores críticos.
 - **Versión guardada:** cada evaluación guarda su versión (`version_rubrica`, `rubrica_version_id`) y la nota por paso (`puntuacion_pasos`), que se ven en el detalle de la llamada.
 - **Consentimiento:** si en la transcripción el cliente no autoriza la grabación («prefiero que no se grabe», o «sin problema, tomo las notas yo» tras preguntar), la llamada **no se envía al modelo**, queda «sin consentimiento» y no se guardan objeciones. Una reevaluación nunca la incluye.
