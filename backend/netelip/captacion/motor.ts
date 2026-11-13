@@ -126,11 +126,21 @@ export function crearEventoPresupuesto(d: DatosEvento): EventoPresupuesto {
 }
 
 /**
- * ¿Esta mención cuenta como presupuesto del lead? Lo que dice el lead (o el formulario, o un comercial a mano) sí.
- * Una cifra que dice LYN en una llamada, reunión o WhatsApp es una referencia del comercial (puede ser el precio de un
- * producto o una horquilla de catálogo): se guarda, pero no cuenta. La de la propuesta de la Fase 2 de LYN sí cuenta.
+ * Una cifra de LYN por debajo de este importe es una ampliación, una partida o un extra, no el presupuesto del proyecto:
+ * el presupuesto inicial es el de los rangos amplios del formulario web (el más bajo es «menos de 40.000 €»). Es una
+ * decisión nuestra a partir de lo que pidió Jean el 13/11; está pendiente de confirmar el importe exacto.
  */
-export const cuentaComoPresupuesto = (e: EventoPresupuesto): boolean => !(e.emisor === 'lyn' && e.fuente !== 'fase2_lyn');
+export const MINIMO_CIFRA_LYN_COMO_PROYECTO = 10_000;
+
+/**
+ * ¿Esta mención cuenta como presupuesto del lead? Cuentan los dos canales (Jean, 13/11): lo que dice el cliente, el
+ * formulario, un comercial a mano y también el importe o rango que da el comercial en una llamada, reunión o WhatsApp
+ * para TODA la reforma, aunque el cliente solo conteste que sí sin repetir la cifra. Una cifra de LYN que no tiene
+ * escala de proyecto (menos de MINIMO_CIFRA_LYN_COMO_PROYECTO) es una ampliación o un extra y se guarda sin contar.
+ * La propuesta de la Fase 2 de LYN cuenta siempre.
+ */
+export const cuentaComoPresupuesto = (e: EventoPresupuesto): boolean =>
+  !(e.emisor === 'lyn' && e.fuente !== 'fase2_lyn' && e.valorVigente < MINIMO_CIFRA_LYN_COMO_PROYECTO);
 
 /**
  * Presupuesto vigente de un lead: el evento de la interacción más reciente que cuenta (RN-8). Un evento

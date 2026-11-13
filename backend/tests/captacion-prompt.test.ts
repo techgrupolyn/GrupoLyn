@@ -103,10 +103,14 @@ describe('prompt de sistema', () => {
     expect(prompt.length).toBeLessThan(14_000);
   });
 
-  it('es la versión v2 y dice qué importes NO son el presupuesto del lead (12/11, pedido de Jean)', () => {
-    expect(VERSION_PROMPT).toBe('captacion-v2');
-    // La horquilla de LYN se registra solo como referencia.
-    expect(prompt).toContain('esa NO es el presupuesto del lead: se guarda solo como referencia');
+  it('es la versión v3: cuentan los dos canales y se dice qué importes NO son el presupuesto del lead (13/11, pedido de Jean)', () => {
+    expect(VERSION_PROMPT).toBe('captacion-v3');
+    // La horquilla que da el comercial cuenta aunque el cliente solo diga que sí.
+    expect(prompt).toContain('Los dos canales cuentan');
+    expect(prompt).toContain('aunque el cliente solo conteste «sí» o «me parece bien» sin repetir la cifra');
+    expect(prompt).not.toContain('se guarda solo como referencia');
+    // Una cifra de unos pocos cientos de euros es una ampliación o un extra.
+    expect(prompt).toContain('«son 100 euros más»');
     // El precio de un producto, una partida, una ampliación o un extra suelto no cuenta.
     expect(prompt).toContain('el precio de un producto, una partida, una ampliación o un extra suelto');
     expect(prompt).toContain('«una ampliación te costaría 500 más»');

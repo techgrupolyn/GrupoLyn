@@ -271,12 +271,22 @@ describe.skipIf(!hayBaseDePruebas)('captación · lote · de punta a punta', () 
     expect(await contar("lead_presupuesto_evento WHERE fuente = 'formulario'")).toBe(1);
   });
 
-  it('una cifra que dice LYN en la llamada NO pisa al presupuesto del formulario, aunque sea posterior', async () => {
+  it('una cifra de LYN para toda la reforma en una llamada posterior sustituye al presupuesto del formulario (cuentan los dos canales)', async () => {
     tareas({ id: 'f4', nombre: 'Lead F4', telefono: '+34600000004', etapa: ETAPA.viabilidad, presupuestoFormulario: 2 });
     guiones.set(await llamada({ id: 'u4', telefono: '+34600000004' }), { presupuesto: { min: 50_000, max: 60_000 }, emisor: 'lyn' });
     const informe = await lote({ escribirMaximo: 1 });
+    // 55.000 € (valor central de 50-60 mil, dicho por LYN) manda sobre los 150.000 € del formulario por ser más reciente.
+    expect(informe.filas[0]).toMatchObject({ categoria: 'A' });
+    expect(escritoDe('f4')).toMatchObject({ 'f-pres': 55_000, 'f-pond': 55_000, 'f-fuente': 'o-fuente-1' });
+    expect(await contar("lead_presupuesto_evento WHERE emisor = 'lyn'")).toBe(1);
+  });
+
+  it('una cifra pequeña de LYN en una llamada (una ampliación) NO pisa al presupuesto del formulario', async () => {
+    tareas({ id: 'f4b', nombre: 'Lead F4b', telefono: '+34600000014', etapa: ETAPA.viabilidad, presupuestoFormulario: 2 });
+    guiones.set(await llamada({ id: 'u4b', telefono: '+34600000014' }), { presupuesto: { min: 7_000, max: 9_000 }, emisor: 'lyn' });
+    const informe = await lote({ escribirMaximo: 1 });
     expect(informe.filas[0]).toMatchObject({ categoria: 'A+' });
-    expect(escritoDe('f4')).toMatchObject({ 'f-pres': 150_000, 'f-pond': 150_000, 'f-fuente': 'o-fuente-0' });
+    expect(escritoDe('f4b')).toMatchObject({ 'f-pres': 150_000, 'f-pond': 150_000, 'f-fuente': 'o-fuente-0' });
     expect(await contar("lead_presupuesto_evento WHERE emisor = 'lyn'")).toBe(1);
   });
 

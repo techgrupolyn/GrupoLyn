@@ -6,6 +6,7 @@ import {
   cuentaComoPresupuesto,
   decidirWebhook,
   FORMULARIO_PRESUPUESTO,
+  MINIMO_CIFRA_LYN_COMO_PROYECTO,
   ordenarPorPotencial,
   planificarCargaInicial,
   ponderadoDe,
@@ -58,13 +59,15 @@ describe('Presupuesto del formulario web · los 4 rangos del selector', () => {
     }
   });
 
-  it('el presupuesto del formulario es del CLIENTE: lo manda la llamada posterior del cliente, pero no una cifra de LYN', () => {
+  it('el presupuesto del formulario es del CLIENTE: lo sustituye la llamada posterior (del cliente o de LYN con escala de proyecto)', () => {
     const formulario = evento([100_000, 200_000], '2026-11-01T10:00:00Z', { fuente: 'formulario', emisor: 'cliente', registradoPor: 'sistema', valorVigente: 150_000 });
     expect(presupuestoVigente([formulario])?.valorVigente).toBe(150_000);
     // Una llamada posterior en la que el cliente dice otro importe lo sustituye (RN-8).
     expect(presupuestoVigente([formulario, evento(60_000, D10, { emisor: 'cliente' })])?.valorVigente).toBe(60_000);
-    // Una cifra que dice LYN, aunque sea posterior, NO pisa al del cliente.
-    expect(presupuestoVigente([formulario, evento([60_000, 80_000], D12, { emisor: 'lyn' })])?.valorVigente).toBe(150_000);
+    // Una cifra de LYN para toda la reforma también cuenta: la más reciente manda.
+    expect(presupuestoVigente([formulario, evento([60_000, 80_000], D12, { emisor: 'lyn' })])?.valorVigente).toBe(70_000);
+    // Una cifra pequeña de LYN (una ampliación) no pisa al del formulario.
+    expect(presupuestoVigente([formulario, evento(500, D12, { emisor: 'lyn' })])?.valorVigente).toBe(150_000);
     // Y un evento antiguo del cliente procesado tarde no pisa al del formulario si es anterior.
     expect(presupuestoVigente([formulario, evento(10_000, '2026-10-01T10:00:00Z', { emisor: 'cliente' })])?.valorVigente).toBe(150_000);
   });
@@ -115,18 +118,36 @@ describe('Escenario 3 · Un evento antiguo procesado tarde no pisa al vigente', 
   });
 });
 
-describe('Escenario 3b · Una cifra que dice LYN no es el presupuesto del lead', () => {
-  it('se guarda pero no cuenta: sin cifra del cliente, el presupuesto vigente es nulo', () => {
+describe('Escenario 3b · Los dos canales cuentan: el cliente y el comercial (Jean, 13/11)', () => {
+  it('una cifra de LYN para toda la reforma cuenta: sin cifra del cliente, es el presupuesto vigente', () => {
     const lyn = evento([60_000, 90_000], D12, { emisor: 'lyn' });
     expect(lyn.valorVigente).toBe(75_000);
-    expect(presupuestoVigente([lyn])).toBeNull();
-    expect(cuentaComoPresupuesto(lyn)).toBe(false);
+    expect(presupuestoVigente([lyn])?.valorVigente).toBe(75_000);
+    expect(cuentaComoPresupuesto(lyn)).toBe(true);
   });
-  it('una cifra posterior de LYN no pisa la del cliente', () => {
+  it('manda la más reciente, venga del cliente o de LYN', () => {
     const cliente = evento(55_000, D10, { emisor: 'cliente' });
     const lyn = evento(181_500, D12, { emisor: 'lyn' });
-    expect(presupuestoVigente([cliente, lyn])?.valorVigente).toBe(55_000);
-    expect(presupuestoVigente([lyn, cliente])?.valorVigente).toBe(55_000);
+    expect(presupuestoVigente([cliente, lyn])?.valorVigente).toBe(181_500);
+    expect(presupuestoVigente([lyn, cliente])?.valorVigente).toBe(181_500);
+    // Y una cifra posterior del cliente sustituye a la de LYN.
+    const clienteNuevo = evento(90_000, D13, { emisor: 'cliente' });
+    expect(presupuestoVigente([cliente, lyn, clienteNuevo])?.valorVigente).toBe(90_000);
+  });
+  it('una cifra pequeña de LYN (una ampliación, un extra) se guarda pero NO cuenta, aunque sea posterior', () => {
+    expect(MINIMO_CIFRA_LYN_COMO_PROYECTO).toBe(10_000);
+    const cliente = evento(80_000, D10, { emisor: 'cliente' });
+    for (const pequena of [100, 500, 9_999]) {
+      const ampliacion = evento(pequena, D12, { emisor: 'lyn' });
+      expect(cuentaComoPresupuesto(ampliacion), String(pequena)).toBe(false);
+      expect(presupuestoVigente([cliente, ampliacion])?.valorVigente, String(pequena)).toBe(80_000);
+      expect(presupuestoVigente([ampliacion])).toBeNull();
+    }
+    // Justo en el mínimo ya tiene escala de proyecto.
+    expect(cuentaComoPresupuesto(evento(10_000, D12, { emisor: 'lyn' }))).toBe(true);
+    // El mínimo es solo para LYN: una cifra pequeña del cliente (un presupuesto ajustado) sí cuenta.
+    expect(cuentaComoPresupuesto(evento(5_000, D12, { emisor: 'cliente' }))).toBe(true);
+    expect(presupuestoVigente([evento(5_000, D12, { emisor: 'cliente' })])?.valorVigente).toBe(5_000);
   });
   it('una cifra posterior del cliente sí manda sobre la anterior del cliente', () => {
     const vieja = evento(55_000, D10, { emisor: 'cliente' });
@@ -139,9 +160,14 @@ describe('Escenario 3b · Una cifra que dice LYN no es el presupuesto del lead',
     expect(cuentaComoPresupuesto(fase2)).toBe(true);
     expect(presupuestoVigente([fase2])?.valorVigente).toBe(120_000);
   });
-  it('una cifra de LYN en reunión o WhatsApp tampoco cuenta', () => {
-    expect(cuentaComoPresupuesto(evento(70_000, D10, { emisor: 'lyn', fuente: 'reunion_meet' }))).toBe(false);
-    expect(cuentaComoPresupuesto(evento(70_000, D10, { emisor: 'lyn', fuente: 'whatsapp' }))).toBe(false);
+  it('una cifra de LYN en reunión o WhatsApp cuenta igual que en una llamada, con la misma regla del mínimo', () => {
+    expect(cuentaComoPresupuesto(evento(70_000, D10, { emisor: 'lyn', fuente: 'reunion_meet' }))).toBe(true);
+    expect(cuentaComoPresupuesto(evento(70_000, D10, { emisor: 'lyn', fuente: 'whatsapp' }))).toBe(true);
+    expect(cuentaComoPresupuesto(evento(3_000, D10, { emisor: 'lyn', fuente: 'reunion_meet' }))).toBe(false);
+    expect(cuentaComoPresupuesto(evento(3_000, D10, { emisor: 'lyn', fuente: 'whatsapp' }))).toBe(false);
+  });
+  it('la propuesta de la Fase 2 de LYN cuenta siempre, aunque sea pequeña', () => {
+    expect(cuentaComoPresupuesto(evento(4_000, D10, { emisor: 'lyn', fuente: 'fase2_lyn' }))).toBe(true);
   });
 });
 

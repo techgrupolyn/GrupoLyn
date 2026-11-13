@@ -29,8 +29,8 @@ export interface EventoPresupuesto {
   interaccionId?: string | null;
   citaTextual?: string | null;
   /**
-   * Quién dijo la cifra. Una cifra de «lyn» en una llamada, reunión o WhatsApp es una referencia del comercial:
-   * se guarda pero no cuenta como presupuesto del lead. Sin informar (N-1.1 solo) cuenta.
+   * Quién dijo la cifra. Cuentan las dos: la del cliente y la que da el comercial («lyn») para toda la reforma, salvo
+   * una cifra pequeña de LYN, que es una ampliación o un extra y se guarda sin contar. Sin informar (N-1.1 solo) cuenta.
    */
   emisor?: 'cliente' | 'lyn';
 }

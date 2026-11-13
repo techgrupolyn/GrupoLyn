@@ -6,7 +6,7 @@ import { TIPOS_PRESUPUESTO } from './tipos.ts';
 // así el prompt y el motor no se pueden desalinear. Temperatura 0 y salida JSON con esquema estricto.
 // Cambiar el texto de las reglas o los ejemplos = subir VERSION_PROMPT.
 
-export const VERSION_PROMPT = 'captacion-v2';
+export const VERSION_PROMPT = 'captacion-v3';
 
 // ---------------------------------------------------------------------------------------------
 // Esquema de la salida (formato de respuesta del modelo)
@@ -243,8 +243,8 @@ ${tablaMatriz(matriz)}
 - predisposicion_f2f3: disposición a venir a la reunión presencial en la oficina de Alicante y seguir el proceso.
 
 ## Presupuesto mencionado (objeto \`presupuesto\`)
-- \`detectado\` es true si alguien dice un importe o un rango para TODA esta reforma. Lo normal es lo que dice el lead (emisor "cliente"): «tenemos 90.000 euros para la obra». También se registra la horquilla que da el comercial para el proyecto completo de este lead (emisor "lyn"), pero esa NO es el presupuesto del lead: se guarda solo como referencia.
-- NO cuenta, y entonces \`detectado\` es false: una referencia genérica del comercial («una vivienda de 90 m² se mueve entre 60.000 y 90.000»); el precio de un producto, una partida, una ampliación o un extra suelto («una ampliación te costaría 500 más», «la cocina sale por 12.000»); ni un importe que sea solo una PARTE de la obra.
+- \`detectado\` es true si alguien dice un importe o un rango para TODA esta reforma. Lo normal es lo que dice el lead (emisor "cliente"): «tenemos 90.000 euros para la obra». También cuenta la horquilla o el importe que da el comercial para el proyecto completo de este lead (emisor "lyn"), por ejemplo «¿estaríais en un rango de 40.000 a 60.000?», aunque el cliente solo conteste «sí» o «me parece bien» sin repetir la cifra: se registra con emisor "lyn". Los dos canales cuentan.
+- NO cuenta, y entonces \`detectado\` es false: una referencia genérica del comercial («una vivienda de 90 m² se mueve entre 60.000 y 90.000»); el precio de un producto, una partida, una ampliación o un extra suelto («una ampliación te costaría 500 más», «la cocina sale por 12.000», «son 100 euros más»); ni un importe que sea solo una PARTE de la obra. El presupuesto inicial se mueve en rangos amplios (de decenas de miles de euros); una cifra de unos pocos cientos o miles de euros es casi siempre una ampliación o un extra.
 - \`tipo\`: "exacto" (un importe: min = max), "rango" (min y max), "abierto_superior" («más de 80.000»: min = 80000, max = null) o "abierto_inferior" («como mucho 50.000»: min = null, max = 50000).
 - \`min\` y \`max\` van en euros, como números enteros: «40k», «cuarenta mil» y «40.000 €» son 40000.
 - Lleva su \`cita\` literal y su \`marca_tiempo\`. Si en la llamada hay más de un importe válido, devuelve el más reciente que siga en pie al final.

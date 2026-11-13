@@ -156,27 +156,38 @@ describe.skipIf(!hayBaseDePruebas)('una llamada de punta a punta', () => {
     expect(new Date(String(e?.fecha_interaccion)).toISOString()).toBe(D(10));
   });
 
-  it('Escenario: rango que da LYN (emisor lyn): se guarda como referencia pero NO cuenta como presupuesto del lead', async () => {
+  it('Escenario: rango que da LYN (emisor lyn): se guarda con su emisor y CUENTA como presupuesto del lead (cuentan los dos canales)', async () => {
     const r = ok(await procesar('lead-2', 'call-2', 10, {
       presupuesto: { tipo: 'rango', min: 60000, max: 80000, emisor: 'lyn', cita: 'Su proyecto estaría entre sesenta y ochenta mil euros' },
     }));
     expect(r.registro.presupuesto).toBe(true);
     const [e] = await filas('SELECT emisor, valor_vigente::float8 AS vigente FROM lead_presupuesto_evento');
     expect(e).toEqual({ emisor: 'lyn', vigente: 70000 });
-    expect(r.recalculo.escrituras).toMatchObject({ presupuesto: null, ponderado: null, fuente_presupuesto: 'Pendiente: preguntar en la 1ª llamada' });
+    expect(r.recalculo.escrituras).toMatchObject({ presupuesto: 70000, fuente_presupuesto: 'Llamada' });
   });
 
-  it('Escenario: una horquilla posterior de LYN no pisa el presupuesto del cliente ni sube el A+', async () => {
+  it('Escenario: una horquilla posterior de LYN para toda la reforma sustituye al presupuesto anterior y puede dar A+', async () => {
     // Todo en A con un presupuesto del cliente de 60.000 €: es A (el A+ pide 100.000 €).
     const primera = ok(await procesar('lead-3', 'call-1', 5, todoA(60_000)));
     expect(primera.recalculo.escrituras).toMatchObject({ categoria: 'A', presupuesto: 60000 });
-    // Una llamada posterior en la que LYN da una horquilla de 177.000 a 186.000 €: con la regla anterior sería A+.
+    // Una llamada posterior en la que LYN da una horquilla de 177.000 a 186.000 €: manda la más reciente y hay A+.
     const r = ok(await procesar('lead-3', 'call-2', 9, {
       ...todoA(60_000),
       presupuesto: { tipo: 'rango', min: 177000, max: 186000, emisor: 'lyn', cita: 'Para lo que me cuentas estaría entre ciento setenta y siete y ciento ochenta y seis mil' },
     }));
     expect(await contar('lead_presupuesto_evento')).toBe(2);
     expect(r.recalculo.agregacion.aPlusPermitido).toBe(true);
+    expect(r.recalculo.escrituras).toMatchObject({ categoria: 'A+', presupuesto: 181500, ponderado: 181500 });
+  });
+
+  it('Escenario: una cifra pequeña de LYN (una ampliación, un extra) se guarda pero NO sustituye al presupuesto del proyecto', async () => {
+    const primera = ok(await procesar('lead-4', 'call-1', 5, todoA(60_000)));
+    expect(primera.recalculo.escrituras).toMatchObject({ categoria: 'A', presupuesto: 60000 });
+    const r = ok(await procesar('lead-4', 'call-2', 9, {
+      ...todoA(60_000),
+      presupuesto: { tipo: 'exacto', min: 8000, max: 8000, emisor: 'lyn', cita: 'La ampliación del salón saldría por unos ocho mil euros' },
+    }));
+    expect(await contar('lead_presupuesto_evento')).toBe(2);
     expect(r.recalculo.escrituras).toMatchObject({ categoria: 'A', presupuesto: 60000, ponderado: 60000 });
   });
 
