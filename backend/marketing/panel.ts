@@ -169,7 +169,7 @@ export function construirArbol(e: EntradaPanel) {
 }
 
 // ---------- nota comercial (gráfico 5): calificador interno ----------
-const FASE_DE_ROL: Record<string, string> = { sdr: 'F0', closer_f2: 'F2', closer_f3: 'F3' };
+const FASE_DE_ROL: Record<string, string> = { sdr: 'F0', closer_f2: 'F2', closer_f3: 'F3', closer_f4: 'F4' };
 type FilaNota = { dia: string; extension: string; nombre: string | null; rol: string; estado: string; nota: number | null };
 type FilaIntento = { dia: string; extension: string };
 
@@ -244,9 +244,16 @@ export async function datosPanel(pool: Pool, opciones: { ahora?: Date; conNota: 
     const slots = slotsNota(periodos, corte);
     const params = [slots[0].desde, hasta, ZONA_HORARIA];
     const [n, it] = await Promise.all([
-      pool.query(`SELECT to_char((c.occurred_at AT TIME ZONE $3)::date,'YYYY-MM-DD') AS dia, e.extension_netelip AS extension, r.nombre, e.rol, e.estado, e.nota
-                  FROM llamada_evaluacion e JOIN netelip_calls c ON c.id = e.llamada_id LEFT JOIN comercial_rol r ON r.extension_netelip = e.extension_netelip
-                  WHERE NOT e.reevaluacion AND (c.occurred_at AT TIME ZONE $3)::date BETWEEN $1 AND $2`, params),
+      // Llamadas de Netelip y reuniones de Meet (869fppbcj): una reunión no tiene extensión, su comercial sale de empleado_id.
+      pool.query(`SELECT to_char(COALESCE((c.occurred_at AT TIME ZONE $3)::date, m.fecha_reunion),'YYYY-MM-DD') AS dia,
+                         COALESCE(e.extension_netelip, 'emp:' || e.empleado_id, 'reunion') AS extension, COALESCE(r.nombre, r2.nombre) AS nombre,
+                         COALESCE(e.rol, m.rol) AS rol, e.estado, e.nota
+                  FROM llamada_evaluacion e
+                  LEFT JOIN netelip_calls c ON c.id = e.llamada_id
+                  LEFT JOIN reunion m ON m.id = e.reunion_id
+                  LEFT JOIN comercial_rol r ON r.extension_netelip = e.extension_netelip
+                  LEFT JOIN comercial_rol r2 ON e.extension_netelip IS NULL AND r2.empleado_id = e.empleado_id
+                  WHERE NOT e.reevaluacion AND COALESCE((c.occurred_at AT TIME ZONE $3)::date, m.fecha_reunion) BETWEEN $1 AND $2`, params),
       pool.query(`SELECT to_char((c.occurred_at AT TIME ZONE $3)::date,'YYYY-MM-DD') AS dia, c.agent_extension AS extension
                   FROM netelip_calls c JOIN comercial_rol r ON r.extension_netelip = c.agent_extension AND r.rol = 'sdr'
                   WHERE (c.occurred_at AT TIME ZONE $3)::date BETWEEN $1 AND $2`, params),

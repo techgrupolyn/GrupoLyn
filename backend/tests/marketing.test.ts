@@ -247,6 +247,7 @@ describe('Marketing · árbol y agregados', () => {
       { dia: '2026-10-21', extension: '120', nombre: 'SDR', rol: 'sdr', estado: 'evaluada', nota: 90 },
       { dia: '2026-10-22', extension: '120', nombre: 'SDR', rol: 'sdr', estado: 'no_evaluada', nota: null },
       { dia: '2026-10-22', extension: '115', nombre: 'Ernesto', rol: 'closer_f2', estado: 'evaluada', nota: 70 },
+      { dia: '2026-10-23', extension: 'emp:e9', nombre: 'Closer F4', rol: 'closer_f4', estado: 'evaluada', nota: 90 }, // reunión de Meet, sin extensión
     ];
     const r = construirNotas(periodos, '2026-11-17', notas, [{ dia: '2026-10-20', extension: '120' }, { dia: '2026-10-20', extension: '120' }]);
     expect(r.slots).toHaveLength(16);
@@ -255,6 +256,7 @@ describe('Marketing · árbol y agregados', () => {
     expect(sdr.fases).toEqual(['F0']);
     expect(sdr.d.F0[oct]).toEqual({ n: 2, cel: 3, mean: 85, int: 2 });
     expect(r.vendedores.find((v) => v.id === '115')!.d.F2[oct].mean).toBe(70);
+    expect(r.vendedores.find((v) => v.id === 'emp:e9')!.d.F4[oct].mean).toBe(90);
   });
 });
 
