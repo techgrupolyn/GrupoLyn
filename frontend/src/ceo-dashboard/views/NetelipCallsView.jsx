@@ -55,13 +55,31 @@ function speakerLabel(speaker) {
   return index ? `Hablante ${Number(index[1]) + 1}` : '';
 }
 
-function TranscriptionPanel({ detail }) {
+/** Reencola una o varias transcripciones fallidas; el estado se actualiza solo con el refresco de la vista. */
+function RetryButton({ callIds, label, onDone }) {
+  const [state, setState] = useState({ busy: false, error: '' });
+  const retry = async (event) => {
+    event.stopPropagation();
+    setState({ busy: true, error: '' });
+    try {
+      await (callIds.length === 1 ? api.netelip.retryTranscription(callIds[0]) : api.netelip.retryTranscriptions(callIds));
+      setState({ busy: false, error: '' });
+      onDone?.();
+    } catch (requestError) { setState({ busy: false, error: requestError.body || requestError.message }); }
+  };
+  return <span className="inline-flex flex-col items-start gap-1.5">
+    <button type="button" disabled={state.busy} onClick={retry} className="rounded border border-red-400/40 px-3 py-1.5 text-xs text-red-100 hover:border-red-300 disabled:cursor-not-allowed disabled:opacity-40">{state.busy ? 'Reencolando…' : label}</button>
+    {state.error && <span role="alert" className="text-[11px] text-red-200">{state.error}</span>}
+  </span>;
+}
+
+function TranscriptionPanel({ detail, onRetried }) {
   const transcription = detail.transcription;
   if (detail.transcription_access === 'denied') return <p role="status" className="rounded border border-amber-300/30 bg-amber-300/[.06] p-3 text-xs leading-5 text-amber-100">No tienes permiso para leer transcripciones. Solo los roles autorizados por Producto pueden ver el texto de las llamadas.</p>;
   if (!transcription && detail.call?.recorded === false) return <p className="rounded border border-[#2E2E2E] bg-[#141414] p-3 text-xs leading-5 text-[#BFBFBF]">Esta llamada no se grabó ({(CALL_RESULT_LABEL[detail.call.result] || detail.call.result || '').toLowerCase()}). Queda registrada, pero solo se graban y transcriben las llamadas contestadas que pasan por API Voice.</p>;
   if (!transcription) return <p className="rounded border border-[#2E2E2E] bg-[#141414] p-3 text-xs text-[#737373]">Esta llamada no tiene transcripción disponible.</p>;
   if (transcription.status === 'pending') return <div role="status" className="rounded border border-amber-300/30 bg-amber-300/[.06] p-3 text-xs leading-5 text-amber-100"><p>{detail.call?.transcription_phase === 'processing' ? 'Transcribiendo el audio de la llamada. El texto aparecerá aquí al terminar.' : 'Transcripción pendiente: la llamada está en cola. El texto aparecerá aquí en cuanto el motor termine.'}</p>{detail.call?.transcription_phase === 'processing' && <div className="mt-3"><TranscriptionStatus call={detail.call} wide /></div>}</div>;
-  if (transcription.status === 'failed') return <p role="alert" className="rounded border border-red-900/70 bg-red-950/30 p-3 text-xs leading-5 text-red-200">No se pudo transcribir esta llamada tras varios intentos. El equipo de tecnología ya está avisado.</p>;
+  if (transcription.status === 'failed') return <div role="alert" className="rounded border border-red-900/70 bg-red-950/30 p-3 text-xs leading-5 text-red-200"><p>No se pudo transcribir esta llamada tras varios intentos. El equipo de tecnología ya está avisado.</p>{detail.call?.via !== 'whatsapp' && <div className="mt-3"><RetryButton callIds={[detail.call.id]} label="Reintentar transcripción" onDone={onRetried} /></div>}</div>;
   const segments = Array.isArray(transcription.segments) ? transcription.segments : [];
   if (!String(transcription.text || '').trim() && !segments.length) return <p className="rounded border border-[#2E2E2E] bg-[#141414] p-3 text-xs text-[#737373]">La grabación no contiene conversación: solo el aviso de grabación o silencio.</p>;
   // Sin hablantes: la grabación (mono) no permitió distinguir las dos voces. Se dice, para no hacer creer que habla uno solo.
@@ -74,7 +92,7 @@ function TranscriptionPanel({ detail }) {
   })}</ol></>;
 }
 
-function CallDrawer({ detail, loading, error, onClose, onOpenContact }) {
+function CallDrawer({ detail, loading, error, onClose, onOpenContact, onRetried }) {
   useEffect(() => {
     const onKey = (event) => { if (event.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -91,7 +109,7 @@ function CallDrawer({ detail, loading, error, onClose, onOpenContact }) {
           {[['Teléfono', call.contact_status === 'hidden' ? 'Número oculto' : formatPhone(call.phone)], ['Dirección', <DirectionCell key="d" call={call} />], ['Agente', call.agent ? call.agent.name || `Extensión ${call.agent.extension}` : '—'], ['Fecha', formatMadridDateTime(call.occurred_at)], ['Duración', formatDuration(call.duration_seconds)], ['Resultado', CALL_RESULT_LABEL[call.result] || call.result || '—'], ['Canal', call.via === 'whatsapp' ? 'WhatsApp' : 'Teléfono (Netelip)']].map(([label, value]) => <div key={label}><dt className="font-mono text-[10px] uppercase tracking-[.12em] text-[#737373]">{label}</dt><dd className="mt-1 text-[#F2F2F2]">{value}</dd></div>)}
         </dl>
         <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Evaluación del comercial</h3><CallEvaluationPanel callId={call.id} transcriptionStatus={call.transcription_status} /></section>
-        <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Transcripción</h3><TranscriptionPanel detail={detail} /></section>
+        <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Transcripción</h3><TranscriptionPanel detail={detail} onRetried={onRetried} /></section>
       </>}
     </div>
   </aside>;
@@ -107,6 +125,8 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [search, setSearch] = useState(filters.q);
+  // Fuerza una recarga de la lista (p. ej. después de reencolar transcripciones).
+  const [reloadTick, setReloadTick] = useState(0);
   // Calificador interno: pestañas de objeciones, comerciales evaluados y documento del entrenador.
   const [tab, setTab] = useState('calls');
 
@@ -140,7 +160,7 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
     void load();
     const timer = window.setInterval(() => { void load(); }, 15_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [listKey]);
+  }, [listKey, reloadTick]);
   useEffect(() => { void api.netelip.filterOptions().then((data) => setAgents(data?.agents || [])).catch(() => setAgents([])); }, []);
 
   useEffect(() => {
@@ -155,10 +175,17 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
   }, [filters.call]);
 
   const openCall = (id) => setFilters((current) => ({ ...current, call: String(id) }));
+  // Tras reencolar: la lista se recarga y el detalle pasa a «pendiente» sin esperar al siguiente refresco.
+  const onRetried = () => {
+    setReloadTick((n) => n + 1);
+    setDetail((current) => (current ? { ...current, call: { ...current.call, transcription_status: 'pending', transcription_phase: 'queued' }, transcription: { status: 'pending' } } : current));
+  };
   const closeCall = () => setFilters((current) => ({ ...current, call: '' }));
   const clearFilters = () => { setSearch(''); setFilters({ ...DEFAULT_CALL_FILTERS, dir: filters.dir }); };
   const filtersActive = Boolean(filters.via || filters.agent || filters.contact || filters.tr || filters.res || filters.period || filters.q || filters.sort !== 'recent');
   const items = result?.items || [];
+  // Fallidas de la lista que se pueden reintentar (las de WhatsApp no: su audio no está en vDrive).
+  const failedIds = items.filter((call) => call.transcription_status === 'failed' && call.via !== 'whatsapp').map((call) => call.id);
   const total = result?.total || 0;
   const page = result?.page || filters.page;
   const pageSize = result?.pageSize || 25;
@@ -204,6 +231,7 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
         </div>
         {filters.period === 'custom' && <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-[#2E2E2E] pt-3"><label className="text-[10px] text-[#737373]">Desde<input type="date" value={filters.from} onChange={(event) => update({ from: event.target.value })} className="ml-2 h-8 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#F2F2F2] outline-none" /></label><label className="text-[10px] text-[#737373]">Hasta<input type="date" value={filters.to} onChange={(event) => update({ to: event.target.value })} className="ml-2 h-8 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#F2F2F2] outline-none" /></label></div>}
       </div>
+      {filters.tr === 'failed' && failedIds.length > 0 && <div className="flex flex-wrap items-center gap-3 border-b border-[#2E2E2E] bg-red-950/20 px-3 py-3"><p className="text-xs text-red-100">{failedIds.length === 1 ? 'Hay 1 transcripción fallida en esta lista.' : `Hay ${failedIds.length} transcripciones fallidas en esta lista.`} Se vuelven a poner en cola y se transcriben de una en una.</p><RetryButton callIds={failedIds} label={failedIds.length === 1 ? 'Reintentar 1 transcripción' : `Reintentar las ${failedIds.length}`} onDone={() => setReloadTick((n) => n + 1)} /></div>}
       <div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left"><thead className="bg-[#0D0D0D] font-mono text-[10px] uppercase tracking-[0.12em] text-[#737373]"><tr><th className="px-3 py-3">Fecha</th><th className="px-3 py-3">Dirección</th><th className="px-3 py-3">Contacto</th><th className="px-3 py-3">Teléfono</th><th className="px-3 py-3">Agente</th><th className="px-3 py-3">Duración</th><th className="px-3 py-3">Transcripción</th><th className="px-3 py-3">Evaluación</th></tr></thead>
         <tbody className="divide-y divide-[#2E2E2E]">
           {items.map((call) => <tr key={call.id} onClick={() => openCall(call.id)} aria-selected={String(call.id) === filters.call} className={`group cursor-pointer hover:bg-[#0D0D0D] ${String(call.id) === filters.call ? 'bg-[#0D0D0D]' : ''}`}>
@@ -223,6 +251,6 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
       <div className="flex flex-col gap-3 border-t border-[#2E2E2E] px-3 py-3 text-xs text-[#737373] sm:flex-row sm:items-center sm:justify-between"><p>Mostrando {total ? ((page - 1) * pageSize) + 1 : 0}–{Math.min(page * pageSize, total)} de {total} llamadas</p><div className="flex items-center gap-2"><button type="button" disabled={page <= 1 || loading} onClick={() => setFilters((current) => ({ ...current, page: Math.max(1, page - 1) }))} className="rounded border border-[#2E2E2E] px-3 py-1.5 text-[#BFBFBF] hover:border-amber-300/50 disabled:cursor-not-allowed disabled:opacity-40">Anterior</button><span className="min-w-24 text-center">Página {page} de {Math.max(1, totalPages)}</span><button type="button" disabled={page >= totalPages || loading} onClick={() => setFilters((current) => ({ ...current, page: Math.min(totalPages, page + 1) }))} className="rounded border border-[#2E2E2E] px-3 py-1.5 text-[#BFBFBF] hover:border-amber-300/50 disabled:cursor-not-allowed disabled:opacity-40">Siguiente</button></div></div>
     </div>
     </>}
-    {filters.call && <><button type="button" aria-label="Cerrar detalle" onClick={closeCall} className="fixed inset-0 z-40 bg-black/60" /><CallDrawer detail={detail} loading={detailLoading} error={detailError} onClose={closeCall} onOpenContact={onOpenContact} /></>}
+    {filters.call && <><button type="button" aria-label="Cerrar detalle" onClick={closeCall} className="fixed inset-0 z-40 bg-black/60" /><CallDrawer detail={detail} loading={detailLoading} error={detailError} onClose={closeCall} onOpenContact={onOpenContact} onRetried={onRetried} /></>}
   </section>;
 }

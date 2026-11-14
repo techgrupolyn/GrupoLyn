@@ -161,6 +161,9 @@ export const api = {
     calls: (query) => request(`/netelip/calls?${query}`),
     call: (id) => request(`/netelip/calls/${encodeURIComponent(id)}`),
     filterOptions: () => request('/netelip/calls/filter-options'),
+    // Reencolar transcripciones fallidas (una llamada o varias).
+    retryTranscription: (id) => request(`/netelip/calls/${encodeURIComponent(id)}/transcription/retry`, { method: 'POST' }),
+    retryTranscriptions: (callIds) => request('/netelip/transcriptions/retry', { method: 'POST', body: JSON.stringify({ call_ids: callIds }) }),
     // Calificador interno de llamadas (869e9y98n).
     evaluation: (id) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion`),
     addEvaluationFeedback: (id, texto) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion/feedback`, { method: 'POST', body: JSON.stringify({ texto }) }),
