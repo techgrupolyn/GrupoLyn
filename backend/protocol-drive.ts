@@ -8,7 +8,7 @@ import { transcribeProtocolTable } from './protocol-gemini.ts';
 import { applyProtocolVision, protocolTableColumnCount, type ProtocolVisionPage } from './protocol-vision.ts';
 import { projectAssignmentsSheetId } from './protocol-assignments.ts';
 
-type DriveEntry = { id: string; name: string; mimeType: string; modifiedTime?: string; version?: string; md5Checksum?: string; parents?: string[]; resourceKey?: string };
+type DriveEntry = { id: string; name: string; mimeType: string; modifiedTime?: string; version?: string; md5Checksum?: string; parents?: string[]; resourceKey?: string; audience?: ProtocolFile['audience'] };
 type DrivePage = { files?: DriveEntry[]; nextPageToken?: string; incompleteSearch?: boolean };
 type DriveRequest = (path: string, resourceKeys?: string) => Promise<Response>;
 
@@ -17,14 +17,16 @@ export type ProtocolSyncReport = {
   files: Array<{ id: string; name: string; status: 'correcto' | 'con avisos' | 'excluido'; sections: number; tables: number; tokens: number; warnings: string[] }>;
   versionId: string | null;
   error: string | null;
+  restricted?: { fileCount: number; error: string | null };
 };
 
 const folderId = '14oB0TKbGyvEDMti2JgjXIep54-ZcMbc_';
+const approvedLegacyFileIds = new Set(['1C9veacxQSXAcr6v3a9Zhq2mR01T7O-sL']);
 const googleMime = 'application/vnd.google-apps.';
 const extractionVersion = 4;
 const extractorPath = fileURLToPath(new URL('./protocol-extract.py', import.meta.url));
 
-function extractionFormat(file: DriveEntry): { kind: string; exportMime?: string } | null {
+export function extractionFormat(file: DriveEntry): { kind: string; exportMime?: string } | null {
   if (file.mimeType === `${googleMime}document`) return { kind: 'docx', exportMime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
   if (file.mimeType === `${googleMime}presentation`) return { kind: 'pptx', exportMime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' };
   if (file.mimeType === `${googleMime}spreadsheet`) return { kind: 'xlsx', exportMime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
@@ -36,22 +38,49 @@ function extractionFormat(file: DriveEntry): { kind: string; exportMime?: string
   return null;
 }
 
-async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: string): Promise<DriveEntry[]> {
+async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: string, legacyFolderId?: string, legacyFileIds?: string[]): Promise<DriveEntry[]> {
   const files: DriveEntry[] = [];
-  let pageToken = '';
-  const tokens = new Set<string>();
-  do {
-    if (tokens.has(pageToken)) throw new Error('Drive repitió la paginación');
-    tokens.add(pageToken);
-    const params = new URLSearchParams({ q: `'${folderId}' in parents and trashed = false`, pageSize: '1000', fields: 'nextPageToken,incompleteSearch,files(id,name,mimeType,modifiedTime,version,md5Checksum,parents,resourceKey)', supportsAllDrives: 'true', includeItemsFromAllDrives: 'true' });
-    if (pageToken) params.set('pageToken', pageToken);
-    const response = await request(`/files?${params}`);
-    if (!response.ok) throw new Error(`Google Drive respondió ${response.status}`);
-    const page = await response.json() as DrivePage;
-    if (page.incompleteSearch) throw new Error('Google Drive devolvió una búsqueda incompleta');
-    files.push(...(page.files || []).filter(file => file.parents?.includes(folderId)));
-    pageToken = page.nextPageToken || '';
-  } while (pageToken);
+  if (legacyFolderId && (!/^[\w-]+$/u.test(legacyFolderId) || legacyFolderId === folderId)) throw new Error('Carpeta adicional no válida');
+  if (legacyFolderId && (!legacyFileIds?.length || legacyFileIds.some(id => !approvedLegacyFileIds.has(id)) || new Set(legacyFileIds).size !== legacyFileIds.length)) throw new Error('Archivos adicionales autorizados no válidos');
+  const allowedLegacyIds = new Set(legacyFileIds || []);
+  const folders = [folderId, ...(legacyFolderId ? [legacyFolderId] : [])];
+  const visited = new Set<string>();
+  const ids = new Set<string>();
+  const hashes = new Set<string>();
+  const primaryNames = new Set<string>();
+  for (let index = 0; index < folders.length; index++) {
+    const currentFolder = folders[index];
+    if (visited.has(currentFolder)) continue;
+    visited.add(currentFolder);
+    let pageToken = '';
+    const tokens = new Set<string>();
+    do {
+      if (tokens.has(pageToken)) throw new Error('Drive repitió la paginación');
+      tokens.add(pageToken);
+      const params = new URLSearchParams({ q: `'${currentFolder}' in parents and trashed = false`, pageSize: '1000', fields: 'nextPageToken,incompleteSearch,files(id,name,mimeType,modifiedTime,version,md5Checksum,parents,resourceKey)', supportsAllDrives: 'true', includeItemsFromAllDrives: 'true' });
+      if (pageToken) params.set('pageToken', pageToken);
+      const response = await request(`/files?${params}`);
+      if (!response.ok) throw new Error(`Google Drive respondió ${response.status}`);
+      const page = await response.json() as DrivePage;
+      if (page.incompleteSearch) throw new Error('Google Drive devolvió una búsqueda incompleta');
+      for (const file of page.files || []) {
+        if (!file.parents?.includes(currentFolder)) continue;
+        if (file.mimeType === `${googleMime}folder`) {
+          if (legacyFolderId && currentFolder !== folderId && !/^(_obsoletos|plantillas quantifier)$/iu.test(file.name.trim())) folders.push(file.id);
+          continue;
+        }
+        if (currentFolder !== folderId && !allowedLegacyIds.has(file.id)) continue;
+        const normalizedName = file.name.trim().normalize('NFKC').toLocaleLowerCase('es');
+        if (currentFolder === folderId) primaryNames.add(normalizedName);
+        else if (primaryNames.has(normalizedName)) continue;
+        if (ids.has(file.id) || (file.md5Checksum && hashes.has(file.md5Checksum))) continue;
+        files.push({ ...file, audience: 'general' });
+        ids.add(file.id);
+        if (file.md5Checksum) hashes.add(file.md5Checksum);
+      }
+      pageToken = page.nextPageToken || '';
+    } while (pageToken);
+  }
   if (assignmentsSheetId) {
     if (assignmentsSheetId !== projectAssignmentsSheetId) throw new Error('Hoja de asignaciones no autorizada');
     const params = new URLSearchParams({ fields: 'id,name,mimeType,modifiedTime,version,md5Checksum,trashed,resourceKey', supportsAllDrives: 'true' });
@@ -59,14 +88,14 @@ async function listProtocolFiles(request: DriveRequest, assignmentsSheetId?: str
     if (!response.ok) throw new Error(`Google Drive respondió ${response.status}`);
     const sheet = await response.json() as DriveEntry & { trashed?: boolean };
     if (sheet.id !== assignmentsSheetId || sheet.trashed || sheet.mimeType !== `${googleMime}spreadsheet`) throw new Error('Hoja de asignaciones no válida');
-    files.push(sheet);
+    files.push({ ...sheet, audience: 'general' });
   }
   return files;
 }
 
-async function extractFile(kind: string, data: Buffer, pythonBin: string): Promise<{ sections: ProtocolFile['sections']; warnings: string[]; visionPages?: ProtocolVisionPage[] }> {
+export async function extractFile(kind: string, data: Buffer, pythonBin: string, sheetMaxRows?: number): Promise<{ sections: ProtocolFile['sections']; warnings: string[]; visionPages?: ProtocolVisionPage[] }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(pythonBin, [extractorPath, kind], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(pythonBin, [extractorPath, kind], { stdio: ['pipe', 'pipe', 'pipe'], env: sheetMaxRows ? { ...process.env, PROTOCOL_SHEET_MAX_ROWS: String(sheetMaxRows) } : undefined });
     let output = '';
     let error = '';
     const timeout = setTimeout(() => child.kill(), 120_000);
@@ -91,6 +120,8 @@ async function extractFile(kind: string, data: Buffer, pythonBin: string): Promi
 export async function syncProtocolDrive(request: DriveRequest, options: {
   maxTokens: number;
   assignmentsSheetId?: string;
+  legacyFolderId?: string;
+  legacyFileIds?: string[];
   pythonBin?: string;
   extract?: typeof extractFile;
   previous?: ProtocolCorpus | null;
@@ -98,10 +129,11 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
   transcribeTable?: (image: Buffer) => Promise<string>;
   loadVision?: (fileId: string, revision: string, page: string, imageHash: string) => Promise<string | null>;
   saveVision?: (fileId: string, revision: string, page: string, imageHash: string, markdown: string) => Promise<void>;
+  loadVideo?: (fileId: string, revision: string) => Promise<ProtocolFile['sections'] | null>;
 }): Promise<ProtocolSyncReport> {
   const report: ProtocolSyncReport = { checkedAt: new Date().toISOString(), files: [], versionId: options.previous?.id || null, error: null };
   try {
-    const entries = await listProtocolFiles(request, options.assignmentsSheetId);
+    const entries = await listProtocolFiles(request, options.assignmentsSheetId, options.legacyFolderId, options.legacyFileIds);
     const accepted: ProtocolFile[] = [];
     let driveFailure = false;
     let dependencyFailure = false;
@@ -112,26 +144,37 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
       if (entry.mimeType === `${googleMime}folder` || entry.name.trim().toLowerCase() === '_obsoletos') continue;
       const assignmentSheet = entry.id === options.assignmentsSheetId;
       const format = assignmentSheet ? { kind: 'assignments', exportMime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } : extractionFormat(entry);
-      if (!format) {
+      const video = entry.mimeType.startsWith('video/');
+      if (!format && !video) {
         report.files.push({ id: entry.id, name: entry.name, status: 'excluido', sections: 0, tables: 0, tokens: 0, warnings: ['Formato no soportado'] });
         continue;
       }
       const revision = entry.version || entry.md5Checksum || entry.modifiedTime || '';
-      const previousFile = options.previous?.files.find(file => file.id === entry.id && file.name === entry.name && file.revision === revision && file.modifiedTime === (entry.modifiedTime || '') && file.extractionVersion === extractionVersion);
+      const currentExtractionVersion = video ? 1 : extractionVersion;
+      const previousFile = options.previous?.files.find(file => file.id === entry.id && file.name === entry.name && file.revision === revision && file.modifiedTime === (entry.modifiedTime || '') && file.extractionVersion === currentExtractionVersion);
       if (previousFile) {
-        accepted.push(previousFile);
+        accepted.push({ ...previousFile, audience: entry.audience });
         report.files.push({ id: entry.id, name: entry.name, status: previousFile.warnings.length ? 'con avisos' : 'correcto', sections: previousFile.sections.length, tables: previousFile.sections.filter(section => /(^|\n)\| /u.test(section.text)).length, tokens: Math.ceil(previousFile.sections.reduce((sum, section) => sum + section.text.length, 0) / 3), warnings: previousFile.warnings });
         continue;
       }
       try {
-        const path = format.exportMime
-          ? `/files/${encodeURIComponent(entry.id)}/export?mimeType=${encodeURIComponent(format.exportMime)}`
+        if (video) {
+          const sections = await options.loadVideo?.(entry.id, revision);
+          if (!sections?.length || sections.some(section => !/^video \d{2}:\d{2}:\d{2}$/u.test(section.ref) || !section.text.trim() || containsUnmaskedPersonalData(section.text))) {
+            throw new Error('Subtítulos temporizados pendientes o no verificables; se conserva el corpus anterior');
+          }
+          accepted.push({ id: entry.id, name: entry.name, mimeType: entry.mimeType, audience: entry.audience, modifiedTime: entry.modifiedTime || '', revision, extractionVersion: currentExtractionVersion, sections, warnings: ['Transcripción automática de Drive; verificar el video ante dudas'] });
+          report.files.push({ id: entry.id, name: entry.name, status: 'con avisos', sections: sections.length, tables: 0, tokens: Math.ceil(sections.reduce((sum, section) => sum + section.text.length, 0) / 3), warnings: ['Transcripción automática de Drive; verificar el video ante dudas'] });
+          continue;
+        }
+        const path = format!.exportMime
+          ? `/files/${encodeURIComponent(entry.id)}/export?mimeType=${encodeURIComponent(format!.exportMime!)}`
           : `/files/${encodeURIComponent(entry.id)}?alt=media&supportsAllDrives=true`;
         const response = await request(path, entry.resourceKey ? `${entry.id}/${entry.resourceKey}` : undefined);
         if (!response.ok) throw new Error(`Google Drive respondió ${response.status}`);
         const bytes = Buffer.from(await response.arrayBuffer());
         if (bytes.length > 30 * 1024 * 1024) throw new Error('Archivo demasiado grande');
-        const extracted = await (options.extract || extractFile)(format.kind, bytes, options.pythonBin || process.env.PROTOCOL_PYTHON_BIN || 'python3');
+        const extracted = await (options.extract || extractFile)(format!.kind, bytes, options.pythonBin || process.env.PROTOCOL_PYTHON_BIN || 'python3');
         for (const page of extracted.visionPages?.filter(page => page.kind === 'scanned') || []) {
           const imageHash = createHash('sha256').update(Buffer.from(page.image, 'base64')).digest('hex');
           const reviewedText = await options.loadVision?.(entry.id, revision, page.ref, imageHash);
@@ -147,7 +190,7 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
         if (extracted.sections.length && extracted.warnings.some(warning => /página \d+: (?:sin capa de texto|tabla con palabras no verificadas)|se alcanzó el límite de \d+ filas/iu.test(warning))) {
           throw new Error('El documento contiene páginas u hojas omitidas; se conserva el corpus anterior');
         }
-        if (format.kind === 'pdf' && extracted.visionPages?.some(page => page.kind !== 'scanned')) {
+        if (format!.kind === 'pdf' && extracted.visionPages?.some(page => page.kind !== 'scanned')) {
           for (const page of extracted.visionPages.filter(page => page.kind !== 'scanned')) {
             let generated: string | null = null;
             const image = Buffer.from(page.image, 'base64');
@@ -186,13 +229,13 @@ export async function syncProtocolDrive(request: DriveRequest, options: {
         const duplicate = normalizedNames.get(normalizedName);
         if (duplicate) extracted.warnings.push(`Posible versión duplicada de ${duplicate}`);
         else normalizedNames.set(normalizedName, entry.name);
-        accepted.push({ id: entry.id, name: entry.name, mimeType: entry.mimeType, modifiedTime: entry.modifiedTime || '', revision, extractionVersion, sections: extracted.sections, warnings: extracted.warnings });
+        accepted.push({ id: entry.id, name: entry.name, mimeType: entry.mimeType, audience: entry.audience, modifiedTime: entry.modifiedTime || '', revision, extractionVersion: currentExtractionVersion, sections: extracted.sections, warnings: extracted.warnings });
         report.files.push({ id: entry.id, name: entry.name, status: extracted.warnings.length ? 'con avisos' : 'correcto', sections: extracted.sections.length, tables: extracted.sections.filter(section => /(^|\n)\| /u.test(section.text)).length, tokens: Math.ceil(extracted.sections.reduce((sum, section) => sum + section.text.length, 0) / 3), warnings: extracted.warnings });
       } catch (error) {
         documentFailure = true;
         if (/Google Drive respondi[oó]/iu.test((error as Error).message)) driveFailure = true;
         if (/Falta pdfplumber/iu.test((error as Error).message)) dependencyFailure = true;
-        if (format.kind === 'pdf') visionFailure = true;
+        if (format?.kind === 'pdf') visionFailure = true;
         report.files.push({ id: entry.id, name: entry.name, status: 'excluido', sections: 0, tables: 0, tokens: 0, warnings: [(error as Error).message] });
       }
     }

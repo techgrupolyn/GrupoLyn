@@ -212,7 +212,8 @@ def assignment_sections(data):
             sheets[number] = cells
 
         named_sheets = {name: sheets.get(index, {}) for index, name in enumerate(sheet_names, 1)}
-        main = named_sheets.get("PM DELINEANTE", {})
+        main_name = "PM DELINEANTE" if "PM DELINEANTE" in named_sheets else "PM"
+        main = named_sheets.get(main_name, {})
         interior = named_sheets.get("INTERIORISTAS", {})
         if not main or not interior or "(PM)" not in main.get("B9", "") or "(Interiorista)" not in interior.get("A3", ""):
             raise ValueError("La estructura de las hojas de PMC o interioristas cambió")
@@ -233,16 +234,16 @@ def assignment_sections(data):
                     details.append(f"Delineante: {main[f'{person_column}{row}']}")
                 if status:
                     details.append(f"Situación: {status}")
-                sections.append({"ref": f"PM DELINEANTE!{project_column}{row}", "text": "; ".join(details)})
+                sections.append({"ref": f"{main_name}!{project_column}{row}", "text": "; ".join(details)})
             project = main.get(f"P{row}", "")
             if project:
                 owner = main.get("P9", "").replace(" (Delineante)", "").strip()
                 if owner:
-                    sections.append({"ref": f"PM DELINEANTE!P{row}", "text": f"Obra: {project}; Delineante: {owner}"})
+                    sections.append({"ref": f"{main_name}!P{row}", "text": f"Obra: {project}; Delineante: {owner}"})
             project = main.get(f"R{row}", "")
             state = main.get(f"U{row}", "")
             if project and state:
-                sections.append({"ref": f"PM DELINEANTE!R{row}", "text": f"Obra: {project}; Estado: {state}"})
+                sections.append({"ref": f"{main_name}!R{row}", "text": f"Obra: {project}; Estado: {state}"})
         for row in range(5, 501):
             for project_column in ("A", "D", "G", "J", "M"):
                 project = interior.get(f"{project_column}{row}", "")

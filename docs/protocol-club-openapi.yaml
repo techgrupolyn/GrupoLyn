@@ -1,0 +1,143 @@
+openapi: 3.0.3
+info:
+  title: Agente de Protocolos para Club LYN
+  version: 1.0.0
+  description: API privada entre servidores. El navegador de Club LYN no debe llamarla.
+servers:
+  - url: https://ceo.grupolyn.com/api/club/protocolos
+security:
+  - clubService: []
+components:
+  securitySchemes:
+    clubService:
+      type: http
+      scheme: bearer
+      description: Valor privado de CROSS_SSO_CLUB_TO_AGENT_TOKEN.
+  parameters:
+    clubUser:
+      in: header
+      name: X-Club-User-Id
+      required: true
+      description: UUID del empleado interno cuya sesión ya verificó Club LYN.
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    source:
+      type: object
+      required: [documento, seccion, cita, url]
+      properties:
+        documento: { type: string }
+        seccion: { type: string }
+        cita: { type: string }
+        url:
+          type: string
+          format: uri
+          nullable: true
+    error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+paths:
+  /estado:
+    get:
+      summary: Estado del corpus único del agente
+      parameters:
+        - $ref: '#/components/parameters/clubUser'
+      responses:
+        '200':
+          description: Estado y antigüedad de la última sincronización correcta.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versionId, updatedAt, lastSyncedAt, fileCount, desactualizado]
+                properties:
+                  versionId: { type: string, nullable: true }
+                  updatedAt: { type: string, format: date-time, nullable: true }
+                  lastSyncedAt: { type: string, format: date-time, nullable: true }
+                  fileCount: { type: integer }
+                  desactualizado: { type: boolean }
+        '401': { description: Credencial entre servidores inválida }
+        '503': { description: Integración o corpus no disponibles }
+  /consultas:
+    post:
+      summary: Consultar el agente con identidad verificada
+      parameters:
+        - $ref: '#/components/parameters/clubUser'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [usuario_id, conversacion_id, pregunta, canal]
+              properties:
+                usuario_id: { type: string, format: uuid }
+                conversacion_id: { type: string, format: uuid }
+                pregunta: { type: string, minLength: 1, maxLength: 2000 }
+                canal: { type: string, enum: [club_lyn] }
+                contexto:
+                  type: array
+                  maxItems: 6
+                  items:
+                    type: object
+                    required: [author, text]
+                    properties:
+                      author: { type: string, enum: [user, assistant] }
+                      text: { type: string, maxLength: 2000 }
+      responses:
+        '200':
+          description: Respuesta verificada o derivación segura, registrada con canal club_lyn.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [consulta_id, clasificacion, respuesta, fuentes, derivacion, corpus]
+                properties:
+                  consulta_id: { type: string, format: uuid }
+                  clasificacion: { type: string }
+                  respuesta: { type: string }
+                  fuentes:
+                    type: array
+                    items: { $ref: '#/components/schemas/source' }
+                  derivacion:
+                    type: object
+                    properties:
+                      cargo: { type: string, nullable: true }
+                      persona: { type: string, nullable: true }
+                  corpus:
+                    type: object
+                    properties:
+                      version: { type: string }
+                      fecha: { type: string, format: date-time, nullable: true }
+                      desactualizado: { type: boolean }
+        '400': { description: Identidad o consulta inválida }
+        '401': { description: Credencial entre servidores inválida }
+        '429': { description: Límite de solicitudes }
+        '503': { description: Agente no disponible }
+  /consultas/{id}/confirmacion:
+    post:
+      summary: Registrar Sí o No del usuario de la consulta
+      parameters:
+        - $ref: '#/components/parameters/clubUser'
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resuelta]
+              properties:
+                resuelta: { type: boolean }
+      responses:
+        '200': { description: Confirmación guardada }
+        '400': { description: Confirmación inválida }
+        '401': { description: Credencial entre servidores inválida }
+        '404': { description: Consulta ajena, inexistente o ya confirmada }
+        '503': { description: Registro no disponible }

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { validateProtocolAnswer, type ProtocolAnswer } from './protocol-answer-validation.ts';
-import { protocolCorpusPrompt, type ProtocolCorpus } from './protocol-corpus.ts';
+import { protocolCorpusPrompt, type ProtocolCorpus, type ProtocolFile } from './protocol-corpus.ts';
 import { containsUnmaskedPersonalData, maskProtocolQuestion } from './protocol-privacy.ts';
 import { PROTOCOL_SYSTEM_PROMPT_V2 } from './protocol-prompt.ts';
 import { findProjectAssignment, projectAssignmentsSheetId } from './protocol-assignments.ts';
@@ -9,20 +9,23 @@ export type ProtocolQuery = {
   userId: number;
   role: string;
   question: string;
-  channel: 'superagente';
+  channel: 'superagente' | 'club_lyn';
+  mayReadRestricted?: boolean;
+  context?: Array<{ author: 'user' | 'assistant'; text: string }>;
 };
 
 export type ProtocolLog = {
   id: string;
   userId: number;
   role: string;
+  channel: ProtocolQuery['channel'];
   question: string;
   answer: string;
   classification: ProtocolAnswer['clasificacion'] | 'no_urgente';
   reason: ProtocolAnswer['motivo_no_respuesta'];
   area: string;
   topic: string;
-  sources: Array<{ doc_id: string; name: string; modifiedTime: string; revision: string; seccion: string; cita: string }>;
+  sources: Array<{ doc_id: string; name: string; mimeType?: string; modifiedTime: string; revision: string; seccion: string; cita: string }>;
   derivationRole: string | null;
   contradiction: ProtocolAnswer['contradiccion'];
   validation: 'ok' | 'reintento' | 'rechazada';
@@ -36,6 +39,7 @@ export type ProtocolLog = {
 
 export type ProtocolAgentDependencies = {
   loadCorpus: () => Promise<ProtocolCorpus | null>;
+  loadRestrictedFiles?: () => Promise<ProtocolFile[]>;
   clientNames: () => Promise<string[]>;
   roles: () => Promise<Array<{ name: string; person?: string }>>;
   topics?: () => Promise<string[]>;
@@ -70,6 +74,25 @@ function directProtocolEvidence(question: string, corpus: ProtocolCorpus): strin
   return null;
 }
 
+function restrictedProtocolExcerpt(question: string, files: ProtocolFile[]) {
+  const words = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/gu, '').toLowerCase().match(/[a-z\d]{4,}/gu) || [];
+  const ignored = new Set(['cual', 'cuanto', 'cuesta', 'precio', 'coste', 'obra', 'cliente', 'tiene', 'esta', 'sobre', 'para', 'incluye', 'donde', 'como', 'quien']);
+  const terms = [...new Set(words(question).filter(word => !ignored.has(word)))];
+  if (terms.length < 2) return null;
+  const matches = files.filter(file => file.audience === 'restricted').flatMap(file =>
+    file.sections.flatMap(section => section.text.split('\n').map(line => line.trim()).filter(line => {
+      if (!line || line.length > 400) return false;
+      const lineWords = new Set(words(line));
+      return terms.every(term => lineWords.has(term));
+    }).map(quote => ({ file, section, quote }))));
+  if (matches.length !== 1) return null;
+  return matches[0];
+}
+
+function restrictedInformationRequest(question: string): boolean {
+  return /\b(?:precio|coste|costo|importe|valor|tarifa|cotizador|cotizaci[oó]n|cu[aá]nto (?:cuesta|sale|vale|cobran)|notas? de reuni[oó]n)\b/iu.test(question);
+}
+
 function safetyRisk(question: string): boolean {
   return /olor a gas|fuga de gas|hay fuego|se incendia|incendio en|electrocuci[oó]n|descarga el[eé]ctrica|cable con corriente|persona herida|persona lesionada|alguien se ha ca[ií]do|persona se cay[oó]|ca[ií]da de una persona|riesgo de derrumbe|estructura se cae|fuga de agua|inundaci[oó]n activa/iu.test(question);
 }
@@ -83,10 +106,10 @@ function unansweredText(reason: Exclude<ProtocolAnswer['motivo_no_respuesta'], n
 export async function askProtocolAgent(query: ProtocolQuery, dependencies: ProtocolAgentDependencies): Promise<ProtocolAgentResult> {
   const start = (dependencies.now || Date.now)();
   const id = randomUUID();
-  if (!Number.isSafeInteger(query.userId) || query.userId < 1 || !query.role.trim() || !query.question.trim() || query.question.length > 2000 || query.channel !== 'superagente') throw new Error('Consulta inválida');
+  if (!Number.isSafeInteger(query.userId) || query.userId < 1 || !query.role.trim() || !query.question.trim() || query.question.length > 2000 || !['superagente', 'club_lyn'].includes(query.channel) || (query.context && (query.context.length > 6 || query.context.some(turn => !['user', 'assistant'].includes(turn.author) || typeof turn.text !== 'string' || turn.text.length > 2000)))) throw new Error('Consulta inválida');
   const [corpus, names, roles, topics] = await Promise.all([dependencies.loadCorpus(), dependencies.clientNames(), dependencies.roles(), dependencies.topics?.() || Promise.resolve([])]);
   if (!corpus) throw new Error('El corpus de protocolos aún no está disponible');
-  const modelFiles = corpus.files.filter(file => file.id !== projectAssignmentsSheetId);
+  const modelFiles = corpus.files.filter(file => file.id !== projectAssignmentsSheetId && file.audience !== 'restricted' && (file.audience === 'general' || !process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID));
   const modelCorpus = {
     ...corpus,
     id: createHash('sha256').update(JSON.stringify(modelFiles.map(file => [file.id, file.revision, file.sections]))).digest('hex'),
@@ -96,10 +119,12 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
   };
   const masked = maskProtocolQuestion(query.question.trim(), { clientNames: names });
   if (containsUnmaskedPersonalData(masked)) throw new Error('No se puede enviar la consulta porque contiene datos personales sin enmascarar');
+  const context = (query.context || []).map(turn => ({ author: turn.author, text: maskProtocolQuestion(turn.text, { clientNames: names }) }));
+  if (context.some(turn => containsUnmaskedPersonalData(turn.text))) throw new Error('El contexto contiene datos personales sin enmascarar');
   const roleName = fallbackRole(roles);
   const rolePerson = (name: string | null) => roles.find(role => role.name === name)?.person || null;
   const buildResult = (log: ProtocolLog): ProtocolAgentResult => ({ id, answer: log.answer, classification: log.classification, sources: log.sources, derivationRole: log.derivationRole, derivationPerson: rolePerson(log.derivationRole), contradiction: log.contradiction, validation: log.validation, corpusVersionId: corpus.id });
-  const common = { id, userId: query.userId, role: query.role, question: masked, corpusVersionId: corpus.id };
+  const common = { id, userId: query.userId, role: query.role, channel: query.channel, question: masked, corpusVersionId: corpus.id };
 
   if (safetyRisk(masked)) {
     const answer = `No esperes a este chat: avisa ahora a ${roleName || 'tu responsable'}. Si hay peligro para alguien, llama al 112.`;
@@ -108,11 +133,29 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
     return buildResult(log);
   }
 
-  const assignmentsFile = corpus.files.find(file => file.id === projectAssignmentsSheetId);
+  const assignmentsFile = corpus.files.find(file => file.id === projectAssignmentsSheetId && file.audience !== 'restricted' && (file.audience === 'general' || !process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID));
   const assignment = assignmentsFile && findProjectAssignment(masked, assignmentsFile);
   if (assignment && assignmentsFile) {
     const sources = assignment.sections.map(section => ({ doc_id: assignmentsFile.id, name: assignmentsFile.name, modifiedTime: assignmentsFile.modifiedTime, revision: assignmentsFile.revision, seccion: section.ref, cita: section.text }));
     const log: ProtocolLog = { ...common, answer: assignment.answer, classification: assignment.complete ? 'resuelta' : 'no_urgente', reason: assignment.complete ? null : 'sin_protocolo', area: 'responsables_y_escalado', topic: assignment.topic, sources, derivationRole: assignment.complete ? null : roleName, contradiction: null, validation: 'ok', model: null, inputTokens: null, outputTokens: null, latencyMs: (dependencies.now || Date.now)() - start, error: null };
+    await dependencies.save(log);
+    return buildResult(log);
+  }
+  const restrictedFiles = query.mayReadRestricted && dependencies.loadRestrictedFiles ? await dependencies.loadRestrictedFiles() : [];
+  const restricted = restrictedProtocolExcerpt(query.question.trim(), restrictedFiles);
+  if (restricted) {
+    const { file, section, quote } = restricted;
+    const answer = `El documento «${file.name}», ${section.ref}, contiene este extracto literal: «${quote}». Verifica la fuente antes de actuar.`;
+    const source = { doc_id: file.id, name: file.name, mimeType: file.mimeType, modifiedTime: file.modifiedTime, revision: file.revision, seccion: section.ref, cita: quote };
+    const log: ProtocolLog = { ...common, question: '[CONSULTA RESTRINGIDA]', answer: 'Consulta respondida con un extracto restringido.', classification: 'resuelta', reason: null, area: 'otro', topic: 'consulta restringida', sources: [{ ...source, name: '[DOCUMENTO RESTRINGIDO]', cita: '[CONTENIDO RESTRINGIDO]' }], derivationRole: null, contradiction: null, validation: 'ok', model: null, inputTokens: null, outputTokens: null, latencyMs: (dependencies.now || Date.now)() - start, error: null };
+    await dependencies.save(log);
+    return { id, answer, classification: log.classification, sources: [source], derivationRole: null, derivationPerson: null, contradiction: null, validation: log.validation, corpusVersionId: corpus.id };
+  }
+  if (restrictedInformationRequest(masked)) {
+    const answer = query.mayReadRestricted
+      ? 'No encuentro un extracto inequívoco en los documentos privados. Consulta el archivo original con Dirección antes de tomar una decisión.'
+      : 'No tienes acceso a cifras o notas privadas desde este agente. Consulta con Dirección.';
+    const log: ProtocolLog = { ...common, question: '[CONSULTA RESTRINGIDA]', answer, classification: 'no_urgente', reason: query.mayReadRestricted ? 'sin_protocolo' : 'tema_sensible', area: 'otro', topic: 'consulta restringida', sources: [], derivationRole: null, contradiction: null, validation: 'ok', model: null, inputTokens: null, outputTokens: null, latencyMs: (dependencies.now || Date.now)() - start, error: null };
     await dependencies.save(log);
     return buildResult(log);
   }
@@ -148,7 +191,7 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
     .replace('{{SINONIMOS}}', 'Incidencia = Alerta (Club LYN); PM = PMC; ClickUp en documentos antiguos = Club LYN para la gestión de tareas.')
     .replace('{{ORGANIGRAMA}}', roles.map(role => `${xml(role.name)}: ${xml(role.person || 'sin asignar')}`).join('\n'))
     .replace('<corpus version="{{CORPUS_VERSION_ID}}" fecha="{{CORPUS_FECHA}}">\n{{CORPUS}}\n</corpus>', protocolCorpusPrompt(modelCorpus));
-  const user = `<usuario cargo="${xml(query.role)}" />\n<fecha_hora zona="Europe/Madrid">${new Intl.DateTimeFormat('es-ES', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Madrid' }).format(new Date())}</fecha_hora>\n<temas_existentes>${topics.map(xml).join('\n')}</temas_existentes>\n<pregunta>${xml(masked)}</pregunta>`;
+  const user = `<usuario cargo="${xml(query.role)}" />\n<fecha_hora zona="Europe/Madrid">${new Intl.DateTimeFormat('es-ES', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Madrid' }).format(new Date())}</fecha_hora>\n<temas_existentes>${topics.map(xml).join('\n')}</temas_existentes>\n<contexto_reciente>${context.map(turn => `<turno autor="${turn.author}">${xml(turn.text)}</turno>`).join('\n')}</contexto_reciente>\n<pregunta>${xml(masked)}</pregunta>`;
   if (containsUnmaskedPersonalData(user) || maskProtocolQuestion(user, { clientNames: names }) !== user || modelFiles.some(file => containsUnmaskedPersonalData(file.name) || maskProtocolQuestion(file.name, { clientNames: names }) !== file.name || file.sections.some(section => containsUnmaskedPersonalData(section.text) || maskProtocolQuestion(section.text, { clientNames: names }) !== section.text))) throw new Error('El contexto contiene datos personales sin enmascarar');
   let lastError = 'Respuesta no verificable';
   let modelUnavailable = false;
@@ -179,7 +222,7 @@ export async function askProtocolAgent(query: ProtocolQuery, dependencies: Proto
     }
     const sources = parsed.fuentes.map(source => {
       const file = modelFiles.find(item => item.id === source.doc_id)!;
-      return { ...source, name: file.name, modifiedTime: file.modifiedTime, revision: file.revision };
+      return { ...source, name: file.name, mimeType: file.mimeType, modifiedTime: file.modifiedTime, revision: file.revision };
     });
     const answer = parsed.motivo_no_respuesta === null ? parsed.respuesta : unansweredText(parsed.motivo_no_respuesta, parsed.cargo_derivacion!);
     const log: ProtocolLog = { ...common, answer, classification: parsed.clasificacion, reason: parsed.motivo_no_respuesta, area: parsed.area, topic: normalizeTopic(parsed.tema), sources, derivationRole: parsed.cargo_derivacion, contradiction: parsed.contradiccion, validation: attempt ? 'reintento' : 'ok', model: generation.model, inputTokens: generation.inputTokens ?? null, outputTokens: generation.outputTokens ?? null, latencyMs: (dependencies.now || Date.now)() - start, error: null };

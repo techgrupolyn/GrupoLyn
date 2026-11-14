@@ -26,18 +26,24 @@ import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from '
 import { meetingReviewChain, meetingEmployeeRoles, meetingStageRecipientCondition, canDeleteMeetingActionsForRole } from './meeting-routing.ts';
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
 import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
+import { createReunionesWorkers, ensureReunionesMeet } from './reuniones-meet/index.ts';
+import { idCarpetaDrive } from './netelip/entrenador/drive.ts';
 import { ensureProjectMeetingSchema, registerProjectMeetingRoutes, refreshProjectMeetings, syncProjectMeeting } from './meeting-project-workflow.ts';
 import { exactActionProject, reconcileMeetingActionProjects } from './meeting-project-linking.ts';
 import { ensureSummaryJobs, acquireSummaryLock, releaseSummaryLock, markSummaryMessagesReviewed, createSummaryQueue, publicSummaryJob, summaryJobStorage, SummaryJobError, type SummaryJob } from './summary-jobs.ts';
 import { generateBatchedGlobalSummary } from './global-summary-batches.ts';
 import { evolutionHistoryPages } from './evolution-history.ts';
 import { ensureWhatsAppReliability, createWhatsAppInbox, pendingWhatsAppCoverage, recordWhatsAppHealth } from './whatsapp-reliability.ts';
-import { askProtocolAgent } from './protocol-agent.ts';
+import { askProtocolAgent, type ProtocolAgentDependencies } from './protocol-agent.ts';
+import { createClubProtocolRouter } from './protocol-club-api.ts';
+import { resolveProtocolClubIdentity } from './protocol-club-identity.ts';
 import { syncProtocolDrive } from './protocol-drive.ts';
+import { syncRestrictedProtocolDrive } from './protocol-restricted-drive.ts';
 import { callProtocolGemini } from './protocol-gemini.ts';
-import { canReadProtocolLog, canReadProtocolReport, hasClubAdminRole } from './protocol-privacy.ts';
+import { canReadProtocolLog, canReadProtocolReport, canReadRestrictedProtocol, hasClubAdminRole } from './protocol-privacy.ts';
 import { loadProtocolReport, parseProtocolReportFilters } from './protocol-report.ts';
-import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, ensureProtocolSchema, listProtocolQueries, loadLastSuccessfulProtocolSync, loadProtocolCorpus, loadProtocolSyncReport, loadProtocolVisionCache, pruneProtocolQueries, recordProtocolFeedback, saveProtocolCorpus, saveProtocolQuery, saveProtocolSyncReport, saveProtocolVisionCache } from './protocol-storage.ts';
+import { loadProtocolWeeklySnapshot } from './protocol-weekly.ts';
+import { PROTOCOL_QUERY_PAGE_SIZE, countProtocolQueries, ensureProtocolSchema, listProtocolQueries, loadLastSuccessfulProtocolSync, loadProtocolCorpus, loadProtocolSyncReport, loadProtocolVideoCache, loadProtocolVisionCache, loadRestrictedProtocolFiles, pruneProtocolQueries, recordProtocolFeedback, saveProtocolCorpus, saveProtocolQuery, saveProtocolSyncReport, saveProtocolVisionCache, saveRestrictedProtocolFiles } from './protocol-storage.ts';
 
 const PORT = Number(process.env.PORT || 3003);
 const BIND_HOST = process.env.BIND_HOST?.trim() || '127.0.0.1';
@@ -64,6 +70,9 @@ const MEETING_AI_BACKGROUND_ANALYSIS_ENABLED = process.env.MEETING_AI_BACKGROUND
 const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL?.trim() || (() => { try { return new URL(WEBHOOK_URL).origin; } catch { return ''; } })();
 const GOOGLE_DRIVE_CLIENT_ID = process.env.GOOGLE_DRIVE_CLIENT_ID?.trim() || '';
 const GOOGLE_DRIVE_CLIENT_SECRET = process.env.GOOGLE_DRIVE_CLIENT_SECRET?.trim() || '';
+// Documento del entrenador de llamadas: carpeta de Drive (ID o enlace) y cuenta conectada que lo publica.
+const ENTRENADOR_DRIVE_CARPETA = idCarpetaDrive(process.env.ENTRENADOR_DRIVE_CARPETA);
+const ENTRENADOR_DRIVE_CUENTA = process.env.ENTRENADOR_DRIVE_CUENTA?.trim().toLowerCase() || '';
 const GOOGLE_DRIVE_OAUTH_REDIRECT_URI = process.env.GOOGLE_DRIVE_OAUTH_REDIRECT_URI?.trim() || (PUBLIC_APP_URL ? `${PUBLIC_APP_URL}/api/integrations/google-drive/oauth/callback` : '');
 const GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY = process.env.GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY?.trim() || '';
 const GOOGLE_DRIVE_SYNC_PAGE_SIZE = boundedInterval(process.env.GOOGLE_DRIVE_SYNC_PAGE_SIZE || process.env.GOOGLE_DRIVE_SYNC_MAX_FILES, 1_000, 10, 1_000);
@@ -200,6 +209,21 @@ app.use(cors({
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(compression());
 app.use('/api/integrations/club-lyn/phone-evidence', createPhoneEvidenceRouter(phoneEvidenceConfigFromEnv(), createPhoneEvidenceLookup(pool), createPhonePrefixInference(pool)));
+app.use('/api/club/protocolos', express.json({ limit: '20kb' }), createClubProtocolRouter({
+  enabled: process.env.PROTOCOL_AGENT_ENABLED === 'true' && process.env.PROTOCOL_CLUB_ENABLED === 'true',
+  serviceToken: process.env.CROSS_SSO_CLUB_TO_AGENT_TOKEN || '',
+  resolveUser: (externalId) => resolveProtocolClubIdentity(pool, externalId, dashboardRoleFromOrgPosition),
+  ask: async (user, question, context) => {
+    const clubAdmin = canReadRestrictedProtocol(user.role) ? false : await hasClubAdminRole((sql, params) => pool.query<{ allowed: boolean }>(sql, params), user.id);
+    return askProtocolAgent({ userId: user.id, role: user.role, mayReadRestricted: canReadRestrictedProtocol(user.role) || clubAdmin, question, context, channel: 'club_lyn' }, protocolAgentDependencies(user.role, clubAdmin));
+  },
+  confirm: (user, id, resolved) => recordProtocolFeedback(pool, id, user.id, resolved, 'club_lyn'),
+  status: async () => {
+    const [corpus, lastSyncedAt] = await Promise.all([loadProtocolCorpus(pool), loadLastSuccessfulProtocolSync(pool)]);
+    return { versionId: corpus?.id || null, updatedAt: corpus?.createdAt || null, lastSyncedAt, fileCount: corpus?.files.length || 0 };
+  },
+  weeklySnapshot: (from, to) => loadProtocolWeeklySnapshot(pool, from, to),
+}));
 app.use(express.json({ limit: '10mb' }));
 
 const limiter = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false,
@@ -1013,6 +1037,7 @@ async function ensureDatabaseSchema(): Promise<void> {
   await ensureMeetingRecordingSchema(pool);
   await ensureSummaryJobs(pool);
   await ensureNetelipCalls(pool);
+  await ensureReunionesMeet(pool);
   await ensureWhatsAppReliability(pool);
   await pool.query(
     `INSERT INTO usuarios (usuario, contraseña, password_hash, nombre, rol)
@@ -1496,6 +1521,8 @@ function googleDriveAuthorizationUrl(session: CeoSession): string {
     'profile',
     'https://www.googleapis.com/auth/drive.readonly',
     'https://www.googleapis.com/auth/calendar.events.readonly',
+    // Documento del entrenador de llamadas: drive.file solo da acceso a los archivos que crea la app.
+    ...(ENTRENADOR_DRIVE_CARPETA ? ['https://www.googleapis.com/auth/drive.file'] : []),
   ].join(' '));
   url.searchParams.set('state', createGoogleDriveOAuthState(session));
   return url.toString();
@@ -1565,6 +1592,15 @@ async function googleDriveAccessToken(connectionId: string): Promise<string> {
     [connection.id, encryptGoogleDriveSecret(String(payload.access_token), GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY), expiresAt],
   );
   return String(payload.access_token);
+}
+
+/** Token de la cuenta que publica el documento del entrenador; exige que la conexión tenga drive.file. */
+async function entrenadorDriveToken(): Promise<string> {
+  const { rows: [connection] } = await pool.query<{ id: string; scope: string | null }>(
+    'SELECT id, scope FROM google_drive_connections WHERE google_email = $1 AND revoked_at IS NULL', [ENTRENADOR_DRIVE_CUENTA]);
+  if (!connection) throw new Error(`La cuenta ${ENTRENADOR_DRIVE_CUENTA} no está conectada a Google Drive. Conéctala desde Reuniones.`);
+  if (!String(connection.scope || '').includes('/auth/drive.file')) throw new Error(`La cuenta ${ENTRENADOR_DRIVE_CUENTA} no tiene permiso de escritura (drive.file). Vuelve a conectarla desde Reuniones.`);
+  return googleDriveAccessToken(connection.id);
 }
 
 async function googleDriveFetch(path: string, accessToken: string, resourceKeys?: string): Promise<globalThis.Response> {
@@ -8865,6 +8901,7 @@ async function bootstrap() {
   void runSummaryQueue();
   setInterval(() => void runSummaryQueue(), 5_000).unref();
   if (process.env.NETELIP_WORKERS_ENABLED !== 'false') netelipWorkers.start();
+  reunionesWorkers.start();
   if (EVOLUTION_BACKGROUND_SYNC_ENABLED) await bootEvolution();
 }
 
@@ -8927,11 +8964,24 @@ function runProtocolSync(): Promise<unknown> {
       report = await syncProtocolDrive((path, resourceKeys) => googleDriveFetch(path, token, resourceKeys), {
         previous,
         assignmentsSheetId: process.env.PROTOCOL_ASSIGNMENTS_SHEET_ID?.trim(),
+        legacyFolderId: process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID?.trim(),
+        legacyFileIds: process.env.PROTOCOL_LEGACY_DRIVE_FILE_IDS?.split(',').map(id => id.trim()).filter(Boolean),
         maxTokens: boundedInterval(process.env.PROTOCOL_MAX_TOKENS, 100_000, 1_000, 500_000),
         save: (corpus) => saveProtocolCorpus(pool, corpus),
+        loadVideo: (fileId, revision) => loadProtocolVideoCache(pool, fileId, revision),
         loadVision: (fileId, revision, page, imageHash) => loadProtocolVisionCache(pool, fileId, revision, page, imageHash),
         saveVision: (fileId, revision, page, imageHash, markdown) => saveProtocolVisionCache(pool, fileId, revision, page, imageHash, markdown),
       });
+      const restrictedFolderId = process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID?.trim();
+      if (restrictedFolderId) {
+        report.restricted = await syncRestrictedProtocolDrive((path, resourceKeys) => googleDriveFetch(path, token, resourceKeys), {
+          folderId: restrictedFolderId,
+          generalFiles: (await loadProtocolCorpus(pool))?.files || [],
+          previousFiles: await loadRestrictedProtocolFiles(pool, 'admin'),
+          save: (files) => saveRestrictedProtocolFiles(pool, files),
+        });
+        if (report.restricted.error && !report.error) report.error = 'No se pudieron sincronizar los documentos privados; se conserva su versión anterior';
+      }
     } catch {
       report = { checkedAt: new Date().toISOString(), files: [], versionId: previous?.id || null, error: 'No se pudo acceder a la carpeta autorizada de Drive' };
     }
@@ -8984,25 +9034,34 @@ app.post('/api/protocolos/sincronizar', requireCeoAuth, async (_req: Request, re
   catch { res.status(503).json({ error: 'No se pudo sincronizar la carpeta de protocolos' }); }
 });
 
+function protocolAgentDependencies(role: string, clubAdmin: boolean): ProtocolAgentDependencies {
+  return {
+    loadCorpus: () => loadProtocolCorpus(pool),
+    loadRestrictedFiles: process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID?.trim()
+      ? () => loadRestrictedProtocolFiles(pool, role, clubAdmin)
+      : undefined,
+    clientNames: async () => (await pool.query<{ name: string }>("SELECT CONCAT_WS(' ', nombre, apellido) AS name FROM clientes")).rows.map(row => row.name),
+    roles: async () => (await pool.query<{ name: string; person: string | null }>(
+      `SELECT c.nombre AS name, STRING_AGG(CONCAT_WS(' ', e.nombre, e.apellido), ', ' ORDER BY a.source_assigned_at DESC NULLS LAST) AS person
+       FROM organigrama_cargos c LEFT JOIN organigrama_cargo_asignaciones a ON a.cargo_id=c.id AND a.activo=TRUE AND a.proyecto_id IS NULL
+       LEFT JOIN empleados e ON e.id=a.empleado_id WHERE c.activo=TRUE GROUP BY c.id, c.nombre`,
+    )).rows.map(row => ({ name: row.name, person: row.person || undefined })),
+    topics: async () => (await pool.query<{ tema: string }>(
+      `SELECT tema FROM agente_protocolos_consultas GROUP BY tema ORDER BY COUNT(*) DESC LIMIT 150`,
+    )).rows.map(row => row.tema),
+    generate: (system, user) => callProtocolGemini(system, user),
+    save: (log) => saveProtocolQuery(pool, log),
+  };
+}
+
 app.post('/api/protocolos/consultar', requireProtocolUser, protocolQueryLimiter, async (req: Request, res: Response) => {
   if (process.env.PROTOCOL_AGENT_ENABLED !== 'true') return res.status(503).json({ error: 'El agente de protocolos no está activo' });
   const session = res.locals.ceoSession as CeoSession;
   if (!session.id) return res.status(401).json({ error: 'Identidad no disponible' });
   try {
-    const result = await askProtocolAgent({ userId: session.id, role: String(session.rol || ''), question: String(req.body?.pregunta || ''), channel: 'superagente' }, {
-      loadCorpus: () => loadProtocolCorpus(pool),
-      clientNames: async () => (await pool.query<{ name: string }>("SELECT CONCAT_WS(' ', nombre, apellido) AS name FROM clientes")).rows.map(row => row.name),
-      roles: async () => (await pool.query<{ name: string; person: string | null }>(
-        `SELECT c.nombre AS name, STRING_AGG(CONCAT_WS(' ', e.nombre, e.apellido), ', ' ORDER BY a.source_assigned_at DESC NULLS LAST) AS person
-         FROM organigrama_cargos c LEFT JOIN organigrama_cargo_asignaciones a ON a.cargo_id=c.id AND a.activo=TRUE AND a.proyecto_id IS NULL
-         LEFT JOIN empleados e ON e.id=a.empleado_id WHERE c.activo=TRUE GROUP BY c.id, c.nombre`,
-      )).rows.map(row => ({ name: row.name, person: row.person || undefined })),
-      topics: async () => (await pool.query<{ tema: string }>(
-        `SELECT tema FROM agente_protocolos_consultas GROUP BY tema ORDER BY COUNT(*) DESC LIMIT 150`,
-      )).rows.map(row => row.tema),
-      generate: (system, user) => callProtocolGemini(system, user),
-      save: (log) => saveProtocolQuery(pool, log),
-    });
+    const role = String(session.rol || '');
+    const clubAdmin = canReadRestrictedProtocol(role) ? false : await hasClubAdminRole((sql, params) => pool.query<{ allowed: boolean }>(sql, params), session.id);
+    const result = await askProtocolAgent({ userId: session.id, role, mayReadRestricted: canReadRestrictedProtocol(role) || clubAdmin, question: String(req.body?.pregunta || ''), channel: 'superagente' }, protocolAgentDependencies(role, clubAdmin));
     res.json(result);
   } catch (error) {
     const message = (error as Error).message;
@@ -9019,10 +9078,18 @@ app.post('/api/protocolos/:id/confirmar', requireProtocolUser, async (req: Reque
     res.status(saved ? 200 : 404).json(saved ? { ok: true } : { error: 'Consulta no encontrada o ya confirmada' });
   } catch { res.status(503).json({ error: 'No se pudo guardar la confirmación' }); }
 });
-const netelipWorkers = createNetelipWorkers(pool);
+// Calificador de llamadas: feedback al comercial y al supervisor por el WhatsApp de la instancia de Evolution.
+const enviarWhatsAppCalificador = async (telefonoE164: string, texto: string) => {
+  await evolutionFetch(`/message/sendText/${INSTANCE_NAME}`, { method: 'POST', body: JSON.stringify({ number: telefonoE164.replace(/\D/g, ''), text: texto }) });
+};
+const netelipWorkers = createNetelipWorkers(pool, process.env, { enviar: enviarWhatsAppCalificador });
+const reunionesWorkers = createReunionesWorkers(pool, process.env, { tokenGoogle: googleDriveAccessToken });
 registerNetelipCalls(app, {
   pool, admin: requireCeoAuth, kick: netelipWorkers.kick,
   role: (res) => String((res.locals.ceoSession as CeoSession | undefined)?.rol || ''),
+  actor: (res) => ({ id: meetingAuditIdentity(res).id, nombre: meetingAuditActor(res) }),
+  enviar: enviarWhatsAppCalificador,
+  entrenadorDrive: ENTRENADOR_DRIVE_CARPETA && ENTRENADOR_DRIVE_CUENTA ? { carpetaId: ENTRENADOR_DRIVE_CARPETA, token: entrenadorDriveToken } : null,
 });
 registerDashboardOperations(app, {
   pool, admin: requireCeoAuth, actor: meetingAuditActor, identity: meetingAuditIdentity,

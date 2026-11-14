@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import { ArrowDownLeft, ArrowUpRight, MessageCircle } from 'lucide-react';
 import api from '../api';
-import { callListQuery, clearCallFilters, DEFAULT_CALL_FILTERS, formatDuration, formatMadridDateTime, formatOffset, formatPhone, readCallFilters, writeCallFilters } from '../netelipFormat';
+import CallEvaluationPanel, { EvaluationBadge } from './CallEvaluationPanel';
+import { ObjectionsPanel, SalespeoplePanel } from './CalificadorPanels';
+import EntrenadorPanel from './EntrenadorPanel';
+import { callListQuery, clearCallFilters, DEFAULT_CALL_FILTERS, formatDuration, formatMadridDateTime, formatOffset, formatPhone, readCallFilters, writeCallFilters, CALL_RESULT_LABEL } from '../netelipFormat';
 
 const CONTACT_THEME = {
   client: { label: 'Cliente', className: 'border-emerald-300/40 bg-emerald-300/[.08] text-emerald-100' },
@@ -19,6 +22,7 @@ function TranscriptionStatus({ call, wide = false }) {
     return <div className={wide ? 'w-full' : 'w-28'}><p className="text-xs text-amber-200">Transcribiendo · {percent} %</p><div role="progressbar" aria-label="Avance de la transcripción" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100} className="mt-1.5 h-1 overflow-hidden rounded bg-[#2E2E2E]"><div className="h-full rounded bg-amber-300 transition-all duration-700" style={{ width: `${Math.max(percent, 3)}%` }} /></div></div>;
   }
   if (status === 'pending') return <p className="text-xs text-amber-200">En cola</p>;
+  if (!status && call.recorded === false) return <p className="text-xs text-[#737373]">Sin grabación</p>;
   return <p className={`text-xs ${TRANSCRIPTION_TONE[status] || 'text-[#737373]'}`}>{TRANSCRIPTION_LABEL[status] || 'Sin transcripción'}</p>;
 }
 
@@ -72,6 +76,7 @@ function RetryButton({ callIds, label, onDone }) {
 function TranscriptionPanel({ detail, onRetried }) {
   const transcription = detail.transcription;
   if (detail.transcription_access === 'denied') return <p role="status" className="rounded border border-amber-300/30 bg-amber-300/[.06] p-3 text-xs leading-5 text-amber-100">No tienes permiso para leer transcripciones. Solo los roles autorizados por Producto pueden ver el texto de las llamadas.</p>;
+  if (!transcription && detail.call?.recorded === false) return <p className="rounded border border-[#2E2E2E] bg-[#141414] p-3 text-xs leading-5 text-[#BFBFBF]">Esta llamada no se grabó ({(CALL_RESULT_LABEL[detail.call.result] || detail.call.result || '').toLowerCase()}). Queda registrada, pero solo se graban y transcriben las llamadas contestadas que pasan por API Voice.</p>;
   if (!transcription) return <p className="rounded border border-[#2E2E2E] bg-[#141414] p-3 text-xs text-[#737373]">Esta llamada no tiene transcripción disponible.</p>;
   if (transcription.status === 'pending') return <div role="status" className="rounded border border-amber-300/30 bg-amber-300/[.06] p-3 text-xs leading-5 text-amber-100"><p>{detail.call?.transcription_phase === 'processing' ? 'Transcribiendo el audio de la llamada. El texto aparecerá aquí al terminar.' : 'Transcripción pendiente: la llamada está en cola. El texto aparecerá aquí en cuanto el motor termine.'}</p>{detail.call?.transcription_phase === 'processing' && <div className="mt-3"><TranscriptionStatus call={detail.call} wide /></div>}</div>;
   if (transcription.status === 'failed') return <div role="alert" className="rounded border border-red-900/70 bg-red-950/30 p-3 text-xs leading-5 text-red-200"><p>No se pudo transcribir esta llamada tras varios intentos. El equipo de tecnología ya está avisado.</p>{detail.call?.via !== 'whatsapp' && <div className="mt-3"><RetryButton callIds={[detail.call.id]} label="Reintentar transcripción" onDone={onRetried} /></div>}</div>;
@@ -101,8 +106,9 @@ function CallDrawer({ detail, loading, error, onClose, onOpenContact, onRetried 
       {error && <p role="alert" className="mb-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}
       {call && <>
         <dl className="grid grid-cols-2 gap-3 rounded-md border border-[#2E2E2E] bg-[#141414] p-4 text-xs">
-          {[['Teléfono', call.contact_status === 'hidden' ? 'Número oculto' : formatPhone(call.phone)], ['Dirección', <DirectionCell key="d" call={call} />], ['Agente', call.agent ? call.agent.name || `Extensión ${call.agent.extension}` : '—'], ['Fecha', formatMadridDateTime(call.occurred_at)], ['Duración', formatDuration(call.duration_seconds)], ['Canal', call.via === 'whatsapp' ? 'WhatsApp' : 'Teléfono (Netelip)']].map(([label, value]) => <div key={label}><dt className="font-mono text-[10px] uppercase tracking-[.12em] text-[#737373]">{label}</dt><dd className="mt-1 text-[#F2F2F2]">{value}</dd></div>)}
+          {[['Teléfono', call.contact_status === 'hidden' ? 'Número oculto' : formatPhone(call.phone)], ['Dirección', <DirectionCell key="d" call={call} />], ['Agente', call.agent ? call.agent.name || `Extensión ${call.agent.extension}` : '—'], ['Fecha', formatMadridDateTime(call.occurred_at)], ['Duración', formatDuration(call.duration_seconds)], ['Resultado', CALL_RESULT_LABEL[call.result] || call.result || '—'], ['Canal', call.via === 'whatsapp' ? 'WhatsApp' : 'Teléfono (Netelip)']].map(([label, value]) => <div key={label}><dt className="font-mono text-[10px] uppercase tracking-[.12em] text-[#737373]">{label}</dt><dd className="mt-1 text-[#F2F2F2]">{value}</dd></div>)}
         </dl>
+        <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Evaluación del comercial</h3><CallEvaluationPanel callId={call.id} transcriptionStatus={call.transcription_status} /></section>
         <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Transcripción</h3><TranscriptionPanel detail={detail} onRetried={onRetried} /></section>
       </>}
     </div>
@@ -121,6 +127,8 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
   const [search, setSearch] = useState(filters.q);
   // Fuerza una recarga de la lista (p. ej. después de reencolar transcripciones).
   const [reloadTick, setReloadTick] = useState(0);
+  // Calificador interno: pestañas de objeciones, comerciales evaluados y documento del entrenador.
+  const [tab, setTab] = useState('calls');
 
   const update = (changes) => setFilters((current) => ({ ...current, page: 1, ...changes }));
 
@@ -174,7 +182,7 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
   };
   const closeCall = () => setFilters((current) => ({ ...current, call: '' }));
   const clearFilters = () => { setSearch(''); setFilters({ ...DEFAULT_CALL_FILTERS, dir: filters.dir }); };
-  const filtersActive = Boolean(filters.via || filters.agent || filters.contact || filters.tr || filters.period || filters.q || filters.sort !== 'recent');
+  const filtersActive = Boolean(filters.via || filters.agent || filters.contact || filters.tr || filters.res || filters.period || filters.q || filters.sort !== 'recent');
   const items = result?.items || [];
   // Fallidas de la lista que se pueden reintentar (las de WhatsApp no: su audio no está en vDrive).
   const failedIds = items.filter((call) => call.transcription_status === 'failed' && call.via !== 'whatsapp').map((call) => call.id);
@@ -182,13 +190,14 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
   const page = result?.page || filters.page;
   const pageSize = result?.pageSize || 25;
   const totalPages = result?.totalPages || 1;
-  const metrics = result?.metrics || { calls: 0, unidentified: 0, transcription_pending: 0, transcription_failed: 0 };
+  const metrics = result?.metrics || { calls: 0, unidentified: 0, transcription_pending: 0, transcription_failed: 0, missed: 0 };
   const noCallsAtAll = !loading && !error && total === 0 && metrics.calls === 0 && !filtersActive && !filters.dir;
   const kpis = [
-    { label: 'Llamadas del periodo', value: metrics.calls, active: !filters.contact && !filters.tr, apply: { contact: '', tr: '' } },
-    { label: 'Sin contacto identificado', value: metrics.unidentified, active: filters.contact === 'unidentified', apply: { contact: 'unidentified', tr: '' } },
-    { label: 'Transcripciones pendientes', value: metrics.transcription_pending, active: filters.tr === 'pending', apply: { tr: 'pending', contact: '' } },
-    { label: 'Transcripciones fallidas', value: metrics.transcription_failed, active: filters.tr === 'failed', apply: { tr: 'failed', contact: '' } },
+    { label: 'Llamadas del periodo', value: metrics.calls, active: !filters.contact && !filters.tr && !filters.res, apply: { contact: '', tr: '', res: '' } },
+    { label: 'Llamadas perdidas', value: metrics.missed ?? 0, active: filters.res === 'missed', apply: { res: 'missed', contact: '', tr: '' } },
+    { label: 'Sin contacto identificado', value: metrics.unidentified, active: filters.contact === 'unidentified', apply: { contact: 'unidentified', tr: '', res: '' } },
+    { label: 'Transcripciones pendientes', value: metrics.transcription_pending, active: filters.tr === 'pending', apply: { tr: 'pending', contact: '', res: '' } },
+    { label: 'Transcripciones fallidas', value: metrics.transcription_failed, active: filters.tr === 'failed', apply: { tr: 'failed', contact: '', res: '' } },
   ];
 
   return <section className="ceo-page p-4 sm:p-6 xl:p-8">
@@ -196,8 +205,15 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
       <div><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#737373]">Netelip</p><h2 className="mt-1 text-xl font-semibold tracking-tight text-[#F2F2F2]">Historial de llamadas</h2><p className="mt-1 text-xs text-[#737373]">Llamadas grabadas del equipo con clientes y contactos, con su transcripción. Horas de Madrid.</p></div>
       <input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Buscar llamadas" placeholder="Buscar por nombre o teléfono…" className="h-9 w-72 max-w-full ceo-surface rounded border border-[#2E2E2E] bg-[#141414] px-3 text-xs text-[#F2F2F2] outline-none" />
     </div>
+    <div role="tablist" aria-label="Secciones de llamadas" className="mb-4 flex flex-wrap gap-1.5">
+      {[['calls', 'Llamadas'], ['objections', 'Objeciones e ideas de marketing'], ['salespeople', 'Comerciales evaluados'], ['trainer', 'Documento del entrenador']].map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)} className={`dashboard-filter-tab rounded px-3 py-1.5 text-xs ${tab === key ? 'is-active bg-[#2E2E2E] text-[#F2F2F2]' : 'text-[#737373] hover:text-[#BFBFBF]'}`}>{label}</button>)}
+    </div>
+    {tab === 'objections' && <ObjectionsPanel onOpenCall={openCall} />}
+    {tab === 'salespeople' && <SalespeoplePanel />}
+    {tab === 'trainer' && <EntrenadorPanel />}
+    {tab === 'calls' && <>
     {error && <p role="alert" className="mb-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{kpis.map((kpi) => <button key={kpi.label} type="button" onClick={() => update(kpi.apply)} aria-pressed={kpi.active} className={`dashboard-metric-card rounded-md border bg-[#141414] p-4 text-left ${kpi.active ? 'border-amber-300/50' : 'border-[#2E2E2E] hover:border-[#4A4A4A]'}`}><p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#737373]">{kpi.label}</p><p className="mt-1 text-2xl font-semibold text-[#F2F2F2]">{loading && !result ? '—' : kpi.value}</p></button>)}</div>
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">{kpis.map((kpi) => <button key={kpi.label} type="button" onClick={() => update(kpi.apply)} aria-pressed={kpi.active} className={`dashboard-metric-card rounded-md border bg-[#141414] p-4 text-left ${kpi.active ? 'border-amber-300/50' : 'border-[#2E2E2E] hover:border-[#4A4A4A]'}`}><p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#737373]">{kpi.label}</p><p className="mt-1 text-2xl font-semibold text-[#F2F2F2]">{loading && !result ? '—' : kpi.value}</p></button>)}</div>
     <div className="mt-5 overflow-hidden rounded-md border border-[#2E2E2E] bg-[#141414]">
       <div className="border-b border-[#2E2E2E] px-3 py-3">
         <div className="flex flex-wrap items-center gap-1.5">
@@ -206,6 +222,7 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
           <select aria-label="Filtrar por agente" value={filters.agent} onChange={(event) => update({ agent: event.target.value })} className={selectClass}><option value="">Agente</option>{agents.map((agent) => <option key={agent.extension} value={agent.extension}>{agent.name ? `${agent.name} · ${agent.extension}` : `Extensión ${agent.extension}`}</option>)}</select>
           <select aria-label="Filtrar por contacto" value={filters.contact} onChange={(event) => update({ contact: event.target.value })} className={selectClass}><option value="">Contacto</option><option value="identified">Identificado</option><option value="unidentified">Sin identificar</option></select>
           <select aria-label="Filtrar por transcripción" value={filters.tr} onChange={(event) => update({ tr: event.target.value })} className={selectClass}><option value="">Transcripción</option><option value="completed">Completada</option><option value="pending">Pendiente</option><option value="failed">Fallida</option></select>
+          <select aria-label="Filtrar por resultado" value={filters.res} onChange={(event) => update({ res: event.target.value })} className={selectClass}><option value="">Resultado</option><option value="contestada">Contestada</option><option value="missed">Perdidas (todas)</option>{['no_contestada', 'colgada', 'ocupado', 'no_disponible'].map((key) => <option key={key} value={key}>{CALL_RESULT_LABEL[key]}</option>)}</select>
           <select aria-label="Filtrar por canal" value={filters.via} onChange={(event) => update({ via: event.target.value })} className={selectClass}><option value="">Canal</option><option value="phone">Teléfono</option><option value="whatsapp">WhatsApp</option></select>
           <span className="mx-1 hidden h-6 w-px bg-[#2E2E2E] md:block" />
           <select aria-label="Filtrar por fecha" value={filters.period} onChange={(event) => update({ period: event.target.value, ...(event.target.value === 'custom' ? {} : { from: '', to: '' }) })} className={selectClass}><option value="">Fecha</option><option value="7">Últimos 7 días</option><option value="30">Últimos 30 días</option><option value="90">Últimos 90 días</option><option value="custom">Rango de fechas…</option></select>
@@ -215,7 +232,7 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
         {filters.period === 'custom' && <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-[#2E2E2E] pt-3"><label className="text-[10px] text-[#737373]">Desde<input type="date" value={filters.from} onChange={(event) => update({ from: event.target.value })} className="ml-2 h-8 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#F2F2F2] outline-none" /></label><label className="text-[10px] text-[#737373]">Hasta<input type="date" value={filters.to} onChange={(event) => update({ to: event.target.value })} className="ml-2 h-8 rounded border border-[#2E2E2E] bg-[#141414] px-2 text-xs text-[#F2F2F2] outline-none" /></label></div>}
       </div>
       {filters.tr === 'failed' && failedIds.length > 0 && <div className="flex flex-wrap items-center gap-3 border-b border-[#2E2E2E] bg-red-950/20 px-3 py-3"><p className="text-xs text-red-100">{failedIds.length === 1 ? 'Hay 1 transcripción fallida en esta lista.' : `Hay ${failedIds.length} transcripciones fallidas en esta lista.`} Se vuelven a poner en cola y se transcriben de una en una.</p><RetryButton callIds={failedIds} label={failedIds.length === 1 ? 'Reintentar 1 transcripción' : `Reintentar las ${failedIds.length}`} onDone={() => setReloadTick((n) => n + 1)} /></div>}
-      <div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left"><thead className="bg-[#0D0D0D] font-mono text-[10px] uppercase tracking-[0.12em] text-[#737373]"><tr><th className="px-3 py-3">Fecha</th><th className="px-3 py-3">Dirección</th><th className="px-3 py-3">Contacto</th><th className="px-3 py-3">Teléfono</th><th className="px-3 py-3">Agente</th><th className="px-3 py-3">Duración</th><th className="px-3 py-3">Transcripción</th></tr></thead>
+      <div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left"><thead className="bg-[#0D0D0D] font-mono text-[10px] uppercase tracking-[0.12em] text-[#737373]"><tr><th className="px-3 py-3">Fecha</th><th className="px-3 py-3">Dirección</th><th className="px-3 py-3">Contacto</th><th className="px-3 py-3">Teléfono</th><th className="px-3 py-3">Agente</th><th className="px-3 py-3">Duración</th><th className="px-3 py-3">Transcripción</th><th className="px-3 py-3">Evaluación</th></tr></thead>
         <tbody className="divide-y divide-[#2E2E2E]">
           {items.map((call) => <tr key={call.id} onClick={() => openCall(call.id)} aria-selected={String(call.id) === filters.call} className={`group cursor-pointer hover:bg-[#0D0D0D] ${String(call.id) === filters.call ? 'bg-[#0D0D0D]' : ''}`}>
             <td className="border-l-2 border-l-transparent px-3 py-3 font-mono text-xs text-[#F2F2F2] group-hover:border-l-amber-300">{formatMadridDateTime(call.occurred_at)}</td>
@@ -223,15 +240,17 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
             <td className="px-3 py-3"><ContactCell call={call} onOpenContact={onOpenContact} /></td>
             <td className="px-3 py-3 font-mono text-xs text-[#BFBFBF]">{call.contact_status === 'hidden' ? 'Oculto' : formatPhone(call.phone)}</td>
             <td className="px-3 py-3 text-xs text-[#BFBFBF]">{call.agent ? <><p>{call.agent.name || `Extensión ${call.agent.extension}`}</p>{call.agent.name && <p className="mt-1 text-[10px] text-[#737373]">Ext. {call.agent.extension}</p>}</> : '—'}</td>
-            <td className="px-3 py-3 font-mono text-xs text-[#BFBFBF]">{formatDuration(call.duration_seconds)}</td>
+            <td className="px-3 py-3 font-mono text-xs text-[#BFBFBF]">{formatDuration(call.duration_seconds)}{call.result && call.result !== 'contestada' && <p className={`mt-1 font-sans text-[10px] ${call.result === 'en_curso' ? 'text-amber-200' : 'text-red-200'}`}>{CALL_RESULT_LABEL[call.result] || call.result}</p>}</td>
             <td className="px-3 py-3"><TranscriptionStatus call={call} /></td>
+            <td className="px-3 py-3"><EvaluationBadge evaluation={call.evaluation} /></td>
           </tr>)}
-          {loading && !result && <tr><td colSpan="7" className="px-3 py-12 text-center text-xs text-[#737373]" role="status">Cargando llamadas…</td></tr>}
-          {noCallsAtAll && <tr><td colSpan="7" className="px-3 py-12 text-center text-xs text-[#737373]">Todavía no hay llamadas grabadas. Aparecerán aquí cuando Netelip envíe la primera grabación.</td></tr>}
-          {!loading && !error && !items.length && !noCallsAtAll && <tr><td colSpan="7" className="px-3 py-12 text-center text-xs text-[#737373]">No hay llamadas que coincidan con los filtros.{filtersActive && <button type="button" onClick={clearFilters} className="ml-2 text-amber-300 hover:text-amber-200">Limpiar filtros</button>}</td></tr>}
+          {loading && !result && <tr><td colSpan="8" className="px-3 py-12 text-center text-xs text-[#737373]" role="status">Cargando llamadas…</td></tr>}
+          {noCallsAtAll && <tr><td colSpan="8" className="px-3 py-12 text-center text-xs text-[#737373]">Todavía no hay llamadas grabadas. Aparecerán aquí cuando Netelip envíe la primera grabación.</td></tr>}
+          {!loading && !error && !items.length && !noCallsAtAll && <tr><td colSpan="8" className="px-3 py-12 text-center text-xs text-[#737373]">No hay llamadas que coincidan con los filtros.{filtersActive && <button type="button" onClick={clearFilters} className="ml-2 text-amber-300 hover:text-amber-200">Limpiar filtros</button>}</td></tr>}
         </tbody></table></div>
       <div className="flex flex-col gap-3 border-t border-[#2E2E2E] px-3 py-3 text-xs text-[#737373] sm:flex-row sm:items-center sm:justify-between"><p>Mostrando {total ? ((page - 1) * pageSize) + 1 : 0}–{Math.min(page * pageSize, total)} de {total} llamadas</p><div className="flex items-center gap-2"><button type="button" disabled={page <= 1 || loading} onClick={() => setFilters((current) => ({ ...current, page: Math.max(1, page - 1) }))} className="rounded border border-[#2E2E2E] px-3 py-1.5 text-[#BFBFBF] hover:border-amber-300/50 disabled:cursor-not-allowed disabled:opacity-40">Anterior</button><span className="min-w-24 text-center">Página {page} de {Math.max(1, totalPages)}</span><button type="button" disabled={page >= totalPages || loading} onClick={() => setFilters((current) => ({ ...current, page: Math.min(totalPages, page + 1) }))} className="rounded border border-[#2E2E2E] px-3 py-1.5 text-[#BFBFBF] hover:border-amber-300/50 disabled:cursor-not-allowed disabled:opacity-40">Siguiente</button></div></div>
     </div>
+    </>}
     {filters.call && <><button type="button" aria-label="Cerrar detalle" onClick={closeCall} className="fixed inset-0 z-40 bg-black/60" /><CallDrawer detail={detail} loading={detailLoading} error={detailError} onClose={closeCall} onOpenContact={onOpenContact} onRetried={onRetried} /></>}
   </section>;
 }

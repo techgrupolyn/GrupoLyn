@@ -26,6 +26,19 @@ async function request(path, options = {}) {
   return res.json().catch(() => null);
 }
 
+/** Descarga de archivos (p. ej. .docx) con la sesión del Dashboard. */
+async function requestBlob(path) {
+  const token = localStorage.getItem('ceo_token');
+  const res = await fetch(`${BASE}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!res.ok) {
+    const err = new Error(`HTTP ${res.status}`);
+    err.status = res.status;
+    err.body = 'No se pudo descargar el archivo. Vuelve a intentarlo.';
+    throw err;
+  }
+  return res.blob();
+}
+
 export const api = {
   projectMeetings: {
     recording: (id) => request(`/project-meetings/${encodeURIComponent(id)}/recording`),
@@ -151,6 +164,17 @@ export const api = {
     // Reencolar transcripciones fallidas (una llamada o varias).
     retryTranscription: (id) => request(`/netelip/calls/${encodeURIComponent(id)}/transcription/retry`, { method: 'POST' }),
     retryTranscriptions: (callIds) => request('/netelip/transcriptions/retry', { method: 'POST', body: JSON.stringify({ call_ids: callIds }) }),
+    // Calificador interno de llamadas (869e9y98n).
+    evaluation: (id) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion`),
+    addEvaluationFeedback: (id, texto) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion/feedback`, { method: 'POST', body: JSON.stringify({ texto }) }),
+    objections: (filters = {}) => request(`/netelip/objeciones?${new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== '' && value != null))}`),
+    salespeople: () => request('/netelip/comerciales'),
+    saveSalesperson: (extension, body) => request(`/netelip/comerciales/${encodeURIComponent(extension)}`, { method: 'PUT', body: JSON.stringify(body) }),
+    // Documento del entrenador de llamadas (versiones, actualizar con las llamadas nuevas y publicar en Drive).
+    trainer: () => request('/netelip/entrenador'),
+    updateTrainer: () => request('/netelip/entrenador/actualizar', { method: 'POST' }),
+    publishTrainer: (numero) => request(`/netelip/entrenador/versiones/${encodeURIComponent(numero)}/publicar`, { method: 'POST' }),
+    trainerDocx: (numero) => requestBlob(`/netelip/entrenador/versiones/${encodeURIComponent(numero)}/docx`),
   },
   meetings: {
     recording: (id) => request(`/meetings/${encodeURIComponent(id)}/recording`),

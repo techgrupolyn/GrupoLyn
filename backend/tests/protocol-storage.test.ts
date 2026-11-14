@@ -30,13 +30,14 @@ describe('registro de protocolos', () => {
   it('guarda consumo y versión del corpus junto a la consulta enmascarada', async () => {
     const query = vi.fn().mockResolvedValue({ rowCount: 1 });
     const log: ProtocolLog = {
-      id: '00000000-0000-0000-0000-000000000001', userId: 1, role: 'PMC', question: '[NOMBRE] pregunta', answer: 'Respuesta',
+      id: '00000000-0000-0000-0000-000000000001', userId: 1, role: 'PMC', channel: 'club_lyn', question: '[NOMBRE] pregunta', answer: 'Respuesta',
       classification: 'resuelta', reason: null, area: 'diseno', topic: 'revision semanal', sources: [], derivationRole: null,
       contradiction: null, validation: 'ok', corpusVersionId: 'a'.repeat(64), model: 'flash', inputTokens: 120,
       outputTokens: 34, latencyMs: 1000, error: null,
     };
     await saveProtocolQuery({ query } as unknown as Pool, log);
-    expect(query.mock.calls[0][1]).toHaveLength(19);
+    expect(query.mock.calls[0][1]).toHaveLength(20);
+    expect(query.mock.calls[0][1]).toContain('club_lyn');
     expect(query.mock.calls[0][1]).toContain(log.corpusVersionId);
     expect(query.mock.calls[0][1]).toContain(120);
     expect(query.mock.calls[0][1]).toContain(34);

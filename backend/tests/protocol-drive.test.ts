@@ -3,8 +3,109 @@ import { describe, expect, it, vi } from 'vitest';
 import { syncProtocolDrive } from '../protocol-drive.ts';
 
 const folderId = '14oB0TKbGyvEDMti2JgjXIep54-ZcMbc_';
+const approvedLegacyId = '1C9veacxQSXAcr6v3a9Zhq2mR01T7O-sL';
 
 describe('sincronización de protocolos', () => {
+  it('une solo los documentos heredados autorizados y evita copias idénticas', async () => {
+    const legacyFolderId = 'club-protocolos';
+    const save = vi.fn(async () => undefined);
+    const request = vi.fn(async (path: string) => {
+      const parent = new URL(path, 'https://drive.test').searchParams.get('q');
+      if (parent?.includes(`'${folderId}'`)) return Response.json({ files: [
+        { id: 'main-copy', name: 'Materiales.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', version: '1', md5Checksum: 'same', parents: [folderId] },
+      ] });
+      if (parent?.includes(`'${legacyFolderId}'`)) return Response.json({ files: [
+        { id: 'club-copy', name: 'Materiales.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', version: '1', md5Checksum: 'same', parents: [legacyFolderId] },
+        { id: 'unreviewed', name: 'Cotizador.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', version: '1', parents: [legacyFolderId] },
+        { id: 'pm-folder', name: 'PM', mimeType: 'application/vnd.google-apps.folder', parents: [legacyFolderId] },
+        { id: 'obsolete-folder', name: '_Obsoletos', mimeType: 'application/vnd.google-apps.folder', parents: [legacyFolderId] },
+      ] });
+      if (parent?.includes("'pm-folder'")) return Response.json({ files: [
+        { id: approvedLegacyId, name: 'Presupuestos.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', version: '1', md5Checksum: 'budget', parents: ['pm-folder'] },
+        { id: 'pm-only', name: 'Certificaciones.pdf', mimeType: 'application/pdf', version: '1', md5Checksum: 'pm', parents: ['pm-folder'] },
+      ] });
+      return new Response(Buffer.from('archivo'));
+    });
+    const extract = vi.fn(async () => ({ sections: [{ ref: 'página 1', text: 'Texto de protocolo verificable' }], warnings: [] }));
+    const report = await syncProtocolDrive(request, { maxTokens: 1000, legacyFolderId, legacyFileIds: [approvedLegacyId], save, extract });
+    expect(report.error).toBeNull();
+    expect(report.files.map(file => file.id)).toEqual(['main-copy', approvedLegacyId]);
+    expect(save.mock.calls[0][0].files.map(file => file.id).sort()).toEqual([approvedLegacyId, 'main-copy']);
+    expect(request.mock.calls.filter(([path]) => path.startsWith('/files?'))).toHaveLength(3);
+    expect(request.mock.calls.some(([path]) => path.includes('unreviewed'))).toBe(false);
+    expect(request.mock.calls.some(([path]) => path.includes('pm-only'))).toBe(false);
+  });
+
+  it('rechaza una carpeta adicional sin lista explícita de documentos autorizados', async () => {
+    const save = vi.fn(async () => undefined);
+    const request = vi.fn(async () => Response.json({ files: [] }));
+    const report = await syncProtocolDrive(request, { maxTokens: 1000, legacyFolderId: 'club-protocolos', save });
+    expect(report.error).toContain('Archivos adicionales autorizados no válidos');
+    expect(request).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rechaza un ID de documento heredado no aprobado aunque esté configurado', async () => {
+    const save = vi.fn(async () => undefined);
+    const request = vi.fn(async () => Response.json({ files: [] }));
+    const report = await syncProtocolDrive(request, { maxTokens: 1000, legacyFolderId: 'club-protocolos', legacyFileIds: ['unreviewed'], save });
+    expect(report.error).toContain('Archivos adicionales autorizados no válidos');
+    expect(request).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('retira del corpus anterior los documentos heredados que ya no están autorizados', async () => {
+    const previousFile = { id: 'unreviewed', name: 'Cotizador.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', revision: '1', modifiedTime: '', extractionVersion: 4, sections: [{ ref: 'hoja 1', text: 'Tarifas internas' }], warnings: [] };
+    const save = vi.fn(async () => undefined);
+    const request = vi.fn(async (path: string) => {
+      const parent = new URL(path, 'https://drive.test').searchParams.get('q');
+      if (parent?.includes(`'${folderId}'`)) return Response.json({ files: [{ id: 'main', name: 'Normas.txt', mimeType: 'text/plain', version: '1', parents: [folderId] }] });
+      if (parent?.includes("'club-protocolos'")) return Response.json({ files: [
+        { id: approvedLegacyId, name: 'Procedimiento.txt', mimeType: 'text/plain', version: '1', parents: ['club-protocolos'] },
+        { id: 'unreviewed', name: 'Cotizador.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', version: '1', parents: ['club-protocolos'] },
+      ] });
+      return new Response(Buffer.from('contenido'));
+    });
+    const extract = vi.fn(async () => ({ sections: [{ ref: 'texto', text: 'Procedimiento vigente' }], warnings: [] }));
+    const report = await syncProtocolDrive(request, {
+      maxTokens: 1000, legacyFolderId: 'club-protocolos', legacyFileIds: [approvedLegacyId],
+      previous: { id: 'anterior', createdAt: '2026-11-01T00:00:00Z', tokenEstimate: 10, files: [previousFile], documents: [] },
+      save, extract,
+    });
+    expect(report.error).toBeNull();
+    expect(save.mock.calls[0][0].files.map(file => file.id)).toEqual([approvedLegacyId, 'main']);
+    expect(request.mock.calls.some(([path]) => path.includes('unreviewed'))).toBe(false);
+  });
+
+  it('conserva el corpus anterior si falla la carpeta adicional', async () => {
+    const save = vi.fn(async () => undefined);
+    const request = vi.fn(async (path: string) => path.includes(`'${folderId}'`)
+      ? Response.json({ files: [] })
+      : new Response(null, { status: 403 }));
+    const report = await syncProtocolDrive(request, { maxTokens: 1000, legacyFolderId: 'club-protocolos', legacyFileIds: [approvedLegacyId], save });
+    expect(report.error).toContain('Google Drive respondió 403');
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('da prioridad al documento de Protocolos si Club tiene otra versión con el mismo nombre', async () => {
+    const save = vi.fn(async () => undefined);
+    const request = vi.fn(async (path: string) => {
+      const parent = new URL(path, 'https://drive.test').searchParams.get('q');
+      if (parent?.includes(`'${folderId}'`)) return Response.json({ files: [
+        { id: 'current', name: 'Control de materiales.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', md5Checksum: 'new', parents: [folderId] },
+      ] });
+      if (parent?.includes("'club-protocolos'")) return Response.json({ files: [
+        { id: approvedLegacyId, name: 'CONTROL DE MATERIALES.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', md5Checksum: 'old', parents: ['club-protocolos'] },
+      ] });
+      return new Response(Buffer.from('archivo'));
+    });
+    const extract = vi.fn(async () => ({ sections: [{ ref: 'diapositiva 1', text: 'Contenido verificable' }], warnings: [] }));
+    const report = await syncProtocolDrive(request, { maxTokens: 1000, legacyFolderId: 'club-protocolos', legacyFileIds: [approvedLegacyId], save, extract });
+    expect(report.error).toBeNull();
+    expect(report.files.map(file => file.id)).toEqual(['current']);
+    expect(save.mock.calls[0][0].files.map(file => file.id)).toEqual(['current']);
+  });
+
   it('excluye subcarpetas y retira plantillas que entraron en un corpus anterior', async () => {
     const save = vi.fn(async () => undefined);
     const previous = {

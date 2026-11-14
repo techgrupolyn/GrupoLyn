@@ -1,0 +1,38 @@
+{
+  "codigo": "sdr-v1",
+  "rol": "sdr",
+  "version": 1,
+  "fuente": "Guion completo SDR Grupo LYN (Alex, 08/11/2026) · rúbrica v1 propuesta por Producto en el ticket 869fpj8dm, pendiente de calibrar con Alex y Ernesto",
+  "nota_apto": 80,
+  "objetivo": "Primera llamada del SDR con un lead de reforma: entender qué quiere y qué le preocupa, valorar el encaje (Grupo LYN, LYN Partners o ninguno), proponer la sesión de conceptos personalizada en la oficina y dejarla agendada con los decisores y la documentación.",
+  "criterios": [
+    { "paso": 1, "nombre": "Apertura", "peso": 5,
+      "descripcion": "Saludo natural, se presenta, explica el motivo de la llamada y pide permiso para grabar." },
+    { "paso": 2, "nombre": "Escuchar y comprender", "peso": 25,
+      "descripcion": "Deja hablar sin interrumpir; pregunta qué quiere mejorar; resume cada preocupación con sus palabras en lugar de decir solo «entiendo»; identifica la prioridad del cliente; aclara solo los datos que faltan de la tabla de 8 (tipo de vivienda, municipio, superficie, alcance, cambios, situación de la propiedad, uso y plazo); hace una pregunta cada vez." },
+    { "paso": 3, "nombre": "Resumir y confirmar", "peso": 15,
+      "descripcion": "Resume alcance, objetivo y prioridad y espera la confirmación del cliente. Valora bien el encaje: Grupo LYN, LYN Partners o ninguno." },
+    { "paso": 4, "nombre": "Cómo ayuda LYN", "peso": 20,
+      "descripcion": "Propone la sesión de conceptos personalizada retomando la prioridad del cliente (es lo que más pesa del paso), menciona Club LYN y la estimación con margen del 5 %, y responde la objeción sin discurso." },
+    { "paso": 5, "nombre": "Horquilla", "peso": 10,
+      "descripcion": "Da la horquilla de inversión con lo que incluye, se calla y escucha la reacción. Si no cabe en el presupuesto del cliente, ofrece LYN Partners." },
+    { "paso": 6, "nombre": "Confirmar avance", "peso": 10,
+      "descripcion": "Pregunta si quiere avanzar. Ante «lo pienso» concreta el siguiente contacto con día y hora. No da por buena una respuesta vaga." },
+    { "paso": 7, "nombre": "Asistentes, documentación y agenda", "peso": 15,
+      "descripcion": "Pregunta quién decide y debe asistir; pide plano, fotos o vídeo; ofrece dos opciones de fecha; confirma quién viene, cuándo y qué envía." }
+  ],
+  "errores_criticos": [
+    { "codigo": "REGLA_CERO", "nombre": "REGLA CERO",
+      "descripcion": "La llamada termina sin un siguiente paso concreto: ni cita con día y hora ni siguiente contacto con día y hora. Guion: «Ante un “lo pienso”, siempre concretar cita». «Ya me dices», «hablamos» o «te llamo la semana que viene» sin día y hora son REGLA CERO. Si el lead no encaja y se le dice con honestidad, no es error." },
+    { "codigo": "LIMITE_PROFESIONAL", "nombre": "LÍMITE PROFESIONAL",
+      "descripcion": "Confirma por teléfono viabilidad técnica, plazos, una solución técnica definitiva o un precio cerrado sin revisión (muro de carga, licencia, estructura, fecha de fin de obra, precio exacto)." },
+    { "codigo": "EXCEPCION_SIN_AUTORIZACION", "nombre": "EXCEPCIÓN SIN AUTORIZACIÓN",
+      "descripcion": "Promete al cliente, sin consultarlo con Ernesto, alguna de estas excepciones: visita del topógrafo o medición; sesión por videollamada; proyecto fuera de zona; descuento o condiciones de pago; sesión sin uno de los decisores. NO es error si recoge la petición o la disponibilidad del cliente y le dice que lo confirma después." }
+  ],
+  "reglas": [
+    "Las variantes del guion no se penalizan: «Idea 2», «Otra opción», empezar con «¿Qué tal?» o quitar el «hola» y el nombre del cliente son alternativas válidas. Evalúa la función de cada paso, no las palabras literales.",
+    "Retomar la prioridad del cliente al proponer la sesión es lo que más pesa del paso 4.",
+    "Si el cliente ya dio un dato, no restes por no preguntarlo.",
+    "Aprobado: 80/100 sin ningún error crítico. Lo decide el código, no tú."
+  ]
+}

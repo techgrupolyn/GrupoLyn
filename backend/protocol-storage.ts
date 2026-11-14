@@ -1,7 +1,10 @@
 import type { Pool } from 'pg';
-import type { ProtocolCorpus } from './protocol-corpus.ts';
+import { randomUUID } from 'node:crypto';
+import type { ProtocolCorpus, ProtocolFile } from './protocol-corpus.ts';
+import { canReadRestrictedProtocol } from './protocol-privacy.ts';
 import type { ProtocolLog } from './protocol-agent.ts';
 import type { ProtocolSyncReport } from './protocol-drive.ts';
+import type { ProtocolSection } from './protocol-answer-validation.ts';
 
 export async function ensureProtocolSchema(pool: Pool): Promise<void> {
   await pool.query(`
@@ -55,7 +58,96 @@ export async function ensureProtocolSchema(pool: Pool): Promise<void> {
       verificado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (archivo_id, revision, pagina)
     );
+    CREATE TABLE IF NOT EXISTS agente_protocolos_video_cache (
+      archivo_id TEXT NOT NULL,
+      revision TEXT NOT NULL,
+      secciones JSONB NOT NULL,
+      importado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (archivo_id, revision)
+    );
   `);
+  if (process.env.PROTOCOL_LEGACY_DRIVE_FOLDER_ID?.trim()) await pool.query(`
+    CREATE SCHEMA IF NOT EXISTS protocol_private;
+    REVOKE ALL ON SCHEMA protocol_private FROM PUBLIC;
+    CREATE TABLE IF NOT EXISTS protocol_private.documents (
+      generacion UUID NOT NULL,
+      archivo_id TEXT NOT NULL,
+      archivo JSONB NOT NULL,
+      revision TEXT NOT NULL,
+      actualizado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (generacion, archivo_id)
+    );
+    CREATE TABLE IF NOT EXISTS protocol_private.active_generation (
+      id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+      generacion UUID NOT NULL
+    );
+    REVOKE ALL ON protocol_private.documents FROM PUBLIC;
+    REVOKE ALL ON protocol_private.active_generation FROM PUBLIC;
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE ALL ON SCHEMA protocol_private FROM anon;
+        REVOKE ALL ON ALL TABLES IN SCHEMA protocol_private FROM anon;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        REVOKE ALL ON SCHEMA protocol_private FROM authenticated;
+        REVOKE ALL ON ALL TABLES IN SCHEMA protocol_private FROM authenticated;
+      END IF;
+    END $$;
+  `);
+}
+
+export async function loadRestrictedProtocolFiles(pool: Pool, role: string, clubAdmin = false): Promise<ProtocolFile[]> {
+  if (!canReadRestrictedProtocol(role) && !clubAdmin) return [];
+  const result = await pool.query<{ archivo: ProtocolFile }>(
+    `SELECT documents.archivo FROM protocol_private.documents documents
+     JOIN protocol_private.active_generation active ON documents.generacion = active.generacion
+     WHERE active.id = TRUE ORDER BY documents.archivo_id`,
+  );
+  return result.rows.map(row => row.archivo);
+}
+
+export async function saveRestrictedProtocolFiles(pool: Pool, files: ProtocolFile[]): Promise<void> {
+  if (!files.length || files.some(file => file.audience !== 'restricted') || new Set(files.map(file => file.id)).size !== files.length) throw new Error('Solo se admiten documentos restringidos');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const generation = randomUUID();
+    for (const file of files) {
+      await client.query(
+        `INSERT INTO protocol_private.documents (generacion, archivo_id, archivo, revision)
+         VALUES ($1, $2, $3::jsonb, $4)`,
+        [generation, file.id, JSON.stringify(file), file.revision],
+      );
+    }
+    await client.query(
+      `INSERT INTO protocol_private.active_generation (id, generacion) VALUES (TRUE, $1)
+       ON CONFLICT (id) DO UPDATE SET generacion = EXCLUDED.generacion`,
+      [generation],
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function loadProtocolVideoCache(pool: Pool, fileId: string, revision: string): Promise<ProtocolSection[] | null> {
+  const result = await pool.query<{ secciones: ProtocolSection[] }>(
+    'SELECT secciones FROM agente_protocolos_video_cache WHERE archivo_id=$1 AND revision=$2',
+    [fileId, revision],
+  );
+  return result.rows[0]?.secciones || null;
+}
+
+export async function saveProtocolVideoCache(pool: Pool, fileId: string, revision: string, sections: ProtocolSection[]): Promise<void> {
+  await pool.query(
+    `INSERT INTO agente_protocolos_video_cache (archivo_id, revision, secciones)
+     VALUES ($1,$2,$3::jsonb) ON CONFLICT (archivo_id, revision) DO NOTHING`,
+    [fileId, revision, JSON.stringify(sections)],
+  );
 }
 
 export async function loadProtocolVisionCache(pool: Pool, fileId: string, revision: string, page: string, imageHash: string): Promise<string | null> {
@@ -95,7 +187,8 @@ export async function loadLastSuccessfulProtocolSync(pool: Pool): Promise<string
 
 export async function loadProtocolCorpus(pool: Pool): Promise<ProtocolCorpus | null> {
   const result = await pool.query<{ id: string; creado_en: Date; archivos: ProtocolCorpus['files']; tokens_estimados: number }>(
-    'SELECT id, creado_en, archivos, tokens_estimados FROM agente_protocolos_corpus WHERE activo = TRUE LIMIT 1',
+    `SELECT id, creado_en, archivos, tokens_estimados FROM agente_protocolos_corpus
+     WHERE activo = TRUE AND NOT jsonb_path_exists(archivos, '$[*] ? (@.audience == "restricted")') LIMIT 1`,
   );
   const row = result.rows[0];
   if (!row) return null;
@@ -103,6 +196,7 @@ export async function loadProtocolCorpus(pool: Pool): Promise<ProtocolCorpus | n
 }
 
 export async function saveProtocolCorpus(pool: Pool, corpus: ProtocolCorpus): Promise<void> {
+  if (corpus.files.some(file => file.audience !== 'general')) throw new Error('El corpus general solo admite documentos aprobados para todos');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -125,10 +219,10 @@ export async function saveProtocolCorpus(pool: Pool, corpus: ProtocolCorpus): Pr
 export async function saveProtocolQuery(pool: Pool, log: ProtocolLog): Promise<void> {
   await pool.query(
     `INSERT INTO agente_protocolos_consultas (
-      id, usuario_id, cargo, pregunta, respuesta, clasificacion, motivo_no_respuesta, area, tema,
+      id, usuario_id, cargo, canal, pregunta, respuesta, clasificacion, motivo_no_respuesta, area, tema,
       fuentes, cargo_derivacion, contradiccion, validacion, corpus_version_id, modelo, tokens_entrada, tokens_salida, latencia_ms, error
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19)`,
-    [log.id, log.userId, log.role, log.question, log.answer, log.classification, log.reason,
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13::jsonb,$14,$15,$16,$17,$18,$19,$20)`,
+    [log.id, log.userId, log.role, log.channel, log.question, log.answer, log.classification, log.reason,
       log.area, log.topic, JSON.stringify(log.sources), log.derivationRole, JSON.stringify(log.contradiction),
       log.validation, log.corpusVersionId, log.model, log.inputTokens, log.outputTokens, log.latencyMs, log.error],
   );
@@ -158,10 +252,10 @@ export async function countProtocolQueries(pool: Pool): Promise<number> {
   return Number(result.rows[0]?.total || 0);
 }
 
-export async function recordProtocolFeedback(pool: Pool, id: string, userId: number, resolved: boolean): Promise<boolean> {
+export async function recordProtocolFeedback(pool: Pool, id: string, userId: number, resolved: boolean, channel?: ProtocolLog['channel']): Promise<boolean> {
   const result = await pool.query(
-    'UPDATE agente_protocolos_consultas SET resuelta_por_usuario=$3 WHERE id=$1 AND usuario_id=$2 AND resuelta_por_usuario IS NULL RETURNING id',
-    [id, userId, resolved],
+    'UPDATE agente_protocolos_consultas SET resuelta_por_usuario=$3 WHERE id=$1 AND usuario_id=$2 AND ($4::text IS NULL OR canal=$4) AND resuelta_por_usuario IS NULL RETURNING id',
+    [id, userId, resolved, channel || null],
   );
   return result.rowCount === 1;
 }
