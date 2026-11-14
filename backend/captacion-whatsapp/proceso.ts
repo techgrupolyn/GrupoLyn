@@ -10,9 +10,9 @@ import type { Pool } from 'pg';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import { notifyTech } from '../netelip/processing.ts';
 import { InvalidPhone, toE164 } from '../netelip/phone.ts';
-import { cambiosDeEtapa, type ClienteClickUp, type Tarea, type WebhookClickUp } from './clickup.ts';
+import { cambiosDeEtapa, mismaEtapa, type ClienteClickUp, type Tarea, type WebhookClickUp } from './clickup.ts';
 import { ErrorCloud, type Enviar, type EstadoMeta } from './cloud-api.ts';
-import { dentroDeHorario, type ConfigCaptacion } from './config.ts';
+import { dentroDeHorario, elegirRemitente, type ConfigCaptacion } from './config.ts';
 import { fijarLineaBase, registrarEntrada, registrarSalida } from './solicitudes.ts';
 
 type Db = Pick<Pool, 'query' | 'connect'>;
@@ -67,7 +67,6 @@ export async function aplicarWebhookClickUp(pool: Db, clickup: ClienteClickUp, p
   return nuevas;
 }
 
-const mismaEtapa = (a: string | null, b: string) => a !== null && a.trim().toLowerCase() === b.trim().toLowerCase();
 
 type FilaInbox = { id: string; payload: WebhookClickUp; intentos: number };
 
@@ -147,7 +146,7 @@ export function telefonoParaWhatsApp(original: string | null): Telefono {
   return { e164 };
 }
 
-type FilaAviso = { id: string; clickup_task_id: string; entrada_en: Date; telefono_original: string | null; intentos: number };
+type FilaAviso = { id: string; clickup_task_id: string; entrada_en: Date; telefono_original: string | null; presupuesto: string | null; intentos: number };
 
 /** Envía los avisos pendientes. Devuelve cuántos se trataron. */
 export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: Enviar | null, ahora = new Date(), limite = 10): Promise<number> {
@@ -155,7 +154,7 @@ export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: 
     `UPDATE captacion_whatsapp_avisos SET siguiente_intento = NOW() + INTERVAL '5 minutes'
      WHERE id IN (SELECT id FROM captacion_whatsapp_avisos WHERE estado = 'pendiente' AND siguiente_intento <= NOW()
                   ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED)
-     RETURNING id, clickup_task_id, entrada_en, telefono_original, intentos`, [limite]);
+     RETURNING id, clickup_task_id, entrada_en, telefono_original, presupuesto, intentos`, [limite]);
   const actualizar = (id: string, sql: string, params: unknown[]) =>
     pool.query(`UPDATE captacion_whatsapp_avisos SET ${sql}, actualizado_en = NOW() WHERE id = $1`, [id, ...params]);
   const esperar = (id: string, ms: number, motivo: string) =>
@@ -172,8 +171,14 @@ export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: 
         [telefono.e164, `caducado: más de ${config.caducidadMinutos} min desde la entrada en espera sin poder enviarlo`]);
       continue;
     }
+    // Sale del número del comercial que llamará: Ernesto con presupuesto >= umbral, Victor por debajo o sin él.
+    const remitente = elegirRemitente(aviso.presupuesto, config.remitentes);
     if (!enviar || !config.cloud) {
       await esperar(aviso.id, ESPERA_SIN_CLOUD_MS, 'sin_configuracion: falta la configuración de la Cloud API de WhatsApp');
+      continue;
+    }
+    if (!remitente.numeroId) {
+      await esperar(aviso.id, ESPERA_SIN_CLOUD_MS, `sin_configuracion: ${remitente.nombre} aún no tiene número en la Cloud API`);
       continue;
     }
     if (!dentroDeHorario(config.horario, ahora)) {
@@ -182,9 +187,9 @@ export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: 
     }
     const intento = aviso.intentos + 1;
     try {
-      const { wamid } = await enviar(telefono.e164);
-      await actualizar(aviso.id, `estado = 'enviado', intentos = $2, telefono_e164 = $3, wamid = $4, plantilla = $5, enviado_en = $6, motivo = NULL`,
-        [intento, telefono.e164, wamid, config.cloud.plantilla, ahora]);
+      const { wamid } = await enviar(telefono.e164, remitente.numeroId);
+      await actualizar(aviso.id, `estado = 'enviado', intentos = $2, telefono_e164 = $3, wamid = $4, plantilla = $5, enviado_en = $6, motivo = NULL,
+        remitente = $7, remitente_numero_id = $8`, [intento, telefono.e164, wamid, config.cloud.plantilla, ahora, remitente.nombre, remitente.numeroId]);
       console.log(JSON.stringify({ msg: 'captacion_aviso_enviado', aviso_id: aviso.id, task_id: aviso.clickup_task_id }));
     } catch (error) {
       const reintentable = !(error instanceof ErrorCloud) || error.reintentable;
@@ -193,8 +198,8 @@ export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: 
         await actualizar(aviso.id, 'intentos = $2, telefono_e164 = $3, motivo = $4, siguiente_intento = $5',
           [intento, telefono.e164, `reintento: ${mensaje}`, new Date(ahora.getTime() + ESPERAS_REINTENTO_SEGUNDOS[intento - 1] * 1000)]);
       } else {
-        await actualizar(aviso.id, `estado = 'fallido', intentos = $2, telefono_e164 = $3, motivo = $4, fallido_en = $5`,
-          [intento, telefono.e164, `envio_fallido: ${mensaje}`, ahora]);
+        await actualizar(aviso.id, `estado = 'fallido', intentos = $2, telefono_e164 = $3, motivo = $4, fallido_en = $5, remitente = $6, remitente_numero_id = $7`,
+          [intento, telefono.e164, `envio_fallido: ${mensaje}`, ahora, remitente.nombre, remitente.numeroId]);
         await notifyTech('Captación: aviso de WhatsApp fallido', { aviso_id: aviso.id, task_id: aviso.clickup_task_id, intentos: intento, error: mensaje });
       }
     }

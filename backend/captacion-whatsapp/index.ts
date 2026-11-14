@@ -57,7 +57,10 @@ export function createCaptacionWhatsApp(pool: Pool, env: NodeJS.ProcessEnv = pro
         if (env.CAPTACION_WHATSAPP_ENABLED === 'true') console.warn('[captacion] CAPTACION_WHATSAPP_ENABLED=true sin CLICKUP_API_TOKEN: el aviso por WhatsApp no arranca');
         return;
       }
-      if (!config.cloud) console.warn('[captacion] Sin WHATSAPP_CLOUD_TOKEN / WHATSAPP_CLOUD_PHONE_NUMBER_ID / CAPTACION_WHATSAPP_PLANTILLA: los avisos se registran pero no se envían');
+      if (!config.cloud) console.warn('[captacion] Sin WHATSAPP_CLOUD_TOKEN / CAPTACION_WHATSAPP_PLANTILLA: los avisos se registran pero no se envían');
+      for (const r of [config.remitentes.alto, config.remitentes.base]) {
+        if (!r.numeroId) console.warn(`[captacion] ${r.nombre} sin número en la Cloud API (CAPTACION_WHATSAPP_REMITENTE_${r.clave.toUpperCase()}_NUMERO_ID): sus avisos esperan`);
+      }
       if (!config.clickup.webhookSecret) console.warn('[captacion] Sin CAPTACION_CLICKUP_WEBHOOK_SECRET: solo el barrido detecta las entradas en e1');
       if (config.cloud && !config.cloud.appSecret) console.warn('[captacion] Sin WHATSAPP_CLOUD_APP_SECRET: no se reciben los estados de entrega');
       if (!Number.isFinite(minutosBarrido) || minutosBarrido < 1) throw new Error('CAPTACION_BARRIDO_MINUTOS debe ser >= 1');

@@ -18,7 +18,7 @@ export type Entrada = {
   solicitud: string;
   origen: 'webhook' | 'barrido';
   fecha: Date;
-  lead: Pick<Lead, 'nombre' | 'telefono'>;
+  lead: Pick<Lead, 'nombre' | 'telefono' | 'presupuesto'>;
 };
 
 export type ResultadoEntrada = 'nueva' | 'repetida' | 'antigua';
@@ -58,9 +58,9 @@ export async function registrarEntrada(pool: Conectable, entrada: Entrada): Prom
       `UPDATE captacion_lead_espera SET en_espera = TRUE, solicitud = $2, cambio_en = $3, actualizado_en = NOW()
        WHERE clickup_task_id = $1`, [entrada.taskId, entrada.solicitud, entrada.fecha]);
     await client.query(
-      `INSERT INTO captacion_whatsapp_avisos (solicitud, clickup_task_id, origen, entrada_en, lead_nombre, telefono_original)
-       VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (solicitud) DO NOTHING`,
-      [entrada.solicitud, entrada.taskId, entrada.origen, entrada.fecha, entrada.lead.nombre, entrada.lead.telefono]);
+      `INSERT INTO captacion_whatsapp_avisos (solicitud, clickup_task_id, origen, entrada_en, lead_nombre, telefono_original, presupuesto)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (solicitud) DO NOTHING`,
+      [entrada.solicitud, entrada.taskId, entrada.origen, entrada.fecha, entrada.lead.nombre, entrada.lead.telefono, entrada.lead.presupuesto]);
     return 'nueva';
   });
 }

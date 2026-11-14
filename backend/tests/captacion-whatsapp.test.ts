@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { cambiosDeEtapa, crearClienteClickUp, firmaClickUpValida, nombreOpcion } from '../captacion-whatsapp/clickup.ts';
 import { crearEnviador, ErrorCloud, estadosDelWebhook, firmaMetaValida } from '../captacion-whatsapp/cloud-api.ts';
-import { configCaptacionDesdeEnv, dentroDeHorario, parseHorario } from '../captacion-whatsapp/config.ts';
+import { configCaptacionDesdeEnv, dentroDeHorario, elegirRemitente, limiteInferiorPresupuesto, parseHorario } from '../captacion-whatsapp/config.ts';
 import { telefonoParaWhatsApp } from '../captacion-whatsapp/proceso.ts';
 
 const OPCIONES = [{ id: 'o1', name: 'e1 EN ESPERA', orderindex: 0 }, { id: 'o2', name: 'e2 CONTACTADO', orderindex: 1 }];
@@ -18,11 +18,33 @@ describe('configuración', () => {
   });
   it('valores del ticket por defecto; Cloud API solo con token, número y plantilla', () => {
     const c = configCaptacionDesdeEnv({ CAPTACION_WHATSAPP_ENABLED: 'true', CLICKUP_API_TOKEN: 'pk' })!;
-    expect(c.clickup).toMatchObject({ lista: '901211441576', campoEtapa: 'ETAPA_CRM', etapaEspera: 'e1 EN ESPERA', campoTelefono: 'contact_phone_number' });
+    expect(c.clickup).toMatchObject({ lista: '901211441576', campoEtapa: 'ETAPA_CRM', etapaEspera: 'e1. EN ESPERA', campoTelefono: 'contact_phone_number' });
     expect(c.cloud).toBeNull();
     expect(c.horario).toBeNull();
     const conCloud = configCaptacionDesdeEnv({ CAPTACION_WHATSAPP_ENABLED: 'true', CLICKUP_API_TOKEN: 'pk', WHATSAPP_CLOUD_TOKEN: 't', WHATSAPP_CLOUD_PHONE_NUMBER_ID: '123', CAPTACION_WHATSAPP_PLANTILLA: 'aviso_llamada' })!;
     expect(conCloud.cloud).toMatchObject({ plantilla: 'aviso_llamada', idioma: 'es_ES', versionApi: 'v23.0' });
+    // Sin número propio, cada remitente usa el común.
+    expect(conCloud.remitentes).toEqual({ umbral: 100000,
+      alto: { clave: 'alto', nombre: 'Ernesto', numeroId: '123' }, base: { clave: 'base', nombre: 'Victor', numeroId: '123' } });
+    const propios = configCaptacionDesdeEnv({ CAPTACION_WHATSAPP_ENABLED: 'true', CLICKUP_API_TOKEN: 'pk',
+      CAPTACION_WHATSAPP_REMITENTE_ALTO_NUMERO_ID: 'n-ernesto', CAPTACION_WHATSAPP_REMITENTE_BASE_NOMBRE: 'Víctor' })!;
+    expect(propios.remitentes.alto.numeroId).toBe('n-ernesto');
+    expect(propios.remitentes.base).toEqual({ clave: 'base', nombre: 'Víctor', numeroId: null });
+  });
+
+  it('remitente por presupuesto: desde 100.000 € Ernesto; por debajo o sin presupuesto, Victor', () => {
+    const r = configCaptacionDesdeEnv({ CAPTACION_WHATSAPP_ENABLED: 'true', CLICKUP_API_TOKEN: 'pk' })!.remitentes;
+    // Las cuatro opciones reales de «Presupuesto formulario» en «Contacto de Reforma».
+    expect(limiteInferiorPresupuesto('Menos de 40.000 €')).toBe(0);
+    expect(limiteInferiorPresupuesto('40.000 € - 100.000 €')).toBe(40000);
+    expect(limiteInferiorPresupuesto('100.000 € - 200.000 €')).toBe(100000);
+    expect(limiteInferiorPresupuesto('Más de 200.000 €')).toBe(200000);
+    expect(limiteInferiorPresupuesto('Pendiente: preguntar en la 1ª llamada')).toBeNull();
+    expect(elegirRemitente('Menos de 40.000 €', r).nombre).toBe('Victor');
+    expect(elegirRemitente('40.000 € - 100.000 €', r).nombre).toBe('Victor');
+    expect(elegirRemitente('100.000 € - 200.000 €', r).nombre).toBe('Ernesto');
+    expect(elegirRemitente('Más de 200.000 €', r).nombre).toBe('Ernesto');
+    expect(elegirRemitente(null, r).nombre).toBe('Victor');
   });
   it('franja horaria en hora de Madrid, también cruzando la medianoche', () => {
     expect(() => parseHorario('9-21')).toThrow();
@@ -55,6 +77,12 @@ describe('webhooks de ClickUp', () => {
     expect(nombreOpcion('0b8f0c1e-1111-2222-3333-444455556666', OPCIONES)).toBeNull();
   });
 
+  it('la etapa se compara sin puntos, espacios ni mayúsculas (en la lista real es «e1. EN ESPERA»)', () => {
+    const real = { ...ETAPA, type_config: { options: [{ id: 'o1', name: 'e1. EN ESPERA', orderindex: 0 }, { id: 'o2', name: 'e2. RECOLECTANDO INFORMACIÓN', orderindex: 1 }] } };
+    const cambios = cambiosDeEtapa({ history_items: [{ id: 'h1', date: '1763020800000', before: 'o2', after: 'o1', custom_field: { id: 'f-etapa' } }] }, real, 'e1 EN ESPERA');
+    expect(cambios).toMatchObject([{ historyId: 'h1', entra: true }]);
+  });
+
   it('solo cuentan los cambios de ETAPA_CRM que entran en e1 o salen de e1', () => {
     const cambios = cambiosDeEtapa({ event: 'taskUpdated', task_id: 't1', history_items: [
       { id: 'h1', date: '1763020800000', field: 'custom_field', before: 'o2', after: 'o1', custom_field: { id: 'f-etapa', name: 'ETAPA_CRM' } },
@@ -71,7 +99,7 @@ describe('webhooks de ClickUp', () => {
 });
 
 describe('cliente de ClickUp', () => {
-  const config = { token: 'pk', lista: '901211441576', campoEtapa: 'ETAPA_CRM', etapaEspera: 'e1 EN ESPERA', campoTelefono: 'contact_phone_number', webhookSecret: null };
+  const config = { token: 'pk', lista: '901211441576', campoEtapa: 'ETAPA_CRM', etapaEspera: 'e1 EN ESPERA', campoTelefono: 'contact_phone_number', campoPresupuesto: 'Presupuesto formulario', webhookSecret: null };
   const CAMPOS = { fields: [ETAPA, { id: 'f-tel', name: 'contact_phone_number', type: 'phone' }] };
   const tarea = (id: string, etapa: string | null, parent: string | null = null) =>
     ({ id, name: `Lead ${id}`, parent, custom_fields: [{ id: 'f-etapa', name: 'ETAPA_CRM', value: etapa }, { id: 'f-tel', name: 'contact_phone_number', value: '+34 612 34 56 78' }] });
@@ -90,7 +118,7 @@ describe('cliente de ClickUp', () => {
     expect(url.searchParams.get('page')).toBe('0');
     expect(new URL(fetcher.mock.calls[2][0]).searchParams.get('page')).toBe('1');
     expect(fetcher.mock.calls.every(([, init]) => (init?.method ?? 'GET') === 'GET')).toBe(true);   // solo lectura
-    expect(await cliente.lead(tareas[0])).toEqual({ taskId: 'a', nombre: 'Lead a', telefono: '+34 612 34 56 78', etapa: 'e1 EN ESPERA' });
+    expect(await cliente.lead(tareas[0])).toEqual({ taskId: 'a', nombre: 'Lead a', telefono: '+34 612 34 56 78', etapa: 'e1 EN ESPERA', presupuesto: null });
   });
 
   it('sin la opción de espera en el campo, falla en vez de no encontrar nada', async () => {
@@ -111,11 +139,11 @@ describe('teléfono del lead', () => {
 });
 
 describe('Cloud API', () => {
-  const cloud = { token: 'EAAT', phoneNumberId: '1098', versionApi: 'v23.0', plantilla: 'aviso_llamada', idioma: 'es_ES', appSecret: 's', verifyToken: 'v' };
+  const cloud = { token: 'EAAT', versionApi: 'v23.0', plantilla: 'aviso_llamada', idioma: 'es_ES', appSecret: 's', verifyToken: 'v' };
 
   it('envía la plantilla aprobada al número sin «+» y devuelve el wamid', async () => {
     const fetcher = vi.fn().mockResolvedValue(respuesta({ messaging_product: 'whatsapp', messages: [{ id: 'wamid.ABC' }] }));
-    await expect(crearEnviador(cloud, fetcher as unknown as typeof fetch)('+34612345678')).resolves.toEqual({ wamid: 'wamid.ABC' });
+    await expect(crearEnviador(cloud, fetcher as unknown as typeof fetch)('+34612345678', '1098')).resolves.toEqual({ wamid: 'wamid.ABC' });
     const [url, init] = fetcher.mock.calls[0];
     expect(url).toBe('https://graph.facebook.com/v23.0/1098/messages');
     expect(init.headers.Authorization).toBe('Bearer EAAT');
@@ -124,7 +152,7 @@ describe('Cloud API', () => {
   });
 
   it('caída, 5xx y límites de Meta se reintentan; un error de plantilla o de destinatario no', async () => {
-    const enviar = (r: Response | Error) => crearEnviador(cloud, vi.fn().mockImplementation(async () => { if (r instanceof Error) throw r; return r; }) as unknown as typeof fetch)('+34612345678');
+    const enviar = (r: Response | Error) => crearEnviador(cloud, vi.fn().mockImplementation(async () => { if (r instanceof Error) throw r; return r; }) as unknown as typeof fetch)('+34612345678', '1098');
     const error = async (p: Promise<unknown>) => { try { await p; } catch (e) { return e as ErrorCloud; } throw new Error('no falló'); };
     expect((await error(enviar(new Error('ECONNRESET')))).reintentable).toBe(true);
     expect((await error(enviar(respuesta({ error: { code: 131000, message: 'Something went wrong' } }, 500)))).reintentable).toBe(true);

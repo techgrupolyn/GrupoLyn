@@ -17,14 +17,17 @@ const ETAPA = { id: 'f-etapa', name: 'ETAPA_CRM', type: 'drop_down', type_config
   { id: 'o1', name: 'e1 EN ESPERA', orderindex: 0 }, { id: 'o2', name: 'e2 CONTACTADO', orderindex: 1 }] } };
 
 const config: ConfigCaptacion = {
-  clickup: { token: 'pk', lista: '901211441576', campoEtapa: 'ETAPA_CRM', etapaEspera: 'e1 EN ESPERA', campoTelefono: 'contact_phone_number', webhookSecret: 's' },
-  cloud: { token: 't', phoneNumberId: '1', versionApi: 'v23.0', plantilla: 'aviso_llamada', idioma: 'es_ES', appSecret: 's', verifyToken: 'v' },
+  clickup: { token: 'pk', lista: '901211441576', campoEtapa: 'ETAPA_CRM', etapaEspera: 'e1 EN ESPERA', campoTelefono: 'contact_phone_number', campoPresupuesto: 'Presupuesto formulario', webhookSecret: 's' },
+  cloud: { token: 't', versionApi: 'v23.0', plantilla: 'aviso_llamada', idioma: 'es_ES', appSecret: 's', verifyToken: 'v' },
+  remitentes: { umbral: 100000, alto: { clave: 'alto', nombre: 'Ernesto', numeroId: 'n-ernesto' }, base: { clave: 'base', nombre: 'Victor', numeroId: 'n-victor' } },
   horario: null,
   caducidadMinutos: 720,
 };
 
+type Lt = { etapa: string; telefono: string | null; actualizada: number; parent?: string; presupuesto?: string };
+
 /** ClickUp simulado: un mapa de tareas con su etapa y teléfono. */
-function clickupFalso(tareas: Map<string, { etapa: string; telefono: string | null; actualizada: number; parent?: string }>): ClienteClickUp {
+function clickupFalso(tareas: Map<string, Lt>): ClienteClickUp {
   const aTarea = (id: string): Tarea => {
     const t = tareas.get(id)!;
     return { id, name: `Lead ${id}`, parent: t.parent ?? null, list: { id: '901211441576' }, date_updated: String(t.actualizada),
@@ -32,11 +35,11 @@ function clickupFalso(tareas: Map<string, { etapa: string; telefono: string | nu
   };
   return {
     etapaEspera: 'e1 EN ESPERA',
-    campos: async () => ({ etapa: ETAPA, telefono: { id: 'f-tel', name: 'contact_phone_number' } }),
+    campos: async () => ({ etapa: ETAPA, telefono: { id: 'f-tel', name: 'contact_phone_number' }, presupuesto: null }),
     tarea: async (id) => (tareas.has(id) ? aTarea(id) : null),
     esDeLaLista: () => true,
     enEspera: async () => [...tareas.keys()].filter((id) => tareas.get(id)!.etapa === 'o1' && !tareas.get(id)!.parent).map(aTarea),
-    lead: async (t) => ({ taskId: t.id, nombre: t.name ?? null, telefono: tareas.get(t.id)!.telefono, etapa: tareas.get(t.id)!.etapa === 'o1' ? 'e1 EN ESPERA' : 'e2 CONTACTADO' }),
+    lead: async (t) => ({ taskId: t.id, nombre: t.name ?? null, telefono: tareas.get(t.id)!.telefono, etapa: tareas.get(t.id)!.etapa === 'o1' ? 'e1 EN ESPERA' : 'e2 CONTACTADO', presupuesto: tareas.get(t.id)!.presupuesto ?? null }),
   };
 }
 
@@ -47,7 +50,7 @@ const cambio = (taskId: string, historyId: string, fecha: number, antes: string 
 
 describe.skipIf(!databaseUrl)('Captación · WhatsApp a leads en espera en PostgreSQL QA local', () => {
   let pool: Pool;
-  let tareas: Map<string, { etapa: string; telefono: string | null; actualizada: number; parent?: string }>;
+  let tareas: Map<string, Lt>;
   let clickup: ClienteClickUp;
   const avisos = async (taskId?: string) => (await pool.query(
     `SELECT solicitud, clickup_task_id, origen, estado, motivo, telefono_e164, wamid, intentos, enviado_en, entregado_en, leido_en, fallido_en
@@ -89,7 +92,7 @@ describe.skipIf(!databaseUrl)('Captación · WhatsApp a leads en espera en Postg
     expect(await aplicarWebhookClickUp(pool, clickup, cambio('t1', 'h1', Date.now(), 'o2', 'o1'))).toBe(1);
     const enviar = vi.fn<Enviar>().mockResolvedValue({ wamid: 'wamid.1' });
     expect(await procesarAvisos(pool, config, enviar)).toBe(1);
-    expect(enviar).toHaveBeenCalledWith('+34612345678');
+    expect(enviar).toHaveBeenCalledWith('+34612345678', 'n-victor');   // sin presupuesto: Victor
     expect(await avisos('t1')).toMatchObject([{ solicitud: 'clickup:t1:h1', origen: 'webhook', estado: 'enviado', wamid: 'wamid.1', telefono_e164: '+34612345678', intentos: 1 }]);
   });
 
@@ -225,6 +228,32 @@ describe.skipIf(!databaseUrl)('Captación · WhatsApp a leads en espera en Postg
     const porLead = Object.fromEntries((await avisos()).map((a) => [a.clickup_task_id, a]));
     expect(porLead.t1).toMatchObject({ estado: 'leido', leido_en: leido, entregado_en: leido });
     expect(porLead.t2).toMatchObject({ estado: 'fallido', motivo: 'meta_failed: código 131026 · Message undeliverable', fallido_en: entregado });
+  });
+
+  it('remitente: desde 100.000 € sale del número de Ernesto; por debajo, del de Victor; queda registrado quién lo envió', async () => {
+    await barrer(pool, clickup);
+    tareas.set('alto', { etapa: 'o1', telefono: '612345678', actualizada: Date.now(), presupuesto: '100.000 € - 200.000 €' });
+    tareas.set('bajo', { etapa: 'o1', telefono: '612345679', actualizada: Date.now(), presupuesto: '40.000 € - 100.000 €' });
+    await barrer(pool, clickup);
+    const enviar = vi.fn<Enviar>().mockImplementation(async (_t, numeroId) => ({ wamid: `wamid.${numeroId}` }));
+    await procesarAvisos(pool, config, enviar);
+    expect(enviar).toHaveBeenCalledWith('+34612345678', 'n-ernesto');
+    expect(enviar).toHaveBeenCalledWith('+34612345679', 'n-victor');
+    const filas = (await pool.query('SELECT clickup_task_id, presupuesto, remitente, remitente_numero_id FROM captacion_whatsapp_avisos ORDER BY clickup_task_id')).rows;
+    expect(filas).toEqual([
+      { clickup_task_id: 'alto', presupuesto: '100.000 € - 200.000 €', remitente: 'Ernesto', remitente_numero_id: 'n-ernesto' },
+      { clickup_task_id: 'bajo', presupuesto: '40.000 € - 100.000 €', remitente: 'Victor', remitente_numero_id: 'n-victor' },
+    ]);
+  });
+
+  it('remitente sin número en la Cloud API: el aviso espera, no sale de otro número', async () => {
+    await barrer(pool, clickup);
+    tareas.set('alto', { etapa: 'o1', telefono: '612345678', actualizada: Date.now(), presupuesto: 'Más de 200.000 €' });
+    await barrer(pool, clickup);
+    const enviar = vi.fn<Enviar>();
+    await procesarAvisos(pool, { ...config, remitentes: { ...config.remitentes, alto: { ...config.remitentes.alto, numeroId: null } } }, enviar);
+    expect(enviar).not.toHaveBeenCalled();
+    expect(await avisos('alto')).toMatchObject([{ estado: 'pendiente', motivo: 'sin_configuracion: Ernesto aún no tiene número en la Cloud API' }]);
   });
 
   it('un lead creado directamente en e1 (taskCreated) y su webhook de cambio cuentan como una sola solicitud', async () => {

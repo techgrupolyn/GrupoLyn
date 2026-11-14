@@ -13,9 +13,13 @@ export type Campo = { id: string; name: string; type?: string; type_config?: { o
 export type Tarea = { id: string; name?: string; parent?: string | null; list?: { id?: string }; custom_fields?: Campo[]; date_updated?: string };
 
 /** Lead tal como lo necesita el aviso. */
-export type Lead = { taskId: string; nombre: string | null; telefono: string | null; etapa: string | null };
+export type Lead = { taskId: string; nombre: string | null; telefono: string | null; etapa: string | null; presupuesto: string | null };
 
 const mismoNombre = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** Etapas iguales sin mirar mayúsculas, puntos ni espacios: en la lista real la opción es «e1. EN ESPERA». */
+export const normalizarEtapa = (nombre: string) => nombre.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+export const mismaEtapa = (a: string | null | undefined, b: string) => Boolean(a) && normalizarEtapa(a!) === normalizarEtapa(b);
 
 /** ClickUp firma el cuerpo crudo con HMAC-SHA256 (hex) del secreto del webhook, en la cabecera X-Signature. */
 export function firmaClickUpValida(cuerpo: Buffer, firma: string | undefined, secreto: string): boolean {
@@ -57,8 +61,8 @@ export function cambiosDeEtapa(payload: WebhookClickUp, campoEtapa: Campo, etapa
     const opcionesItem = cf?.type_config?.options?.length ? cf.type_config.options : opciones;
     const antes = nombreOpcion(item.before, opcionesItem);
     const despues = nombreOpcion(item.after, opcionesItem);
-    const enEsperaAntes = antes !== null && mismoNombre(antes, etapaEspera);
-    const enEsperaDespues = despues !== null && mismoNombre(despues, etapaEspera);
+    const enEsperaAntes = mismaEtapa(antes, etapaEspera);
+    const enEsperaDespues = mismaEtapa(despues, etapaEspera);
     if (enEsperaAntes === enEsperaDespues) continue;
     const fecha = new Date(Number(item.date));
     cambios.push({ historyId: String(item.id), fecha: Number.isFinite(fecha.getTime()) ? fecha : new Date(), entra: enEsperaDespues, sale: enEsperaAntes });
@@ -66,10 +70,12 @@ export function cambiosDeEtapa(payload: WebhookClickUp, campoEtapa: Campo, etapa
   return cambios;
 }
 
+type CamposLista = { etapa: Campo; telefono: Campo | null; presupuesto: Campo | null };
+
 export type ClienteClickUp = {
   /** Nombre de la etapa de espera («e1 EN ESPERA»). */
   etapaEspera: string;
-  campos(): Promise<{ etapa: Campo; telefono: Campo | null }>;
+  campos(): Promise<CamposLista>;
   tarea(taskId: string): Promise<Tarea | null>;
   /** Tareas padre de la lista que están ahora en e1 (todas las páginas). */
   enEspera(): Promise<Tarea[]>;
@@ -84,13 +90,17 @@ export function crearClienteClickUp(config: ConfigCaptacion['clickup'], fetcher:
     if (!response.ok) throw new ErrorClickUp(`ClickUp respondió ${response.status} en ${ruta.split('?')[0]}`, response.status);
     return await response.json() as T;
   };
-  let campos: Promise<{ etapa: Campo; telefono: Campo | null }> | null = null;
+  let campos: Promise<CamposLista> | null = null;
   const leerCampos = () => {
     campos ??= pedir<{ fields?: Campo[] }>(`/list/${encodeURIComponent(config.lista)}/field`).then((r) => {
       const fields = r?.fields ?? [];
       const etapa = fields.find((f) => mismoNombre(f.name, config.campoEtapa));
       if (!etapa) throw new ErrorClickUp(`La lista no tiene el campo «${config.campoEtapa}»`, null);
-      return { etapa, telefono: fields.find((f) => mismoNombre(f.name, config.campoTelefono)) ?? null };
+      return {
+        etapa,
+        telefono: fields.find((f) => mismoNombre(f.name, config.campoTelefono)) ?? null,
+        presupuesto: fields.find((f) => mismoNombre(f.name, config.campoPresupuesto)) ?? null,
+      };
     }).catch((error) => { campos = null; throw error; });
     return campos;
   };
@@ -103,18 +113,19 @@ export function crearClienteClickUp(config: ConfigCaptacion['clickup'], fetcher:
     tarea: (taskId) => pedir<Tarea>(`/task/${encodeURIComponent(taskId)}`),
     esDeLaLista: (tarea) => !tarea.list?.id || String(tarea.list.id) === config.lista,
     async lead(tarea) {
-      const { etapa, telefono } = await leerCampos();
+      const { etapa, telefono, presupuesto } = await leerCampos();
       const valorTelefono = telefono ? tarea.custom_fields?.find((c) => c.id === telefono.id)?.value : undefined;
       return {
         taskId: tarea.id,
         nombre: tarea.name?.trim() || null,
         telefono: valorTelefono === null || valorTelefono === undefined || valorTelefono === '' ? null : String(valorTelefono),
         etapa: etapaDe(tarea, etapa),
+        presupuesto: presupuesto ? nombreOpcion(tarea.custom_fields?.find((c) => c.id === presupuesto.id)?.value, presupuesto.type_config?.options) : null,
       };
     },
     async enEspera() {
       const { etapa } = await leerCampos();
-      const opcion = (etapa.type_config?.options ?? []).find((o) => o.name && mismoNombre(o.name, config.etapaEspera));
+      const opcion = (etapa.type_config?.options ?? []).find((o) => mismaEtapa(o.name, config.etapaEspera));
       if (!opcion?.id) throw new ErrorClickUp(`El campo «${config.campoEtapa}» no tiene la opción «${config.etapaEspera}»`, null);
       const filtro = JSON.stringify([{ field_id: etapa.id, operator: '=', value: opcion.id }]);
       const resultado: Tarea[] = [];
@@ -123,7 +134,7 @@ export function crearClienteClickUp(config: ConfigCaptacion['clickup'], fetcher:
         const r = await pedir<{ tasks?: Tarea[]; last_page?: boolean }>(`/list/${encodeURIComponent(config.lista)}/task?${params}`);
         const tasks = r?.tasks ?? [];
         // Comprobación local: el filtro de ClickUp manda, pero solo cuentan las tareas padre que de verdad están en e1.
-        for (const t of tasks) if (!t.parent && mismoNombre(etapaDe(t, etapa) ?? '', config.etapaEspera)) resultado.push(t);
+        for (const t of tasks) if (!t.parent && mismaEtapa(etapaDe(t, etapa), config.etapaEspera)) resultado.push(t);
         if (r?.last_page !== false || tasks.length === 0) return resultado;
       }
       throw new ErrorClickUp('Demasiadas páginas de leads en espera (más de 50)', null);

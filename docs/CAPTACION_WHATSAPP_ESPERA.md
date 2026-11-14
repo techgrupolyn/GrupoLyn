@@ -35,6 +35,12 @@ Meta ──webhook firmado──► /webhook/whatsapp-cloud ──► entregado 
 - **Reintentos:** caída de la API, 5xx, límites de Meta y errores de token se reintentan (4 intentos en ~20 min).
   Un error definitivo (plantilla inexistente, destinatario no válido) o el último intento lo dejan `fallido`, con
   el código de Meta, y avisan a tecnología (`NETELIP_ALERT_WEBHOOK_URL`). El lead no se bloquea.
+- **Remitente** (Alex, 13/11/2026): el aviso sale del WhatsApp del comercial que llamará, según el campo
+  `Presupuesto formulario` del lead. Desde **100.000 €** («100.000 € - 200.000 €» y «Más de 200.000 €») sale del
+  número de **Ernesto**; por debajo, sin presupuesto o con «Pendiente», del de **Victor**. Cada uno necesita su número
+  dado de alta en la Cloud API (`…_REMITENTE_ALTO_NUMERO_ID`, `…_REMITENTE_BASE_NUMERO_ID`). Si a uno le falta, sus
+  avisos esperan con el motivo «sin número» (nunca salen de otro número) y caducan a las 12 h. Queda registrado quién
+  lo envió (`remitente`, `remitente_numero_id`) y el presupuesto que lo decidió.
 - **Nunca escribe en ClickUp:** no cambia `ETAPA_CRM`, el estado ni ningún campo del lead.
 - Las respuestas del lead por WhatsApp llegan al mismo webhook de Meta y **se ignoran** (fuera de alcance).
 
@@ -74,8 +80,12 @@ GET /api/captacion/whatsapp/avisos?limit=50                  los últimos avisos
    Crea `CAPTACION_WHATSAPP_PLANTILLA` (por defecto `aviso_solicitud_llamada`), categoría UTILITY, idioma `es_ES`,
    con el texto de Alex. Comprobar la aprobación con `npx tsx captacion-whatsapp/alta.ts estado-plantilla`. Si Meta
    cambia la redacción o la categoría, el código no cambia: solo envía la plantilla por su nombre.
-2. **Número que envía:** dado de alta en la Cloud API (no puede ser el de Evolution). Su id va en
-   `WHATSAPP_CLOUD_PHONE_NUMBER_ID`. Token: usuario del sistema con permiso `whatsapp_business_messaging`.
+2. **Números que envían:** los de Ernesto y Victor, dados de alta en la Cloud API. Si usan la app WhatsApp Business,
+   por **coexistencia** (siguen usando la app; se conecta con un proveedor oficial de Meta). Al conectar se
+   desvinculan sus dispositivos: hay que volver a escanear el QR de Evolution para que el Superagente siga leyendo sus
+   chats; probarlo antes con un número no crítico. Sus ids van en `CAPTACION_WHATSAPP_REMITENTE_ALTO_NUMERO_ID`
+   (Ernesto) y `CAPTACION_WHATSAPP_REMITENTE_BASE_NUMERO_ID` (Victor). Token: usuario del sistema con permiso
+   `whatsapp_business_messaging`.
 3. **Webhook de Meta:** en la app de Meta, URL `https://<dominio>/webhook/whatsapp-cloud`, verify token =
    `WHATSAPP_CLOUD_VERIFY_TOKEN`, suscribir el campo `messages`. `WHATSAPP_CLOUD_APP_SECRET` = App Secret de la app.
    Nginx ya publica `/webhook/`.
@@ -102,7 +112,8 @@ GET /api/captacion/whatsapp/avisos?limit=50                  los últimos avisos
 
 - **Horario sin envíos:** configurable con `CAPTACION_WHATSAPP_HORARIO` (hora de Madrid, p. ej. `09:00-21:00`).
   Vacío = siempre. Fuera de la franja el aviso espera a que abra (dentro de la caducidad).
-- **Número de WhatsApp que envía:** pendiente; se configura con `WHATSAPP_CLOUD_PHONE_NUMBER_ID`.
+- **Número de WhatsApp que envía:** resuelto: el de Ernesto o el de Victor según el presupuesto (ver «Remitente»).
+  Falta saber cómo se conectan a la API oficial (Juan David, que configuró la cuenta oficial de la empresa).
 
 ## Variables
 
@@ -112,10 +123,15 @@ GET /api/captacion/whatsapp/avisos?limit=50                  los últimos avisos
 | `CLICKUP_API_TOKEN` | — | Lectura de la lista (compartida con reuniones de Meet). |
 | `CAPTACION_CLICKUP_LISTA` | `901211441576` | Lista «Contacto de Reforma». |
 | `CAPTACION_CLICKUP_CAMPO_ETAPA` | `ETAPA_CRM` | Campo de etapa. |
-| `CAPTACION_CLICKUP_ETAPA_ESPERA` | `e1 EN ESPERA` | Opción que dispara el aviso. |
+| `CAPTACION_CLICKUP_ETAPA_ESPERA` | `e1. EN ESPERA` | Opción que dispara el aviso (se compara sin puntos, espacios ni mayúsculas). |
 | `CAPTACION_CLICKUP_CAMPO_TELEFONO` | `contact_phone_number` | Campo del teléfono. |
+| `CAPTACION_CLICKUP_CAMPO_PRESUPUESTO` | `Presupuesto formulario` | Rango del formulario web: decide el remitente. |
+| `CAPTACION_WHATSAPP_UMBRAL_PRESUPUESTO` | `100000` | Desde este límite inferior del rango, remitente «alto». |
+| `CAPTACION_WHATSAPP_REMITENTE_ALTO_NOMBRE` / `…_NUMERO_ID` | `Ernesto` / — | Remitente con presupuesto alto. |
+| `CAPTACION_WHATSAPP_REMITENTE_BASE_NOMBRE` / `…_NUMERO_ID` | `Victor` / — | Remitente por defecto. |
 | `CAPTACION_CLICKUP_WEBHOOK_SECRET` | — | Firma del webhook de ClickUp (`X-Signature`). |
-| `WHATSAPP_CLOUD_TOKEN`, `WHATSAPP_CLOUD_PHONE_NUMBER_ID` | — | Envío por la Cloud API. |
+| `WHATSAPP_CLOUD_TOKEN` | — | Envío por la Cloud API. |
+| `WHATSAPP_CLOUD_PHONE_NUMBER_ID` | — | Opcional: número común para el remitente que no tenga uno propio. |
 | `WHATSAPP_CLOUD_API_VERSION` | `v23.0` | Versión de la Graph API. |
 | `WHATSAPP_CLOUD_APP_SECRET`, `WHATSAPP_CLOUD_VERIFY_TOKEN` | — | Webhook de estados de Meta. |
 | `CAPTACION_WHATSAPP_PLANTILLA`, `CAPTACION_WHATSAPP_IDIOMA` | —, `es_ES` | Plantilla aprobada. |

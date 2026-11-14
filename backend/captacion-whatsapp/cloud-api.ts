@@ -13,11 +13,12 @@ export class ErrorCloud extends Error {
 // caducado o sin permisos (190, 10, 200: se arregla en configuración; mejor reintentar que perder el aviso).
 const CODIGOS_TEMPORALES = new Set(['1', '2', '4', '10', '17', '80007', '130429', '131000', '131016', '190', '200']);
 
-export type Enviar = (telefonoE164: string) => Promise<{ wamid: string }>;
+/** Envía la plantilla al lead desde el número `numeroId` (phone_number_id de la Cloud API). */
+export type Enviar = (telefonoE164: string, numeroId: string) => Promise<{ wamid: string }>;
 
 export function crearEnviador(cloud: ConfigCloud, fetcher: typeof fetch = fetch): Enviar {
-  const url = `https://graph.facebook.com/${encodeURIComponent(cloud.versionApi)}/${encodeURIComponent(cloud.phoneNumberId)}/messages`;
-  return async (telefonoE164) => {
+  return async (telefonoE164, numeroId) => {
+    const url = `https://graph.facebook.com/${encodeURIComponent(cloud.versionApi)}/${encodeURIComponent(numeroId)}/messages`;
     let response: Response;
     try {
       response = await fetcher(url, {

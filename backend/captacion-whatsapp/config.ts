@@ -8,24 +8,32 @@ export type ConfigCaptacion = {
     token: string;
     lista: string;
     campoEtapa: string;          // ETAPA_CRM
-    etapaEspera: string;         // «e1 EN ESPERA»
+    etapaEspera: string;         // «e1. EN ESPERA» (se compara sin puntos, espacios ni mayúsculas)
     campoTelefono: string;       // contact_phone_number
+    campoPresupuesto: string;    // «Presupuesto formulario»: decide el remitente
     webhookSecret: string | null;
   };
   cloud: {
     token: string;
-    phoneNumberId: string;
     versionApi: string;
     plantilla: string;
     idioma: string;
     appSecret: string | null;    // firma de los webhooks de estado (X-Hub-Signature-256)
     verifyToken: string | null;  // verificación GET del webhook en Meta
   } | null;
+  /**
+   * Desde qué número sale el aviso: el del comercial que llamará (Alex, 13/11/2026). Presupuesto del formulario con
+   * límite inferior >= umbral (100.000 €) → «alto» (Ernesto); por debajo, sin presupuesto o sin rango reconocible →
+   * «base» (Victor). numeroId es el phone_number_id de su número en la Cloud API; null = aún sin número.
+   */
+  remitentes: { umbral: number; alto: Remitente; base: Remitente };
   /** Franja de envío en hora de Madrid, en minutos desde medianoche; null = siempre. */
   horario: { desde: number; hasta: number } | null;
   /** Un aviso más antiguo que esto ya no se envía («te llamará en breve» no sirve horas después). */
   caducidadMinutos: number;
 };
+
+export type Remitente = { clave: 'alto' | 'base'; nombre: string; numeroId: string | null };
 
 const minutos = (hhmm: string) => {
   const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
@@ -48,28 +56,37 @@ export function configCaptacionDesdeEnv(env: NodeJS.ProcessEnv = process.env): C
   const token = env.CLICKUP_API_TOKEN?.trim();
   if (!token) return null;
   const cloudToken = env.WHATSAPP_CLOUD_TOKEN?.trim();
-  const phoneNumberId = env.WHATSAPP_CLOUD_PHONE_NUMBER_ID?.trim();
+  const numeroComun = env.WHATSAPP_CLOUD_PHONE_NUMBER_ID?.trim() || null;
   const plantilla = env.CAPTACION_WHATSAPP_PLANTILLA?.trim();
   const caducidad = Number(env.CAPTACION_WHATSAPP_CADUCIDAD_MINUTOS || 720);
   if (!Number.isInteger(caducidad) || caducidad < 1) throw new Error('CAPTACION_WHATSAPP_CADUCIDAD_MINUTOS debe ser un entero >= 1');
+  const umbral = Number(env.CAPTACION_WHATSAPP_UMBRAL_PRESUPUESTO || 100_000);
+  if (!Number.isFinite(umbral) || umbral < 0) throw new Error('CAPTACION_WHATSAPP_UMBRAL_PRESUPUESTO debe ser un número >= 0');
+  // Sin número propio, el remitente usa el común (WHATSAPP_CLOUD_PHONE_NUMBER_ID), si lo hay.
+  const remitente = (clave: 'alto' | 'base', nombrePorDefecto: string): Remitente => ({
+    clave,
+    nombre: env[`CAPTACION_WHATSAPP_REMITENTE_${clave.toUpperCase()}_NOMBRE`]?.trim() || nombrePorDefecto,
+    numeroId: env[`CAPTACION_WHATSAPP_REMITENTE_${clave.toUpperCase()}_NUMERO_ID`]?.trim() || numeroComun,
+  });
   return {
     clickup: {
       token,
       lista: env.CAPTACION_CLICKUP_LISTA?.trim() || LISTA_CONTACTO_REFORMA,
       campoEtapa: env.CAPTACION_CLICKUP_CAMPO_ETAPA?.trim() || 'ETAPA_CRM',
-      etapaEspera: env.CAPTACION_CLICKUP_ETAPA_ESPERA?.trim() || 'e1 EN ESPERA',
+      etapaEspera: env.CAPTACION_CLICKUP_ETAPA_ESPERA?.trim() || 'e1. EN ESPERA',
       campoTelefono: env.CAPTACION_CLICKUP_CAMPO_TELEFONO?.trim() || 'contact_phone_number',
+      campoPresupuesto: env.CAPTACION_CLICKUP_CAMPO_PRESUPUESTO?.trim() || 'Presupuesto formulario',
       webhookSecret: env.CAPTACION_CLICKUP_WEBHOOK_SECRET?.trim() || null,
     },
-    cloud: cloudToken && phoneNumberId && plantilla ? {
+    cloud: cloudToken && plantilla ? {
       token: cloudToken,
-      phoneNumberId,
       versionApi: env.WHATSAPP_CLOUD_API_VERSION?.trim() || 'v23.0',
       plantilla,
       idioma: env.CAPTACION_WHATSAPP_IDIOMA?.trim() || 'es_ES',
       appSecret: env.WHATSAPP_CLOUD_APP_SECRET?.trim() || null,
       verifyToken: env.WHATSAPP_CLOUD_VERIFY_TOKEN?.trim() || null,
     } : null,
+    remitentes: { umbral, alto: remitente('alto', 'Ernesto'), base: remitente('base', 'Victor') },
     horario: parseHorario(env.CAPTACION_WHATSAPP_HORARIO),
     caducidadMinutos: caducidad,
   };
@@ -86,4 +103,22 @@ export function dentroDeHorario(horario: ConfigCaptacion['horario'], fecha: Date
   if (!horario) return true;
   const m = minutoMadrid(fecha);
   return horario.desde <= horario.hasta ? m >= horario.desde && m < horario.hasta : m >= horario.desde || m < horario.hasta;
+}
+
+/**
+ * Límite inferior de un rango del formulario: «Menos de 40.000 €» → 0, «40.000 € - 100.000 €» → 40000,
+ * «Más de 200.000 €» → 200000. null si no hay rango o no lleva cifra («Pendiente…»).
+ */
+export function limiteInferiorPresupuesto(rango: string | null | undefined): number | null {
+  const texto = String(rango || '').trim();
+  if (!texto) return null;
+  if (/^menos\s/i.test(texto)) return 0;
+  const cifra = /\d{1,3}(?:[.\s]\d{3})+|\d{4,}/.exec(texto)?.[0];   // cifras de euros, no «1ª llamada»
+  return cifra ? Number(cifra.replace(/[.\s]/g, '')) : null;
+}
+
+/** Remitente del aviso según el presupuesto del lead. Sin presupuesto reconocible, el de por defecto (base). */
+export function elegirRemitente(rango: string | null | undefined, remitentes: ConfigCaptacion['remitentes']): Remitente {
+  const limite = limiteInferiorPresupuesto(rango);
+  return limite !== null && limite >= remitentes.umbral ? remitentes.alto : remitentes.base;
 }
