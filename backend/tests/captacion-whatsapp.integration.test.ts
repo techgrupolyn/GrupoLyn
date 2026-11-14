@@ -24,13 +24,13 @@ const config: ConfigCaptacion = {
   caducidadMinutos: 720,
 };
 
-type Lt = { etapa: string; telefono: string | null; actualizada: number; parent?: string; presupuesto?: string };
+type Lt = { etapa: string; telefono: string | null; actualizada: number; parent?: string; presupuesto?: string; nombre?: string };
 
 /** ClickUp simulado: un mapa de tareas con su etapa y teléfono. */
 function clickupFalso(tareas: Map<string, Lt>): ClienteClickUp {
   const aTarea = (id: string): Tarea => {
     const t = tareas.get(id)!;
-    return { id, name: `Lead ${id}`, parent: t.parent ?? null, list: { id: '901211441576' }, date_updated: String(t.actualizada),
+    return { id, name: t.nombre ?? `Lead ${id}`, parent: t.parent ?? null, list: { id: '901211441576' }, date_updated: String(t.actualizada),
       custom_fields: [{ id: 'f-etapa', name: 'ETAPA_CRM', value: t.etapa }, { id: 'f-tel', name: 'contact_phone_number', value: t.telefono }] };
   };
   return {
@@ -168,6 +168,22 @@ describe.skipIf(!databaseUrl)('Captación · WhatsApp a leads en espera en Postg
     expect(porLead.sin).toMatchObject({ estado: 'no_enviado', motivo: expect.stringMatching(/^sin_telefono/) });
     expect(porLead.malo).toMatchObject({ estado: 'no_enviado', motivo: expect.stringMatching(/^telefono_no_valido/) });
     expect(porLead.fijo).toMatchObject({ estado: 'no_enviado', motivo: expect.stringMatching(/^telefono_fijo/) });
+  });
+
+  it('tareas de prueba del equipo («NO USAR», «prueba»): no se les escribe aunque el móvil sea válido', async () => {
+    await barrer(pool, clickup);
+    tareas.set('p1', { etapa: 'o1', telefono: '+34600000099', actualizada: Date.now(), nombre: 'prueba Mateo-Roger(NO USAR)', presupuesto: '40.000 € - 100.000 €' });
+    tareas.set('p2', { etapa: 'o1', telefono: '612345678', actualizada: Date.now(), nombre: 'PRUEBA captación ABCD 9 (no usar)' });
+    tareas.set('real', { etapa: 'o1', telefono: '612345679', actualizada: Date.now(), nombre: 'Pruebas Martínez' });
+    expect((await barrer(pool, clickup)).nuevas).toBe(3);
+    const enviar = vi.fn<Enviar>().mockResolvedValue({ wamid: 'wamid.real' });
+    await procesarAvisos(pool, config, enviar);
+    expect(enviar).toHaveBeenCalledTimes(1);
+    expect(enviar).toHaveBeenCalledWith('+34612345679', 'n-victor');
+    const porLead = Object.fromEntries((await avisos()).map((a) => [a.clickup_task_id, a]));
+    expect(porLead.p1).toMatchObject({ estado: 'no_enviado', motivo: expect.stringMatching(/^prueba:/), wamid: null });
+    expect(porLead.p2).toMatchObject({ estado: 'no_enviado', motivo: expect.stringMatching(/^prueba:/) });
+    expect(porLead.real).toMatchObject({ estado: 'enviado' });
   });
 
   it('Fallo de la API de WhatsApp: se reintenta y, si sigue fallando, queda fallido sin tocar el lead', async () => {

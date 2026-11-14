@@ -146,7 +146,17 @@ export function telefonoParaWhatsApp(original: string | null): Telefono {
   return { e164 };
 }
 
-type FilaAviso = { id: string; clickup_task_id: string; entrada_en: Date; telefono_original: string | null; presupuesto: string | null; intentos: number };
+/**
+ * Lead de prueba del equipo: el nombre de la tarea lleva «NO USAR» o la palabra «prueba» (convención de Captación:
+ * «PRUEBA captación ABCD 9 (no usar)», «prueba Mateo-Roger(NO USAR)»). Sus teléfonos suelen ser inventados y
+ * podrían ser de alguien real, así que nunca se les escribe.
+ */
+export function esLeadDePrueba(nombre: string | null | undefined): boolean {
+  const texto = String(nombre || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  return /no\s*usar/.test(texto) || /(^|[^a-z])prueba([^a-z]|$)/.test(texto);
+}
+
+type FilaAviso = { id: string; clickup_task_id: string; entrada_en: Date; lead_nombre: string | null; telefono_original: string | null; presupuesto: string | null; intentos: number };
 
 /** Envía los avisos pendientes. Devuelve cuántos se trataron. */
 export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: Enviar | null, ahora = new Date(), limite = 10): Promise<number> {
@@ -154,13 +164,17 @@ export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: 
     `UPDATE captacion_whatsapp_avisos SET siguiente_intento = NOW() + INTERVAL '5 minutes'
      WHERE id IN (SELECT id FROM captacion_whatsapp_avisos WHERE estado = 'pendiente' AND siguiente_intento <= NOW()
                   ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED)
-     RETURNING id, clickup_task_id, entrada_en, telefono_original, presupuesto, intentos`, [limite]);
+     RETURNING id, clickup_task_id, entrada_en, lead_nombre, telefono_original, presupuesto, intentos`, [limite]);
   const actualizar = (id: string, sql: string, params: unknown[]) =>
     pool.query(`UPDATE captacion_whatsapp_avisos SET ${sql}, actualizado_en = NOW() WHERE id = $1`, [id, ...params]);
   const esperar = (id: string, ms: number, motivo: string) =>
     actualizar(id, 'siguiente_intento = $2, motivo = $3', [new Date(ahora.getTime() + ms), motivo]);
 
   for (const aviso of rows) {
+    if (esLeadDePrueba(aviso.lead_nombre)) {
+      await actualizar(aviso.id, `estado = 'no_enviado', motivo = $2`, ['prueba: tarea de prueba del equipo («NO USAR» o «prueba» en el nombre)']);
+      continue;
+    }
     const telefono = telefonoParaWhatsApp(aviso.telefono_original);
     if ('motivo' in telefono) {
       await actualizar(aviso.id, `estado = 'no_enviado', motivo = $2`, [telefono.motivo]);

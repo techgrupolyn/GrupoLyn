@@ -41,6 +41,10 @@ Meta ──webhook firmado──► /webhook/whatsapp-cloud ──► entregado 
   dado de alta en la Cloud API (`…_REMITENTE_ALTO_NUMERO_ID`, `…_REMITENTE_BASE_NUMERO_ID`). Si a uno le falta, sus
   avisos esperan con el motivo «sin número» (nunca salen de otro número) y caducan a las 12 h. Queda registrado quién
   lo envió (`remitente`, `remitente_numero_id`) y el presupuesto que lo decidió.
+- **Tareas de prueba:** si el nombre de la tarea lleva «NO USAR» o la palabra «prueba» (convención del equipo,
+  p. ej. «prueba Mateo-Roger(NO USAR)»), no se envía: queda `no_enviado` con motivo `prueba`. Sus teléfonos suelen
+  ser inventados y podrían ser de alguien real. Para probar el envío de verdad, usar un lead con otro nombre y un
+  móvil del equipo.
 - **Nunca escribe en ClickUp:** no cambia `ETAPA_CRM`, el estado ni ningún campo del lead.
 - Las respuestas del lead por WhatsApp llegan al mismo webhook de Meta y **se ignoran** (fuera de alcance).
 
@@ -52,7 +56,7 @@ Meta ──webhook firmado──► /webhook/whatsapp-cloud ──► entregado 
 | `enviado` | Meta aceptó el mensaje (`wamid`, `enviado_en`). |
 | `entregado` / `leido` | Confirmado por el webhook de Meta (`entregado_en`, `leido_en`). No retrocede aunque los avisos lleguen desordenados. |
 | `fallido` | Falló el envío tras los reintentos o Meta lo rechazó después (`motivo` con el código). |
-| `no_enviado` | No se intentó: `sin_telefono`, `telefono_no_valido`, `telefono_fijo` o `caducado`. |
+| `no_enviado` | No se intentó: `prueba`, `sin_telefono`, `telefono_no_valido`, `telefono_fijo` o `caducado`. |
 
 `caducado`: un aviso que no pudo salir en `CAPTACION_WHATSAPP_CADUCIDAD_MINUTOS` (12 h por defecto) ya no se envía.
 «Un asesor te llamará en breve» no tiene sentido horas después, y así activar la Cloud API no dispara un atasco de
@@ -84,8 +88,14 @@ GET /api/captacion/whatsapp/avisos?limit=50                  los últimos avisos
    por **coexistencia** (siguen usando la app; se conecta con un proveedor oficial de Meta). Al conectar se
    desvinculan sus dispositivos: hay que volver a escanear el QR de Evolution para que el Superagente siga leyendo sus
    chats; probarlo antes con un número no crítico. Sus ids van en `CAPTACION_WHATSAPP_REMITENTE_ALTO_NUMERO_ID`
-   (Ernesto) y `CAPTACION_WHATSAPP_REMITENTE_BASE_NUMERO_ID` (Victor). Token: usuario del sistema con permiso
-   `whatsapp_business_messaging`.
+   (Ernesto) y `CAPTACION_WHATSAPP_REMITENTE_BASE_NUMERO_ID` (Victor). Mientras no estén, el aviso sale del número
+   general de la empresa (+34 865 45 61 02, `WHATSAPP_CLOUD_PHONE_NUMBER_ID=782222018312993`).
+   Token: usuario del sistema `lyn-backend-captacion` (Empleado, token sin caducidad, permisos
+   `whatsapp_business_messaging` y `whatsapp_business_management`). Hay que asignarle **tres** activos con control
+   total: la app, la **cuenta de WhatsApp** y la **cuenta de mensajes** (Configuración → Cuentas → Cuentas de
+   mensajes; en Grupo LyN es la `1476198046757580`, que paga los envíos). Sin la cuenta de mensajes, Meta rechaza
+   el envío con el código 10 «Viewer cannot access the provided Paid Message Account». Cuidado: el usuario del
+   sistema CHATWOOT también tiene acceso a esta cuenta.
 3. **Webhook de Meta:** en la app de Meta, URL `https://<dominio>/webhook/whatsapp-cloud`, verify token =
    `WHATSAPP_CLOUD_VERIFY_TOKEN`, suscribir el campo `messages`. `WHATSAPP_CLOUD_APP_SECRET` = App Secret de la app.
    Nginx ya publica `/webhook/`.
@@ -99,7 +109,10 @@ GET /api/captacion/whatsapp/avisos?limit=50                  los últimos avisos
 
    Guardar el `webhook.secret` de la respuesta en `CAPTACION_CLICKUP_WEBHOOK_SECRET` y reiniciar. Sin él, el receptor
    responde 503 y solo funciona el barrido (con hasta 5 min de retraso).
-6. **Prueba:** pasar un lead de prueba con un móvil del equipo a e1 y comprobar el mensaje y su fila en
+6. **Prueba:** antes de activar, comprobar el envío con
+   `npx tsx captacion-whatsapp/alta.ts prueba-envio "+34…" [plantilla] [idioma]` (por defecto `hello_world`, la de
+   prueba de Meta; con el número de prueba, el móvil tiene que estar autorizado en «Para»). Ya activado, pasar a e1
+   un lead con un móvil del equipo y un nombre sin «prueba» ni «NO USAR» y comprobar el mensaje y su fila en
    `captacion_whatsapp_avisos` (`enviado` → `entregado` → `leido`).
 
 ### Por verificar en vivo

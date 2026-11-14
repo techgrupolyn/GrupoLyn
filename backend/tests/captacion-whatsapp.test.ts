@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { cambiosDeEtapa, crearClienteClickUp, firmaClickUpValida, nombreOpcion } from '../captacion-whatsapp/clickup.ts';
 import { crearEnviador, ErrorCloud, estadosDelWebhook, firmaMetaValida } from '../captacion-whatsapp/cloud-api.ts';
 import { configCaptacionDesdeEnv, dentroDeHorario, elegirRemitente, limiteInferiorPresupuesto, parseHorario } from '../captacion-whatsapp/config.ts';
-import { telefonoParaWhatsApp } from '../captacion-whatsapp/proceso.ts';
+import { esLeadDePrueba, telefonoParaWhatsApp } from '../captacion-whatsapp/proceso.ts';
 
 const OPCIONES = [{ id: 'o1', name: 'e1 EN ESPERA', orderindex: 0 }, { id: 'o2', name: 'e2 CONTACTADO', orderindex: 1 }];
 const ETAPA = { id: 'f-etapa', name: 'ETAPA_CRM', type: 'drop_down', type_config: { options: OPCIONES } };
@@ -135,6 +135,17 @@ describe('teléfono del lead', () => {
     expect(telefonoParaWhatsApp('  ')).toEqual({ motivo: expect.stringMatching(/^sin_telefono/) });
     expect(telefonoParaWhatsApp('12345')).toEqual({ motivo: expect.stringMatching(/^telefono_no_valido/) });
     expect(telefonoParaWhatsApp('910 00 00 00')).toEqual({ motivo: expect.stringMatching(/^telefono_fijo/) });
+  });
+});
+
+describe('tareas de prueba del equipo', () => {
+  it('reconoce «NO USAR» y la palabra «prueba», sin tocar nombres reales', () => {
+    for (const nombre of ['prueba Mateo-Roger(NO USAR)', 'PRUEBA captación ABCD 9 (no usar)', 'Lead NO USAR', 'Pruéba interna', 'test (nousar)']) {
+      expect(esLeadDePrueba(nombre), nombre).toBe(true);
+    }
+    for (const nombre of ['Pruebas Martínez', 'Victor Manuel Cebrian Morales', 'Toñi', '', null, undefined]) {
+      expect(esLeadDePrueba(nombre), String(nombre)).toBe(false);
+    }
   });
 });
 
