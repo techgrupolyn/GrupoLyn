@@ -123,10 +123,19 @@ GET /api/captacion/whatsapp/avisos?limit=50                  los últimos avisos
 
 ## Preguntas abiertas de la spec
 
-- **Horario sin envíos:** configurable con `CAPTACION_WHATSAPP_HORARIO` (hora de Madrid, p. ej. `09:00-21:00`).
-  Vacío = siempre. Fuera de la franja el aviso espera a que abra (dentro de la caducidad).
-- **Número de WhatsApp que envía:** resuelto: el de Ernesto o el de Victor según el presupuesto (ver «Remitente»).
-  Falta saber cómo se conectan a la API oficial (Juan David, que configuró la cuenta oficial de la empresa).
+- **Horario sin envíos:** resuelto (Jean): nunca entre las 20:00 y las 07:00, hora de Madrid →
+  `CAPTACION_WHATSAPP_HORARIO=07:00-20:00`. Un lead que entra de noche recibe el aviso a las 07:00 (la caducidad de
+  12 h cubre la noche entera). Vacío = siempre.
+- **Número de WhatsApp que envía:** de momento el general de la empresa (+34 865 45 61 02), como acordó Jean. El
+  código ya reparte por presupuesto (Ernesto desde 100.000 €, Victor por debajo); cuando sus números estén en la
+  Cloud API, basta con añadir sus `…_NUMERO_ID`.
+- **Webhook de estados de Meta:** la app Grupo LyN enviaba los eventos del número a un Chatwoot que no se usa
+  (confirmado por Dani, 14/11/2026). Se reapunta a `/webhook/whatsapp-cloud` **después** de activar el módulo en
+  producción (Meta verifica la URL al guardarla). Las respuestas de los leads llegan pero se ignoran (fuera de
+  alcance): ya no quedan en ningún sitio. La app tiene que estar **publicada** (menú Publicar): sin publicar los
+  mensajes salen, pero Meta no manda los webhooks de datos reales. Los permisos `whatsapp_business_*` bastan con
+  acceso estándar («Listo para la prueba»): solo se usan con los activos del propio negocio, sin revisión de la app.
+  El campo `messages` ya está suscrito.
 
 ## Variables
 
