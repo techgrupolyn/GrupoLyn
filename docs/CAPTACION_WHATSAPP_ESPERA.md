@@ -104,7 +104,10 @@ GET /api/captacion/whatsapp/avisos?limit=50                  los últimos avisos
    `WHATSAPP_CLOUD_VERIFY_TOKEN`, suscribir el campo `messages`. `WHATSAPP_CLOUD_APP_SECRET` = App Secret de la app.
    Nginx ya publica `/webhook/`.
 4. **Variables** en `/etc/lyn/backend.env` (ver `deploy/env/backend.production.env.example`) con
-   `CAPTACION_WHATSAPP_ENABLED=true`. Reiniciar el backend: crea las tablas y el primer barrido fija la línea base.
+   `CAPTACION_WHATSAPP_ENABLED=true` y, para el QA, `CAPTACION_WHATSAPP_SOLO_TELEFONOS` con el móvil de QA.
+   Reiniciar el backend: crea las tablas y el primer barrido fija la línea base. El QA se hace así, en producción:
+   [CAPTACION_WHATSAPP_PRUEBAS_QA.md](CAPTACION_WHATSAPP_PRUEBAS_QA.md); al terminar se vacía la variable y se
+   reinicia.
 5. **Webhook de ClickUp** (con `CLICKUP_TEAM_ID`):
 
    ```bash
@@ -182,6 +185,6 @@ cd backend && npx vitest run tests/captacion-whatsapp.test.ts
 cd backend && QA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:15439/lyn_qa_retest npx vitest run tests/captacion-whatsapp.integration.test.ts
 ```
 
-Prueba de punta a punta con ClickUp y WhatsApp reales: [CAPTACION_WHATSAPP_PRUEBAS_QA.md](CAPTACION_WHATSAPP_PRUEBAS_QA.md).
+QA de punta a punta en producción, en modo QA: [CAPTACION_WHATSAPP_PRUEBAS_QA.md](CAPTACION_WHATSAPP_PRUEBAS_QA.md).
 
 La de integración cubre los cinco escenarios de la spec contra PostgreSQL real, con ClickUp y Meta simulados.
