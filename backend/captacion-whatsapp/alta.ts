@@ -3,7 +3,7 @@
 //   npx tsx captacion-whatsapp/alta.ts plantilla           crea la plantilla en Meta y la envía a aprobación
 //   npx tsx captacion-whatsapp/alta.ts estado-plantilla    muestra si Meta ya la aprobó
 //   npx tsx captacion-whatsapp/alta.ts webhook-clickup URL  da de alta el webhook de ClickUp para la lista
-//   npx tsx captacion-whatsapp/alta.ts prueba-envio +34600000000 [plantilla] [idioma]
+//   npx tsx captacion-whatsapp/alta.ts prueba-envio +34600000000 [plantilla] [idioma] [valor {{1}}] [valor {{2}}]…
 //        envía UNA plantilla a ese móvil con el mismo código que usa el backend (por defecto hello_world / en_US,
 //        la de prueba de Meta) desde WHATSAPP_CLOUD_PHONE_NUMBER_ID. Solo a un móvil propio del equipo.
 //
@@ -58,19 +58,18 @@ async function main() {
       body: JSON.stringify({ endpoint: argumento, events: ['taskCreated', 'taskUpdated'], list_id: Number(process.env.CAPTACION_CLICKUP_LISTA?.trim() || LISTA_CONTACTO_REFORMA) }),
     }));
   } else if (comando === 'prueba-envio') {
-    const [plantilla = 'hello_world', idioma = 'en_US'] = process.argv.slice(4);   // node, script, comando, teléfono, …
+    // node, script, comando, teléfono, plantilla, idioma, valores de {{1}}, {{2}}…
+    const [plantilla = 'hello_world', idioma = 'en_US', ...parametros] = process.argv.slice(4);
     const telefono = String(argumento || '').replace(/[\s\-().]/g, '');
-    if (!/^\+\d{8,15}$/.test(telefono)) throw new Error(`Teléfono no válido: «${argumento ?? ''}». Uso: prueba-envio +34600000000 [plantilla] [idioma] (con + y prefijo de país; entre comillas si lleva espacios)`);
+    if (!/^\+\d{8,15}$/.test(telefono)) throw new Error(`Teléfono no válido: «${argumento ?? ''}». Uso: prueba-envio +34600000000 [plantilla] [idioma] [valor {{1}}] [valor {{2}}]… (con + y prefijo de país; entre comillas si lleva espacios)`);
     const enviar = crearEnviador({
       token: requerida('WHATSAPP_CLOUD_TOKEN'),
       versionApi: process.env.WHATSAPP_CLOUD_API_VERSION?.trim() || 'v23.0',
       plantilla,
       idioma,
-      appSecret: null,
-      verifyToken: null,
     });
     try {
-      const { wamid } = await enviar(telefono, requerida('WHATSAPP_CLOUD_PHONE_NUMBER_ID'));
+      const { wamid } = await enviar(telefono, requerida('WHATSAPP_CLOUD_PHONE_NUMBER_ID'), parametros);
       console.log(`Enviado: plantilla ${plantilla} (${idioma}) · wamid ${wamid}`);
     } catch (error) {
       const e = error as ErrorCloud;
@@ -78,7 +77,7 @@ async function main() {
       process.exitCode = 1;
     }
   } else {
-    console.log('Comandos: plantilla | estado-plantilla | webhook-clickup <url> | prueba-envio <+telefono> [plantilla] [idioma]');
+    console.log('Comandos: plantilla | estado-plantilla | webhook-clickup <url> | prueba-envio <+telefono> [plantilla] [idioma] [valores…]');
     process.exitCode = 1;
   }
 }

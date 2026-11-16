@@ -29,7 +29,10 @@ conviene que el QA dure horas, no días. Al terminar, se vacía la variable y se
    WHATSAPP_CLOUD_PHONE_NUMBER_ID="782222018312993"        # número general +34 865 45 61 02
    WHATSAPP_CLOUD_APP_SECRET="…"                           # app Grupo LyN → Configuración → Básica
    WHATSAPP_CLOUD_VERIFY_TOKEN="…"                         # cadena aleatoria
-   CAPTACION_WHATSAPP_PLANTILLA="aviso_solicitud_llamada"
+   CAPTACION_WHATSAPP_PLANTILLA="aviso_solicitud_llamada_comercial"   # si Meta aún no la aprobó: "aviso_solicitud_llamada" y sin las 3 siguientes
+   CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS="nombre,telefono"
+   CAPTACION_WHATSAPP_REMITENTE_ALTO_TELEFONO="+34 865 60 83 43"     # fijo de Netelip de Ernesto
+   CAPTACION_WHATSAPP_REMITENTE_BASE_TELEFONO="+34 865 45 61 34"     # fijo de Netelip de Victor
    CAPTACION_WHATSAPP_IDIOMA="es_ES"
    CAPTACION_WHATSAPP_HORARIO="07:00-20:00"
    ```
@@ -69,7 +72,7 @@ mucho en 5 minutos (barrido).
 
 | # | Caso | Cómo | Resultado esperado |
 | --- | --- | --- | --- |
-| 1 | **Lead nuevo en espera** | Tarea con el móvil de QA; `ETAPA_CRM` = «e1. EN ESPERA» | Llega el WhatsApp de **Grupo LyN**: «Hola, hemos recibido tu solicitud de llamada. Un asesor te llamará en breve.» Aviso `enviado`. |
+| 1 | **Lead nuevo en espera** | Tarea con el móvil de QA; `ETAPA_CRM` = «e1. EN ESPERA» | Llega el WhatsApp de **Grupo LyN** (número general): «Hola, hemos recibido tu solicitud de contacto para tu reforma. Victor, asesor de Grupo LyN, te llamará en breve desde el número +34 865 45 61 34. Guárdalo para reconocer la llamada.» Aviso `enviado`, con `telefono_anunciado`. |
 | 2 | **Entregado y leído** | Mirar el aviso del caso 1 antes y después de abrir el mensaje | `entregado` (con `entregado_en`) al llegar; `leido` (con `leido_en`) al abrirlo. |
 | 3 | **Sin duplicados** | Con la tarea 1 aún en e1, editar otros campos (descripción, comentario) | No llega otro mensaje; sigue habiendo **un** aviso para esa tarea. |
 | 4 | **Nueva solicitud** | Pasar la tarea 1 a otra etapa (p. ej. «e2») y volver a «e1. EN ESPERA» | Llega **un** mensaje nuevo; la tarea tiene **dos** avisos. |
@@ -77,7 +80,7 @@ mucho en 5 minutos (barrido).
 | 6 | **Teléfono no válido** | Teléfono `12345`, a e1 | `no_enviado`, motivo `telefono_no_valido`. |
 | 7 | **Fijo** | Teléfono `+34 965 000 000`, a e1 | `no_enviado`, motivo `telefono_fijo`. |
 | 8 | **Fuera de la lista de QA** | Un móvil válido que **no** sea el de QA (p. ej. `+34 612 000 000`), a e1 | No se envía. `no_enviado`, motivo `qa`. |
-| 9 | **Remitente según presupuesto** | Dos tareas con el móvil de QA: «Más de 200.000 €» y «40.000 € - 100.000 €» | Llegan ambos. `remitente` = **Ernesto** y **Victor**. Hoy los dos salen del número general (aún sin número propio). |
+| 9 | **Remitente según presupuesto** | Dos tareas con el móvil de QA: «Más de 200.000 €» y «40.000 € - 100.000 €» | Llegan ambos, desde el número general. El primero anuncia a **Ernesto** y +34 865 60 83 43; el segundo, a **Victor** y +34 865 45 61 34. `remitente` y `telefono_anunciado` coinciden. |
 | 10 | **Nunca modifica ClickUp** | Revisar la actividad de las tareas de prueba | Ningún cambio hecho por el backend: ni etapa, ni campos, ni comentarios. |
 | 11 | **Ningún lead real recibe nada** | Consulta de avisos al terminar | Ningún aviso `enviado` a un teléfono distinto del de QA. |
 

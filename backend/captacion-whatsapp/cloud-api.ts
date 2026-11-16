@@ -13,11 +13,16 @@ export class ErrorCloud extends Error {
 // caducado o sin permisos (190, 10, 200: se arregla en configuración; mejor reintentar que perder el aviso).
 const CODIGOS_TEMPORALES = new Set(['1', '2', '4', '10', '17', '80007', '130429', '131000', '131016', '190', '200']);
 
-/** Envía la plantilla al lead desde el número `numeroId` (phone_number_id de la Cloud API). */
-export type Enviar = (telefonoE164: string, numeroId: string) => Promise<{ wamid: string }>;
+/**
+ * Envía la plantilla al lead desde el número `numeroId` (phone_number_id de la Cloud API). `parametros`: valores de
+ * {{1}}, {{2}}… del cuerpo, en orden; vacío = plantilla sin variables.
+ */
+export type Enviar = (telefonoE164: string, numeroId: string, parametros?: string[]) => Promise<{ wamid: string }>;
 
-export function crearEnviador(cloud: ConfigCloud, fetcher: typeof fetch = fetch): Enviar {
-  return async (telefonoE164, numeroId) => {
+type ConfigEnvio = Pick<ConfigCloud, 'token' | 'versionApi' | 'plantilla' | 'idioma'>;
+
+export function crearEnviador(cloud: ConfigEnvio, fetcher: typeof fetch = fetch): Enviar {
+  return async (telefonoE164, numeroId, parametros = []) => {
     const url = `https://graph.facebook.com/${encodeURIComponent(cloud.versionApi)}/${encodeURIComponent(numeroId)}/messages`;
     let response: Response;
     try {
@@ -29,7 +34,11 @@ export function crearEnviador(cloud: ConfigCloud, fetcher: typeof fetch = fetch)
           recipient_type: 'individual',
           to: telefonoE164.replace(/\D/g, ''),
           type: 'template',
-          template: { name: cloud.plantilla, language: { code: cloud.idioma } },
+          template: {
+            name: cloud.plantilla,
+            language: { code: cloud.idioma },
+            ...(parametros.length ? { components: [{ type: 'body', parameters: parametros.map((text) => ({ type: 'text', text })) }] } : {}),
+          },
         }),
         signal: AbortSignal.timeout(20_000),
       });

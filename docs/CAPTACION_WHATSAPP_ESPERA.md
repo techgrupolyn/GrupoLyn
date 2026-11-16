@@ -35,12 +35,24 @@ Meta ──webhook firmado──► /webhook/whatsapp-cloud ──► entregado 
 - **Reintentos:** caída de la API, 5xx, límites de Meta y errores de token se reintentan (4 intentos en ~20 min).
   Un error definitivo (plantilla inexistente, destinatario no válido) o el último intento lo dejan `fallido`, con
   el código de Meta, y avisan a tecnología (`NETELIP_ALERT_WEBHOOK_URL`). El lead no se bloquea.
-- **Remitente** (Alex, 13/11/2026): el aviso sale del WhatsApp del comercial que llamará, según el campo
-  `Presupuesto formulario` del lead. Desde **100.000 €** («100.000 € - 200.000 €» y «Más de 200.000 €») sale del
-  número de **Ernesto**; por debajo, sin presupuesto o con «Pendiente», del de **Victor**. Cada uno necesita su número
-  dado de alta en la Cloud API (`…_REMITENTE_ALTO_NUMERO_ID`, `…_REMITENTE_BASE_NUMERO_ID`). Si a uno le falta, sus
-  avisos esperan con el motivo «sin número» (nunca salen de otro número) y caducan a las 12 h. Queda registrado quién
-  lo envió (`remitente`, `remitente_numero_id`) y el presupuesto que lo decidió.
+- **Comercial que llamará** (Alex, 13/11/2026): según el campo `Presupuesto formulario` del lead. Desde
+  **100.000 €** («100.000 € - 200.000 €» y «Más de 200.000 €») es **Ernesto**; por debajo, sin presupuesto o con
+  «Pendiente», **Victor**.
+- **Número que envía y fijo anunciado** (Jean, 17/11/2026): el WhatsApp sale **siempre del número general**
+  (+34 865 45 61 02). La plantilla `aviso_solicitud_llamada_comercial` anuncia el nombre del comercial y el **fijo de
+  Netelip** desde el que llamará, para que el lead reconozca la llamada:
+
+  > Hola, hemos recibido tu solicitud de contacto para tu reforma. {{1}}, asesor de Grupo LyN, te llamará en breve
+  > desde el número {{2}}. Guárdalo para reconocer la llamada.
+
+  `CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS=nombre,telefono` dice qué va en cada variable; los fijos van en
+  `…_REMITENTE_ALTO_TELEFONO` (Ernesto, +34 865 60 83 43) y `…_REMITENTE_BASE_TELEFONO` (Victor, +34 865 45 61 34).
+  Si la plantilla pide un dato que el comercial no tiene configurado, el aviso espera con motivo `sin_configuracion`
+  (nunca sale incompleto) y caduca a las 12 h. Queda registrado quién llamará (`remitente`), el fijo anunciado
+  (`telefono_anunciado`), el número que lo envió (`remitente_numero_id`) y el presupuesto que lo decidió. Con
+  `CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS` vacío se usa una plantilla sin variables (la primera,
+  `aviso_solicitud_llamada`). `…_REMITENTE_*_NUMERO_ID` solo hace falta si algún día un comercial envía desde su propio
+  número de la Cloud API.
 - **Tareas de prueba:** si el nombre de la tarea lleva «NO USAR» o la palabra «prueba» (convención del equipo,
   p. ej. «prueba Mateo-Roger(NO USAR)»), no se envía: queda `no_enviado` con motivo `prueba`. Sus teléfonos suelen
   ser inventados y podrían ser de alguien real. Para probar el envío de verdad, usar un lead con otro nombre y un
@@ -133,9 +145,9 @@ GET /api/captacion/whatsapp/avisos?limit=50                  los últimos avisos
 - **Horario sin envíos:** resuelto (Jean): nunca entre las 20:00 y las 07:00, hora de Madrid →
   `CAPTACION_WHATSAPP_HORARIO=07:00-20:00`. Un lead que entra de noche recibe el aviso a las 07:00 (la caducidad de
   12 h cubre la noche entera). Vacío = siempre.
-- **Número de WhatsApp que envía:** de momento el general de la empresa (+34 865 45 61 02), como acordó Jean. El
-  código ya reparte por presupuesto (Ernesto desde 100.000 €, Victor por debajo); cuando sus números estén en la
-  Cloud API, basta con añadir sus `…_NUMERO_ID`.
+- **Número de WhatsApp que envía:** siempre el general de la empresa (+34 865 45 61 02), decidido por Jean el
+  17/11/2026. Los fijos de Netelip de Ernesto y Victor no se conectan a la Cloud API: solo se anuncian en el mensaje
+  (plantilla `aviso_solicitud_llamada_comercial`, pendiente de aprobación de Meta).
 - **Webhook de estados de Meta:** la app Grupo LyN enviaba los eventos del número a un Chatwoot que no se usa
   (confirmado por Dani, 14/11/2026). Se reapunta a `/webhook/whatsapp-cloud` **después** de activar el módulo en
   producción (Meta verifica la URL al guardarla). Las respuestas de los leads llegan pero se ignoran (fuera de
@@ -157,13 +169,15 @@ GET /api/captacion/whatsapp/avisos?limit=50                  los últimos avisos
 | `CAPTACION_CLICKUP_CAMPO_PRESUPUESTO` | `Presupuesto formulario` | Rango del formulario web: decide el remitente. |
 | `CAPTACION_WHATSAPP_UMBRAL_PRESUPUESTO` | `100000` | Desde este límite inferior del rango, remitente «alto». |
 | `CAPTACION_WHATSAPP_REMITENTE_ALTO_NOMBRE` / `…_NUMERO_ID` | `Ernesto` / — | Remitente con presupuesto alto. |
+| `CAPTACION_WHATSAPP_REMITENTE_ALTO_TELEFONO` / `…_BASE_TELEFONO` | — | Fijo de Netelip que anuncia la plantilla (`+34 865 60 83 43` / `+34 865 45 61 34`). |
 | `CAPTACION_WHATSAPP_REMITENTE_BASE_NOMBRE` / `…_NUMERO_ID` | `Victor` / — | Remitente por defecto. |
 | `CAPTACION_CLICKUP_WEBHOOK_SECRET` | — | Firma del webhook de ClickUp (`X-Signature`). |
 | `WHATSAPP_CLOUD_TOKEN` | — | Envío por la Cloud API. |
 | `WHATSAPP_CLOUD_PHONE_NUMBER_ID` | — | Opcional: número común para el remitente que no tenga uno propio. |
 | `WHATSAPP_CLOUD_API_VERSION` | `v23.0` | Versión de la Graph API. |
 | `WHATSAPP_CLOUD_APP_SECRET`, `WHATSAPP_CLOUD_VERIFY_TOKEN` | — | Webhook de estados de Meta. |
-| `CAPTACION_WHATSAPP_PLANTILLA`, `CAPTACION_WHATSAPP_IDIOMA` | —, `es_ES` | Plantilla aprobada. |
+| `CAPTACION_WHATSAPP_PLANTILLA`, `CAPTACION_WHATSAPP_IDIOMA` | —, `es_ES` | Plantilla aprobada (`aviso_solicitud_llamada_comercial`). |
+| `CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS` | vacío | Variables de la plantilla, en orden: `nombre`, `telefono`. Con la de Jean: `nombre,telefono`. |
 | `CAPTACION_WHATSAPP_HORARIO` | vacío | Franja de envío (Madrid). Producción: `07:00-20:00`. |
 | `CAPTACION_WHATSAPP_SOLO_TELEFONOS` | vacío | Modo QA: solo se escribe a estos móviles. **Vacío en producción.** |
 | `CAPTACION_WHATSAPP_CADUCIDAD_MINUTOS` | `720` | Antigüedad máxima para enviar. |

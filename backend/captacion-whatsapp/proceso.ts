@@ -12,7 +12,7 @@ import { notifyTech } from '../netelip/processing.ts';
 import { InvalidPhone, toE164 } from '../netelip/phone.ts';
 import { cambiosDeEtapa, mismaEtapa, type ClienteClickUp, type Tarea, type WebhookClickUp } from './clickup.ts';
 import { ErrorCloud, type Enviar, type EstadoMeta } from './cloud-api.ts';
-import { dentroDeHorario, elegirRemitente, type ConfigCaptacion } from './config.ts';
+import { dentroDeHorario, elegirRemitente, valoresPlantilla, type ConfigCaptacion } from './config.ts';
 import { fijarLineaBase, registrarEntrada, registrarSalida } from './solicitudes.ts';
 
 type Db = Pick<Pool, 'query' | 'connect'>;
@@ -191,7 +191,8 @@ export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: 
         [telefono.e164, `caducado: más de ${config.caducidadMinutos} min desde la entrada en espera sin poder enviarlo`]);
       continue;
     }
-    // Sale del número del comercial que llamará: Ernesto con presupuesto >= umbral, Victor por debajo o sin él.
+    // Comercial que llamará: Ernesto con presupuesto >= umbral, Victor por debajo o sin él. El WhatsApp sale de su numeroId
+    // (por defecto el número general) y, si la plantilla lo pide, anuncia su nombre y su fijo de Netelip.
     const remitente = elegirRemitente(aviso.presupuesto, config.remitentes);
     if (!enviar || !config.cloud) {
       await esperar(aviso.id, ESPERA_SIN_CLOUD_MS, 'sin_configuracion: falta la configuración de la Cloud API de WhatsApp');
@@ -201,15 +202,23 @@ export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: 
       await esperar(aviso.id, ESPERA_SIN_CLOUD_MS, `sin_configuracion: ${remitente.nombre} aún no tiene número en la Cloud API`);
       continue;
     }
+    // Variables de la plantilla (nombre y fijo del comercial). Si falta alguna, espera: nunca sale incompleta.
+    const parametros = valoresPlantilla(config.cloud.parametros, remitente);
+    if (!parametros) {
+      await esperar(aviso.id, ESPERA_SIN_CLOUD_MS, `sin_configuracion: ${remitente.nombre} no tiene CAPTACION_WHATSAPP_REMITENTE_${remitente.clave.toUpperCase()}_TELEFONO para la plantilla`);
+      continue;
+    }
     if (!dentroDeHorario(config.horario, ahora)) {
       await esperar(aviso.id, ESPERA_FUERA_DE_HORARIO_MS, 'fuera_de_horario: se enviará al abrir la franja de envío');
       continue;
     }
+    const anunciado = config.cloud.parametros.includes('telefono') ? remitente.telefonoLlamada : null;
     const intento = aviso.intentos + 1;
     try {
-      const { wamid } = await enviar(telefono.e164, remitente.numeroId);
+      const { wamid } = await enviar(telefono.e164, remitente.numeroId, parametros);
       await actualizar(aviso.id, `estado = 'enviado', intentos = $2, telefono_e164 = $3, wamid = $4, plantilla = $5, enviado_en = $6, motivo = NULL,
-        remitente = $7, remitente_numero_id = $8`, [intento, telefono.e164, wamid, config.cloud.plantilla, ahora, remitente.nombre, remitente.numeroId]);
+        remitente = $7, remitente_numero_id = $8, telefono_anunciado = $9`,
+        [intento, telefono.e164, wamid, config.cloud.plantilla, ahora, remitente.nombre, remitente.numeroId, anunciado]);
       console.log(JSON.stringify({ msg: 'captacion_aviso_enviado', aviso_id: aviso.id, task_id: aviso.clickup_task_id }));
     } catch (error) {
       const reintentable = !(error instanceof ErrorCloud) || error.reintentable;
