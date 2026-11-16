@@ -61,6 +61,7 @@ export function createCaptacionWhatsApp(pool: Pool, env: NodeJS.ProcessEnv = pro
       for (const r of [config.remitentes.alto, config.remitentes.base]) {
         if (!r.numeroId) console.warn(`[captacion] ${r.nombre} sin número en la Cloud API (CAPTACION_WHATSAPP_REMITENTE_${r.clave.toUpperCase()}_NUMERO_ID): sus avisos esperan`);
       }
+      if (config.soloTelefonos) console.warn(`[captacion] MODO QA: solo se escribe a ${config.soloTelefonos.length} teléfono(s) de CAPTACION_WHATSAPP_SOLO_TELEFONOS`);
       if (!config.clickup.webhookSecret) console.warn('[captacion] Sin CAPTACION_CLICKUP_WEBHOOK_SECRET: solo el barrido detecta las entradas en e1');
       if (config.cloud && !config.cloud.appSecret) console.warn('[captacion] Sin WHATSAPP_CLOUD_APP_SECRET: no se reciben los estados de entrega');
       if (!Number.isFinite(minutosBarrido) || minutosBarrido < 1) throw new Error('CAPTACION_BARRIDO_MINUTOS debe ser >= 1');

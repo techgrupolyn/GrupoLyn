@@ -45,6 +45,10 @@ Meta ──webhook firmado──► /webhook/whatsapp-cloud ──► entregado 
   p. ej. «prueba Mateo-Roger(NO USAR)»), no se envía: queda `no_enviado` con motivo `prueba`. Sus teléfonos suelen
   ser inventados y podrían ser de alguien real. Para probar el envío de verdad, usar un lead con otro nombre y un
   móvil del equipo.
+- **Modo QA:** con `CAPTACION_WHATSAPP_SOLO_TELEFONOS` (lista de móviles separados por comas) solo se escribe a esos
+  números; cualquier otro lead queda `no_enviado` con motivo `qa`. En este modo las tareas de prueba **sí** se procesan
+  (la lista ya protege), para que QA pueda usar la convención «PRUEBA … (NO USAR)». En producción va vacía.
+  Guía de pruebas: [CAPTACION_WHATSAPP_PRUEBAS_QA.md](CAPTACION_WHATSAPP_PRUEBAS_QA.md).
 - **Nunca escribe en ClickUp:** no cambia `ETAPA_CRM`, el estado ni ningún campo del lead.
 - Las respuestas del lead por WhatsApp llegan al mismo webhook de Meta y **se ignoran** (fuera de alcance).
 
@@ -56,7 +60,7 @@ Meta ──webhook firmado──► /webhook/whatsapp-cloud ──► entregado 
 | `enviado` | Meta aceptó el mensaje (`wamid`, `enviado_en`). |
 | `entregado` / `leido` | Confirmado por el webhook de Meta (`entregado_en`, `leido_en`). No retrocede aunque los avisos lleguen desordenados. |
 | `fallido` | Falló el envío tras los reintentos o Meta lo rechazó después (`motivo` con el código). |
-| `no_enviado` | No se intentó: `prueba`, `sin_telefono`, `telefono_no_valido`, `telefono_fijo` o `caducado`. |
+| `no_enviado` | No se intentó: `prueba`, `qa`, `sin_telefono`, `telefono_no_valido`, `telefono_fijo` o `caducado`. |
 
 `caducado`: un aviso que no pudo salir en `CAPTACION_WHATSAPP_CADUCIDAD_MINUTOS` (12 h por defecto) ya no se envía.
 «Un asesor te llamará en breve» no tiene sentido horas después, y así activar la Cloud API no dispara un atasco de
@@ -157,7 +161,8 @@ GET /api/captacion/whatsapp/avisos?limit=50                  los últimos avisos
 | `WHATSAPP_CLOUD_API_VERSION` | `v23.0` | Versión de la Graph API. |
 | `WHATSAPP_CLOUD_APP_SECRET`, `WHATSAPP_CLOUD_VERIFY_TOKEN` | — | Webhook de estados de Meta. |
 | `CAPTACION_WHATSAPP_PLANTILLA`, `CAPTACION_WHATSAPP_IDIOMA` | —, `es_ES` | Plantilla aprobada. |
-| `CAPTACION_WHATSAPP_HORARIO` | vacío | Franja de envío (Madrid). |
+| `CAPTACION_WHATSAPP_HORARIO` | vacío | Franja de envío (Madrid). Producción: `07:00-20:00`. |
+| `CAPTACION_WHATSAPP_SOLO_TELEFONOS` | vacío | Modo QA: solo se escribe a estos móviles. **Vacío en producción.** |
 | `CAPTACION_WHATSAPP_CADUCIDAD_MINUTOS` | `720` | Antigüedad máxima para enviar. |
 | `CAPTACION_BARRIDO_MINUTOS` | `5` | Frecuencia del barrido. |
 | `WHATSAPP_CLOUD_WABA_ID`, `CLICKUP_TEAM_ID` | — | Solo para `alta.ts`. |
@@ -176,5 +181,7 @@ cd backend && npx vitest run tests/captacion-whatsapp.test.ts
 ```bash
 cd backend && QA_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:15439/lyn_qa_retest npx vitest run tests/captacion-whatsapp.integration.test.ts
 ```
+
+Prueba de punta a punta con ClickUp y WhatsApp reales: [CAPTACION_WHATSAPP_PRUEBAS_QA.md](CAPTACION_WHATSAPP_PRUEBAS_QA.md).
 
 La de integración cubre los cinco escenarios de la spec contra PostgreSQL real, con ClickUp y Meta simulados.

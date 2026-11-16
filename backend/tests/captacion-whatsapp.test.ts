@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { cambiosDeEtapa, crearClienteClickUp, firmaClickUpValida, nombreOpcion } from '../captacion-whatsapp/clickup.ts';
 import { crearEnviador, ErrorCloud, estadosDelWebhook, firmaMetaValida } from '../captacion-whatsapp/cloud-api.ts';
-import { configCaptacionDesdeEnv, dentroDeHorario, elegirRemitente, limiteInferiorPresupuesto, parseHorario } from '../captacion-whatsapp/config.ts';
+import { configCaptacionDesdeEnv, dentroDeHorario, elegirRemitente, limiteInferiorPresupuesto, parseHorario, parseSoloTelefonos } from '../captacion-whatsapp/config.ts';
 import { esLeadDePrueba, telefonoParaWhatsApp } from '../captacion-whatsapp/proceso.ts';
 
 const OPCIONES = [{ id: 'o1', name: 'e1 EN ESPERA', orderindex: 0 }, { id: 'o2', name: 'e2 CONTACTADO', orderindex: 1 }];
@@ -56,6 +56,13 @@ describe('configuración', () => {
     const noche = parseHorario('22:00-02:00');
     expect(dentroDeHorario(noche, new Date('2026-11-13T23:30:00Z'))).toBe(true);  // 00:30
     expect(dentroDeHorario(null, new Date())).toBe(true);
+  });
+  it('modo QA: lista de teléfonos permitidos normalizada a E.164; vacía = producción', () => {
+    expect(parseSoloTelefonos('')).toBeNull();
+    expect(parseSoloTelefonos(undefined)).toBeNull();
+    expect(parseSoloTelefonos('+34 600 00 00 01, 600000002')).toEqual(['+34600000001', '+34600000002']);
+    expect(() => parseSoloTelefonos('+34600000001, abc')).toThrow(/SOLO_TELEFONOS/);
+    expect(configCaptacionDesdeEnv({ CAPTACION_WHATSAPP_ENABLED: 'true', CLICKUP_API_TOKEN: 'pk' })!.soloTelefonos).toBeNull();
   });
 });
 

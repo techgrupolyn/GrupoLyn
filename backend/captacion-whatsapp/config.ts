@@ -1,6 +1,7 @@
 // Configuración del aviso por WhatsApp cuando un lead entra en «e1 EN ESPERA» (Captación). Ver
 // docs/CAPTACION_WHATSAPP_ESPERA.md. Todo sale de variables de entorno; sin CAPTACION_WHATSAPP_ENABLED=true no
 // arranca nada (ni webhooks, ni barrido, ni envíos), para que desplegar el código no escriba nunca a un lead.
+import { toE164 } from '../netelip/phone.ts';
 import { LISTA_CONTACTO_REFORMA } from '../reuniones-meet/clickup.ts';
 
 export type ConfigCaptacion = {
@@ -31,7 +32,25 @@ export type ConfigCaptacion = {
   horario: { desde: number; hasta: number } | null;
   /** Un aviso más antiguo que esto ya no se envía («te llamará en breve» no sirve horas después). */
   caducidadMinutos: number;
+  /**
+   * Modo QA: solo se escribe a estos teléfonos (E.164); el resto queda no_enviado con motivo «qa:». Así se prueba
+   * contra la lista real de ClickUp sin escribir nunca a un lead real. null = producción (sin restricción).
+   */
+  soloTelefonos: string[] | null;
 };
+
+/** «+34 600 00 00 01, 600000002» → ['+34600000001', '+34600000002']. Vacío = null. */
+export function parseSoloTelefonos(raw: string | undefined): string[] | null {
+  const lista = String(raw || '').split(',').map((t) => t.trim()).filter(Boolean);
+  if (!lista.length) return null;
+  return lista.map((t) => {
+    try {
+      return toE164(t);
+    } catch {
+      throw new Error(`CAPTACION_WHATSAPP_SOLO_TELEFONOS: teléfono no válido «${t}»`);
+    }
+  });
+}
 
 export type Remitente = { clave: 'alto' | 'base'; nombre: string; numeroId: string | null };
 
@@ -89,6 +108,7 @@ export function configCaptacionDesdeEnv(env: NodeJS.ProcessEnv = process.env): C
     remitentes: { umbral, alto: remitente('alto', 'Ernesto'), base: remitente('base', 'Victor') },
     horario: parseHorario(env.CAPTACION_WHATSAPP_HORARIO),
     caducidadMinutos: caducidad,
+    soloTelefonos: parseSoloTelefonos(env.CAPTACION_WHATSAPP_SOLO_TELEFONOS),
   };
 }
 

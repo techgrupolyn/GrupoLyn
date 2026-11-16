@@ -22,6 +22,7 @@ const config: ConfigCaptacion = {
   remitentes: { umbral: 100000, alto: { clave: 'alto', nombre: 'Ernesto', numeroId: 'n-ernesto' }, base: { clave: 'base', nombre: 'Victor', numeroId: 'n-victor' } },
   horario: null,
   caducidadMinutos: 720,
+  soloTelefonos: null,
 };
 
 type Lt = { etapa: string; telefono: string | null; actualizada: number; parent?: string; presupuesto?: string; nombre?: string };
@@ -184,6 +185,20 @@ describe.skipIf(!databaseUrl)('Captación · WhatsApp a leads en espera en Postg
     expect(porLead.p1).toMatchObject({ estado: 'no_enviado', motivo: expect.stringMatching(/^prueba:/), wamid: null });
     expect(porLead.p2).toMatchObject({ estado: 'no_enviado', motivo: expect.stringMatching(/^prueba:/) });
     expect(porLead.real).toMatchObject({ estado: 'enviado' });
+  });
+
+  it('modo QA (CAPTACION_WHATSAPP_SOLO_TELEFONOS): solo a los teléfonos de la lista, aunque la tarea sea de prueba', async () => {
+    await barrer(pool, clickup);
+    tareas.set('qa', { etapa: 'o1', telefono: '612 34 56 70', actualizada: Date.now(), nombre: 'PRUEBA QA Henry (NO USAR)' });
+    tareas.set('lead', { etapa: 'o1', telefono: '612345679', actualizada: Date.now(), nombre: 'Victor Manuel Cebrian Morales' });
+    expect((await barrer(pool, clickup)).nuevas).toBe(2);
+    const enviar = vi.fn<Enviar>().mockResolvedValue({ wamid: 'wamid.qa' });
+    await procesarAvisos(pool, { ...config, soloTelefonos: ['+34612345670'] }, enviar);
+    expect(enviar).toHaveBeenCalledTimes(1);
+    expect(enviar).toHaveBeenCalledWith('+34612345670', 'n-victor');
+    const porLead = Object.fromEntries((await avisos()).map((a) => [a.clickup_task_id, a]));
+    expect(porLead.qa).toMatchObject({ estado: 'enviado', wamid: 'wamid.qa' });
+    expect(porLead.lead).toMatchObject({ estado: 'no_enviado', motivo: expect.stringMatching(/^qa:/), telefono_e164: '+34612345679', wamid: null });
   });
 
   it('Fallo de la API de WhatsApp: se reintenta y, si sigue fallando, queda fallido sin tocar el lead', async () => {

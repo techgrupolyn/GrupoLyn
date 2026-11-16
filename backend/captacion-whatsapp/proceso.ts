@@ -171,13 +171,19 @@ export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: 
     actualizar(id, 'siguiente_intento = $2, motivo = $3', [new Date(ahora.getTime() + ms), motivo]);
 
   for (const aviso of rows) {
-    if (esLeadDePrueba(aviso.lead_nombre)) {
+    // Modo QA: con lista de teléfonos permitidos, las tareas de prueba sí se procesan (la lista ya protege).
+    if (!config.soloTelefonos && esLeadDePrueba(aviso.lead_nombre)) {
       await actualizar(aviso.id, `estado = 'no_enviado', motivo = $2`, ['prueba: tarea de prueba del equipo («NO USAR» o «prueba» en el nombre)']);
       continue;
     }
     const telefono = telefonoParaWhatsApp(aviso.telefono_original);
     if ('motivo' in telefono) {
       await actualizar(aviso.id, `estado = 'no_enviado', motivo = $2`, [telefono.motivo]);
+      continue;
+    }
+    if (config.soloTelefonos && !config.soloTelefonos.includes(telefono.e164)) {
+      await actualizar(aviso.id, `estado = 'no_enviado', telefono_e164 = $2, motivo = $3`,
+        [telefono.e164, 'qa: el teléfono no está en CAPTACION_WHATSAPP_SOLO_TELEFONOS']);
       continue;
     }
     if (ahora.getTime() - aviso.entrada_en.getTime() > config.caducidadMinutos * 60_000) {
