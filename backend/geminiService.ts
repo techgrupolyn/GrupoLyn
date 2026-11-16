@@ -1,4 +1,5 @@
 import { deleteGeminiFiles, uploadGeminiFile } from './gemini-files.ts';
+import {prepareTelegramTransportPayload,assertTelegramTransportMedia} from './telegram-ai-privacy.ts';
 import { requestWithDeadline } from './request-deadline.ts';
 
 export type SpecialistRole = 'legal' | 'contabilidad' | 'ventas' | 'soporte' | 'general' | 'interiorista' | 'planimetrista' | 'director';
@@ -117,7 +118,7 @@ async function requestGeminiInteraction(
       const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-        body: JSON.stringify(body),
+        body: JSON.stringify(await prepareTelegramTransportPayload(body,modelId)),
         signal,
       });
       return { response, raw: await response.text() };
@@ -369,6 +370,7 @@ function localFallbackResponse(prompt: string, historial?: string, systemInstruc
 }
 
 export async function callGeminiWithMediaResult(prompt: string, mediaItems: GeminiMediaItem[], modelo: 'flash' | 'pro' = 'flash', systemInstruction?: string, timeoutMs = 20_000, historial?: string): Promise<GeminiExecutionResult> {
+  for(const item of mediaItems)await assertTelegramTransportMedia(Buffer.from(item.base64,'base64'),item.mimeType);
   if (!getApiKey()) return localExecution(prompt, historial, systemInstruction);
 
   const uploadedNames: string[] = [];
