@@ -58,11 +58,14 @@ export function transcripcionPorTurnos(segments: Segmento[] | null, text: string
   }).join('\n');
 }
 
-/** Datos del cliente sustituidos por marcadores antes de salir hacia el modelo. */
-export function enmascarar(transcripcion: string, nombresCliente: string[]): string {
+/**
+ * Datos del cliente sustituidos por marcadores antes de salir hacia el modelo: los del CRM (nombre y direcciones
+ * guardadas) y, por patrón, teléfono, email, DNI, IBAN y direcciones postales (protocol-privacy).
+ */
+export function enmascarar(transcripcion: string, nombresCliente: string[], direccionesCliente: string[] = []): string {
   // Nombre y apellidos sueltos también: Whisper suele transcribir solo uno de los dos.
   const partes = nombresCliente.flatMap((n) => [n, ...String(n || '').split(/\s+/)]).map((n) => String(n || '').trim()).filter((n) => n.length >= 4);
-  return maskProtocolQuestion(transcripcion, { clientNames: partes });
+  return maskProtocolQuestion(transcripcion, { clientNames: partes, clientAddresses: direccionesCliente.filter(Boolean) });
 }
 
 // --- Validación de la salida del modelo -------------------------------------------------------
@@ -177,6 +180,7 @@ export type Decision = {
 /**
  * El código, no el modelo, decide qué errores valen, si es apto y si se escala:
  * - un error crítico sin cita verificable se descarta y la llamada queda con duda;
+ * - una respuesta ambigua del comercial sobre viabilidad, plazo o precio deja duda aunque el modelo no la marque;
  * - NO PREGUNTAR solo es error si el presupuesto del lead está registrado (Alex, 02/11/2026);
  * - apto = nota ≥ 80 y ningún error crítico;
  * - escalado = algún error crítico, nota < 80 o duda (criterio P-01 del ticket).
@@ -190,8 +194,11 @@ export function decidir(salida: SalidaModelo, transcripcion: string, ctx: Contex
     else validos.push(e);
   }
   const sinCita = descartados.some((e) => e.motivo.startsWith('cita no encontrada'));
-  const duda = salida.duda.valor || sinCita;
-  const motivoDuda = salida.duda.valor ? salida.duda.motivo : sinCita ? 'el agente señaló un error crítico sin una cita verificable' : null;
+  // Red de seguridad (CAL-04): el modelo a veces da por buena una respuesta ambigua sobre viabilidad, plazo o precio.
+  const ambigua = !salida.duda.valor && !sinCita && !validos.some((e) => e.regla === 'LIMITE_PROFESIONAL') ? detectarRespuestaAmbigua(transcripcion) : null;
+  const duda = salida.duda.valor || sinCita || Boolean(ambigua);
+  const motivoDuda = salida.duda.valor ? salida.duda.motivo : sinCita ? 'el agente señaló un error crítico sin una cita verificable'
+    : ambigua ? `respuesta ambigua sobre viabilidad, plazo o precio: «${ambigua}»` : null;
   const notaApto = ctx.notaApto ?? NOTA_APTO;
   const nombre = (codigo: string) => ctx.nombresReglas?.[codigo] ?? NOMBRE_REGLA[codigo] ?? codigo;
   const apto = salida.nota >= notaApto && validos.length === 0;
@@ -234,6 +241,35 @@ export function detectarNegativaGrabacion(transcripcion: string): string | null 
     if (NEGATIVAS_GRABACION.some((re) => re.test(t))) return sinMarca(lineas[i]);
     // «Sin problema, tomo las notas yo» justo después de hablar de la grabación.
     if (RESPUESTA_GUION.test(t) && lineas.slice(Math.max(0, i - 3), i + 1).some((l) => /grab/.test(plano(l)))) return sinMarca(lineas[i]);
+  }
+  return null;
+}
+
+// --- Respuesta ambigua sobre viabilidad, plazo o precio (CAL-04) -----------------------------
+
+// Fórmulas que ni prometen ni remiten a revisión. «Depende» suelto no cuenta: es lo correcto al dar una horquilla.
+const RESPUESTAS_AMBIGUAS = [
+  /\bno (?:deberia|tendria que|creo que) (?:haber|haya|habra|hay) (?:mucho |muchos |ningun |demasiado |gran )?problemas?\b/,
+  /\ben principio (?:si\b|se puede|no (?:hay|habria|deberia|tiene por que)|podria|cabe|entra|da tiempo|llegamos|lo tenemos|seria posible)/,
+  /\bya lo (?:veriamos|veremos)\b/,
+  /\blo (?:veriamos|veremos) sobre la marcha\b/,
+  /\bseguramente se (?:pueda|podra|puede)\b/,
+];
+// Tema técnico, de plazo o de precio en el turno o en los dos anteriores (la pregunta del cliente).
+const TEMA_VIABILIDAD = /\b(?:muro|tabique|pared|carga|estructur\w*|viga|pilar|forjado|ventana\w*|licencia|permiso|ayuntamiento|ampli\w+|tirar|derrib\w+|abrir|terraza|cerramiento|bajante|instalaci\w+|plazo|meses|semanas|termin\w*|acab\w*|a tiempo|precio|presupuesto|euros|cuesta|costar\w*|coste)\b/;
+
+/**
+ * Devuelve la frase del comercial con una respuesta ambigua («en principio no debería haber problema», «ya lo
+ * veríamos») sobre viabilidad técnica, plazo o precio, o null. `decidir` la usa para forzar la duda cuando el modelo
+ * no la marcó: es una red de seguridad, no un error crítico. Los turnos etiquetados CLIENTE no cuentan
+ * («¿te viene bien el jueves?» «en principio sí» no es una promesa).
+ */
+export function detectarRespuestaAmbigua(transcripcion: string): string | null {
+  const lineas = String(transcripcion || '').split('\n');
+  for (let i = 0; i < lineas.length; i++) {
+    if (/^\[[^\]]*\]\s*CLIENTE:/.test(lineas[i])) continue;
+    const t = plano(lineas[i]);
+    if (RESPUESTAS_AMBIGUAS.some((re) => re.test(t)) && lineas.slice(Math.max(0, i - 2), i + 1).some((l) => TEMA_VIABILIDAD.test(plano(l)))) return sinMarca(lineas[i]);
   }
   return null;
 }
