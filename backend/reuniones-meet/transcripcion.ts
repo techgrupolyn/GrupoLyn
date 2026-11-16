@@ -125,8 +125,8 @@ export function esCuentaLyn(nombre: string): boolean {
 }
 
 // Dirección en mitad de una frase: tipo de vía + nombre (hasta 6 palabras) + número, con piso o puerta opcionales.
-// El enmascarado del calificador (protocol-privacy) solo tapa la dirección si llega hasta el final de la línea; en una
-// reunión los turnos son largos y la dirección suele ir seguida de más texto («calle Mayor 12, por si…»).
+// Desde CAL-01 el enmascarado del calificador (protocol-privacy) también tapa direcciones en mitad de la frase; esta
+// regla se mantiene como segunda pasada para las reuniones, donde los turnos son largos.
 // El nombre de la vía debe empezar en mayúscula (lo normal en Meet con nombres propios) para no tapar frases como
 // «la plaza a las 10». Una dirección escrita toda en minúsculas no se tapa: limitación conocida.
 const DIRECCION_EN_FRASE = /\b(?:[Cc]alle|[Cc]\/|[Aa]venida|[Aa]vda\.?|[Aa]v\.|[Pp]aseo|[Pp]laza|[Pp]l\.|[Cc]arretera|[Cc]tra\.?|[Cc]amino|[Rr]onda|[Uu]rbanizaci[oó]n|[Pp]artida)\s+(?:(?:de|del|la|las|los|el|d')\s+)*\p{Lu}[\p{L}'’-]*(?:\s+(?:de|del|la|las|los|el|y|\p{Lu}[\p{L}'’-]*)){0,5}\s*,?\s*(?:n[º°o.]?\s*)?\d{1,4}(?:\s?[A-Za-z](?![\p{L}]))?(?:\s*[,-]?\s*\d{1,2}\s*[º°ª]?(?:\s?[A-Za-z](?![\p{L}]))?)?/gu;

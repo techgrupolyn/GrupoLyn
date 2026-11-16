@@ -8,6 +8,7 @@ import {
   type Segmento,
 } from './reglas.ts';
 import { rubricaPorId } from './rubrica.ts';
+import { motivoSinRubrica, ROL_CON_RUBRICA_FIJA } from './encolar.ts';
 
 export const MAX_INTENTOS = 3;
 const BACKOFF_SEGUNDOS = [60, 300, 900];
@@ -46,7 +47,7 @@ type Trabajo = {
   rubrica_version_id: string | null; reevaluacion: boolean; sin_consentimiento_previo: boolean;
   direction: string; duration_seconds: number; occurred_at: Date;
   t_status: string | null; t_text: string | null; segments: Segmento[] | null;
-  lead_name: string | null; client_name: string | null;
+  lead_name: string | null; client_name: string | null; client_addresses?: string[] | null;
 };
 
 async function noEvaluada(pool: Pool, id: string, motivo: string): Promise<'no_evaluada'> {
@@ -78,12 +79,16 @@ export async function procesarSiguienteEvaluacion(pool: Pool, evaluar: Evaluador
      RETURNING e.id, e.llamada_id, e.intentos, e.rol, e.extension_netelip, e.rubrica_version_id, e.reevaluacion,
        EXISTS (SELECT 1 FROM llamada_evaluacion x WHERE x.llamada_id = e.llamada_id AND x.sin_consentimiento) AS sin_consentimiento_previo,
        c.direction, c.duration_seconds, c.occurred_at,
-       t.status AS t_status, t.text AS t_text, t.segments, l.name AS lead_name, CONCAT_WS(' ', cl.nombre, cl.apellido) AS client_name`,
+       t.status AS t_status, t.text AS t_text, t.segments, l.name AS lead_name, CONCAT_WS(' ', cl.nombre, cl.apellido) AS client_name,
+       -- crm_leads y clientes no guardan dirección: la que hay es la de las obras del cliente (proyectos.direccion).
+       ARRAY(SELECT p.direccion FROM proyectos p WHERE p.cliente_id = COALESCE(c.client_id, l.client_id) AND NULLIF(TRIM(p.direccion), '') IS NOT NULL) AS client_addresses`,
   );
   if (!rows.length) return null;
   const job = rows[0];
   // Una llamada marcada «sin consentimiento» no vuelve a ir al modelo, tampoco en una reevaluación.
   if (job.sin_consentimiento_previo) return sinConsentimiento(pool, job.id);
+  // CAL-06: fila pendiente anterior al cambio de un rol sin rúbrica propia. fase0-v1 es solo del SDR.
+  if (!job.rubrica_version_id && job.rol !== ROL_CON_RUBRICA_FIJA) return noEvaluada(pool, job.id, motivoSinRubrica(job.rol));
   if (job.t_status === 'failed' || !job.t_status) return noEvaluada(pool, job.id, 'transcripción no disponible');
   if (job.t_status !== 'completed') {
     // Aún transcribiendo: se vuelve a mirar en un minuto sin gastar intento.
@@ -92,12 +97,12 @@ export async function procesarSiguienteEvaluacion(pool: Pool, evaluar: Evaluador
   }
   const turnos = transcripcionPorTurnos(job.segments, job.t_text || '');
   if (!turnos.trim()) return noEvaluada(pool, job.id, 'la grabación no contiene conversación');
-  const transcripcion = enmascarar(turnos, [job.lead_name || '', job.client_name || '']);
+  const transcripcion = enmascarar(turnos, [job.lead_name || '', job.client_name || ''], job.client_addresses || []);
   // El cliente no autoriza la grabación: no se envía al modelo ni se guardan objeciones (869fpj8dm).
   if (detectarNegativaGrabacion(transcripcion)) return sinConsentimiento(pool, job.id);
   // P-05: crm_leads aún no guarda el presupuesto del lead; mientras no exista, nunca consta como registrado.
   const presupuestoRegistrado = false;
-  // Rúbrica versionada de la fila (la activa al encolar, o la pedida en una reevaluación); sin ella, fase0-v1.
+  // Rúbrica versionada de la fila (la activa al encolar, o la pedida en una reevaluación); sin ella, fase0-v1 (SDR).
   const rubrica = job.rubrica_version_id ? await rubricaPorId(pool, job.rubrica_version_id) : null;
   if (job.rubrica_version_id && !rubrica) return noEvaluada(pool, job.id, `no existe la rúbrica ${job.rubrica_version_id}`);
 

@@ -82,7 +82,8 @@ export async function ensureCalificador(pool: Pool): Promise<void> {
     CREATE INDEX IF NOT EXISTS objecion_marketing_tipo ON objecion_marketing(tipo_objecion, creado_en DESC);
 
     -- Rúbricas versionadas (869fpj8dm): una versión activa por rol. Cambiar el guion es publicar una versión
-    -- nueva, sin desplegar. Un rol sin versión activa se evalúa con la rúbrica fija fase0-v1 (rubrica-v1.md).
+    -- nueva, sin desplegar. Sin versión activa, el SDR se evalúa con la rúbrica fija fase0-v1 (rubrica-v1.md)
+    -- y los closers no se evalúan: quedan «no evaluada, sin rúbrica para el rol …» (CAL-06, encolar.ts).
     CREATE TABLE IF NOT EXISTS rubrica_version (
       id BIGSERIAL PRIMARY KEY,
       codigo TEXT NOT NULL UNIQUE,                   -- «sdr-v1»: se copia en llamada_evaluacion.version_rubrica

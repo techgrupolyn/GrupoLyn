@@ -6,7 +6,7 @@ import {
   transcripcionPorTurnos, validarSalida, type SalidaModelo,
 } from '../netelip/calificador/reglas.ts';
 import { evaluadorGemini, promptSistema, promptUsuario } from '../netelip/calificador/modelo.ts';
-import { encolarEvaluacion } from '../netelip/calificador/encolar.ts';
+import { encolarEvaluacion, encolarPendientes, motivoSinRubrica } from '../netelip/calificador/encolar.ts';
 import { MAX_INTENTOS, procesarSiguienteEvaluacion, textoSupervisor, type ConfigCalificador } from '../netelip/calificador/proceso.ts';
 
 const TRANSCRIPCION = [
@@ -200,9 +200,25 @@ describe('Calificador · proceso', () => {
     expect(sql).toMatch(/c\.duration_seconds >= \$3/);
     expect(params[2]).toBe(60);
     // Una evaluación automática por llamada (las reevaluaciones bajo demanda no cuentan), con la rúbrica vigente.
-    expect(sql).toMatch(/NOT EXISTS \(SELECT 1 FROM llamada_evaluacion x WHERE x\.llamada_id = c\.id AND NOT x\.reevaluacion\)/);
-    expect(sql).toMatch(/SELECT v\.id FROM rubrica_version v WHERE v\.rol = r\.rol AND v\.activo/);
+    expect(sql).toMatch(/NOT EXISTS \(SELECT 1 FROM llamada_evaluacion x WHERE x\.llamada_id = c\.id AND NOT x\.reevaluacion\s/);
+    expect(sql).toMatch(/LEFT JOIN rubrica_version v ON v\.rol = r\.rol AND v\.activo/);
     expect(sql).toMatch(/ON CONFLICT DO NOTHING/);
+  });
+
+  it('CAL-06: un closer sin rúbrica activa queda «no evaluada» con motivo; el SDR sin versión sigue con fase0-v1', async () => {
+    for (const encolar of [(p: Pool) => encolarEvaluacion(p, 42), (p: Pool) => encolarPendientes(p)]) {
+      const { pool, queries } = fakePool(null);
+      await encolar(pool);
+      const { sql } = queries[0];
+      // Sin versión activa y rol distinto de sdr: no_evaluada y «sin rúbrica para el rol closer_f2».
+      expect(sql).toMatch(/CASE WHEN \(v\.id IS NULL AND r\.rol <> 'sdr'\) OR .+ IS NOT NULL THEN 'no_evaluada' ELSE 'pendiente' END/);
+      expect(sql).toMatch(/CASE WHEN \(v\.id IS NULL AND r\.rol <> 'sdr'\) THEN 'sin rúbrica para el rol ' \|\| r\.rol/);
+      // Con versión activa, la fila la lleva; sin ella (SDR), NULL = fase0-v1.
+      expect(sql).toMatch(/, v\.id\s+FROM netelip_calls c/);
+      // Una «sin rúbrica» no impide encolarla cuando el rol estrene rúbrica.
+      expect(sql).toMatch(/AND NOT \(x\.estado = 'no_evaluada' AND x\.rubrica_version_id IS NULL AND x\.motivo_no_evaluada LIKE 'sin rúbrica para el rol %'\)/);
+    }
+    expect(motivoSinRubrica('closer_f2')).toBe('sin rúbrica para el rol closer_f2');
   });
 
   it('evalúa: enmascara antes del modelo y guarda nota, decisión, feedback y objeciones', async () => {
