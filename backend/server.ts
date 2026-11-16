@@ -27,6 +27,7 @@ import { meetingReviewChain, meetingEmployeeRoles, meetingStageRecipientConditio
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
 import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
 import { createReunionesWorkers, ensureReunionesMeet } from './reuniones-meet/index.ts';
+import { createCaptacionWhatsApp, ensureCaptacionWhatsApp, registrarApiCaptacion } from './captacion-whatsapp/index.ts';
 import { createMarketingWorker, ensureMarketing, registerMarketing } from './marketing/index.ts';
 import { idCarpetaDrive } from './netelip/entrenador/drive.ts';
 import { ensureProjectMeetingSchema, registerProjectMeetingRoutes, refreshProjectMeetings, syncProjectMeeting } from './meeting-project-workflow.ts';
@@ -225,6 +226,10 @@ app.use('/api/club/protocolos', express.json({ limit: '20kb' }), createClubProto
   },
   weeklySnapshot: (from, to) => loadProtocolWeeklySnapshot(pool, from, to),
 }));
+// Captación (aviso por WhatsApp a leads en e1 EN ESPERA): sus webhooks verifican la firma sobre el cuerpo crudo,
+// así que van antes de express.json.
+const captacionWhatsApp = createCaptacionWhatsApp(pool);
+app.use(captacionWhatsApp.router);
 app.use(express.json({ limit: '10mb' }));
 
 const limiter = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false,
@@ -1039,6 +1044,7 @@ async function ensureDatabaseSchema(): Promise<void> {
   await ensureSummaryJobs(pool);
   await ensureNetelipCalls(pool);
   await ensureReunionesMeet(pool);
+  await ensureCaptacionWhatsApp(pool);
   await ensureMarketing(pool);
   await ensureWhatsAppReliability(pool);
   await pool.query(
@@ -8905,6 +8911,7 @@ async function bootstrap() {
   setInterval(() => void runSummaryQueue(), 5_000).unref();
   if (process.env.NETELIP_WORKERS_ENABLED !== 'false') netelipWorkers.start();
   reunionesWorkers.start();
+  captacionWhatsApp.start();
   marketingWorker.start();
   if (EVOLUTION_BACKGROUND_SYNC_ENABLED) await bootEvolution();
 }
@@ -9095,6 +9102,7 @@ registerNetelipCalls(app, {
   enviar: enviarWhatsAppCalificador,
   entrenadorDrive: ENTRENADOR_DRIVE_CARPETA && ENTRENADOR_DRIVE_CUENTA ? { carpetaId: ENTRENADOR_DRIVE_CARPETA, token: entrenadorDriveToken } : null,
 });
+registrarApiCaptacion(app, { pool, admin: requireCeoAuth });
 // Panel de marketing (869fny1et): gasto de Windsor + leads agregados de ClickUp + nota del calificador.
 const marketingWorker = createMarketingWorker(pool, process.env);
 registerMarketing(app, {
