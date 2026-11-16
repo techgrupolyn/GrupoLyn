@@ -35,7 +35,7 @@ Llamada ─► Netelip API Voice ─► /webhook/netelip/<token>/control   (avis
   - conciliación con el informe de Netelip: cada hora, para llamadas de más de 24 h;
   - retención: diaria.
 - **Acceso**:
-  - La sección y la API solo están disponibles para `superadmin`, `admin`, `employee:director` y `employee:director_general` (`NETELIP_ACCESS_ROLES`).
+  - La sección y la API solo están disponibles para `superadmin`, `admin`, `employee:superadmin`, `employee:admin` (superadmin y admin del directorio de Supabase), `employee:director` y `employee:director_general` (`NETELIP_ACCESS_ROLES`).
   - El texto lo leen esos mismos roles mientras Producto no decida otra cosa (P6, `NETELIP_TRANSCRIPT_READER_ROLES`).
   - «Consultas IA» no lee las tablas `netelip_*`.
 - **Esquema** (`schema.ts`): solo tablas nuevas `netelip_*`, aplicadas en cada arranque. Reversión: `backend/netelip/schema-down.sql`.
@@ -121,7 +121,7 @@ Lo que decide el código, no el modelo (`backend/netelip/calificador/reglas.ts`)
 - **Apto** = nota ≥ 80 y ningún error crítico. **Escalado** = algún error crítico, nota < 80 o duda (P-01, pendiente de confirmar).
 - Hasta 3 intentos con el modelo (1, 5 y 15 min). Después queda «no evaluada» con el motivo, sin feedback, y se avisa a tecnología.
 
-Las rúbricas están versionadas en la tabla `rubrica_version` (869fpj8dm): el SDR usa `sdr-v1`, los 7 pasos del «Guion completo SDR», y los roles sin versión propia (closers) siguen con la fija `fase0-v1` (`backend/netelip/calificador/rubrica-v1.md`, del «Contexto unificado del Entrenador» de Jean). Publicar un guion nuevo, reevaluar llamadas y calibrar: [CALIFICADOR_RUBRICAS.md](CALIFICADOR_RUBRICAS.md).
+Las rúbricas están versionadas en la tabla `rubrica_version` (869fpj8dm): el SDR usa `sdr-v1`, los 7 pasos del «Guion completo SDR», y los closers no se evalúan hasta tener versión propia activa: sus llamadas quedan «No evaluada · sin rúbrica para el rol closer_f2» (CAL-06). La fija `fase0-v1` solo es el respaldo del SDR (`backend/netelip/calificador/rubrica-v1.md`, del «Contexto unificado del Entrenador» de Jean). Publicar un guion nuevo, reevaluar llamadas y calibrar: [CALIFICADOR_RUBRICAS.md](CALIFICADOR_RUBRICAS.md).
 
 | Variable | Valor |
 |---|---|

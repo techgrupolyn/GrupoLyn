@@ -23,7 +23,7 @@ type Deps = {
 // Quién puede escribir feedback y dar de alta comerciales. Por defecto, los mismos roles que ven la sección.
 const normalizeRole = (role: unknown) =>
   String(role || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');
-const DEFAULT_SUPERVISOR_ROLES = 'superadmin,admin,employee:director,employee:director_general';
+const DEFAULT_SUPERVISOR_ROLES = 'superadmin,admin,employee:superadmin,employee:admin,employee:director,employee:director_general';
 
 export function canSupervise(role: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
   return String(env.CALIFICADOR_SUPERVISOR_ROLES || DEFAULT_SUPERVISOR_ROLES).split(',').map(normalizeRole).filter(Boolean).includes(normalizeRole(role));

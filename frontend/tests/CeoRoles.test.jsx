@@ -16,8 +16,13 @@ describe('Acceso de dirección', () => {
 });
 
 describe('Netelip · Historial de llamadas', () => {
-  it.each(['superadmin', 'admin', 'employee:director', 'employee:director_general'])('lo ve %s', (rol) => {
+  it.each(['superadmin', 'admin', 'employee:superadmin', 'employee:admin', 'employee:director', 'employee:director_general'])('lo ve %s', (rol) => {
     expect(canAccessNetelipCalls({ rol })).toBe(true);
+  });
+
+  it.each(['employee:superadmin', 'employee:admin'])('CAL-09: %s del directorio tiene el menú completo, no el limitado', (rol) => {
+    expect(isMeetingLimitedCeoUser({ rol })).toBe(false);
+    expect(isMeetingEditorCeoUser({ rol })).toBe(true);
   });
   it.each(['ceo', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:pmc_proyectos', 'consulta_publica', ''])('no lo ve %s', (rol) => {
     expect(canAccessNetelipCalls({ rol })).toBe(false);

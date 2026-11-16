@@ -31,8 +31,9 @@ type Dependencies = {
 
 const CONTROL_STATE_TTL_MS = 3 * 3600_000;
 // Quién ve Historial de llamadas (pedido de Alejandro Yepez, 14/10/2026). Debe coincidir con
-// NETELIP_ACCESS_ROLES del frontend (frontend/src/ceo-dashboard/CeoLogin.jsx).
-const DEFAULT_ACCESS_ROLES = 'superadmin,admin,employee:director,employee:director_general';
+// NETELIP_ACCESS_ROLES del frontend (frontend/src/ceo-dashboard/CeoLogin.jsx). employee:superadmin y employee:admin:
+// superadmin y admin que entran con el directorio de Supabase (CAL-09).
+const DEFAULT_ACCESS_ROLES = 'superadmin,admin,employee:superadmin,employee:admin,employee:director,employee:director_general';
 // P6: quién lee el texto. Mientras Producto no decida, los mismos roles que ven la sección.
 const DEFAULT_READER_ROLES = DEFAULT_ACCESS_ROLES;
 
