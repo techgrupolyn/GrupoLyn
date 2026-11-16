@@ -63,6 +63,8 @@ export async function ensureCaptacionWhatsApp(pool: Consultable): Promise<void> 
     ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS presupuesto TEXT;           -- «Presupuesto formulario» al entrar en e1
     ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS remitente TEXT;             -- nombre: Ernesto, Victor…
     ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS remitente_numero_id TEXT;   -- phone_number_id del que salió
+    -- Jean (17/11/2026): el aviso sale del número general y anuncia el fijo de Netelip desde el que llamará el comercial.
+    ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS telefono_anunciado TEXT;    -- fijo anunciado al lead
     CREATE INDEX IF NOT EXISTS captacion_whatsapp_avisos_pendientes ON captacion_whatsapp_avisos(siguiente_intento) WHERE estado = 'pendiente';
     CREATE INDEX IF NOT EXISTS captacion_whatsapp_avisos_lead ON captacion_whatsapp_avisos(clickup_task_id, creado_en DESC);
 

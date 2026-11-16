@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { cambiosDeEtapa, crearClienteClickUp, firmaClickUpValida, nombreOpcion } from '../captacion-whatsapp/clickup.ts';
 import { crearEnviador, ErrorCloud, estadosDelWebhook, firmaMetaValida } from '../captacion-whatsapp/cloud-api.ts';
-import { configCaptacionDesdeEnv, dentroDeHorario, elegirRemitente, limiteInferiorPresupuesto, parseHorario, parseSoloTelefonos } from '../captacion-whatsapp/config.ts';
+import { configCaptacionDesdeEnv, dentroDeHorario, elegirRemitente, limiteInferiorPresupuesto, parseHorario, parseParametrosPlantilla, parseSoloTelefonos, valoresPlantilla } from '../captacion-whatsapp/config.ts';
 import { esLeadDePrueba, telefonoParaWhatsApp } from '../captacion-whatsapp/proceso.ts';
 
 const OPCIONES = [{ id: 'o1', name: 'e1 EN ESPERA', orderindex: 0 }, { id: 'o2', name: 'e2 CONTACTADO', orderindex: 1 }];
@@ -25,11 +25,27 @@ describe('configuración', () => {
     expect(conCloud.cloud).toMatchObject({ plantilla: 'aviso_llamada', idioma: 'es_ES', versionApi: 'v23.0' });
     // Sin número propio, cada remitente usa el común.
     expect(conCloud.remitentes).toEqual({ umbral: 100000,
-      alto: { clave: 'alto', nombre: 'Ernesto', numeroId: '123' }, base: { clave: 'base', nombre: 'Victor', numeroId: '123' } });
+      alto: { clave: 'alto', nombre: 'Ernesto', numeroId: '123', telefonoLlamada: null }, base: { clave: 'base', nombre: 'Victor', numeroId: '123', telefonoLlamada: null } });
+    expect(conCloud.cloud!.parametros).toEqual([]);
     const propios = configCaptacionDesdeEnv({ CAPTACION_WHATSAPP_ENABLED: 'true', CLICKUP_API_TOKEN: 'pk',
       CAPTACION_WHATSAPP_REMITENTE_ALTO_NUMERO_ID: 'n-ernesto', CAPTACION_WHATSAPP_REMITENTE_BASE_NOMBRE: 'Víctor' })!;
     expect(propios.remitentes.alto.numeroId).toBe('n-ernesto');
-    expect(propios.remitentes.base).toEqual({ clave: 'base', nombre: 'Víctor', numeroId: null });
+    expect(propios.remitentes.base).toEqual({ clave: 'base', nombre: 'Víctor', numeroId: null, telefonoLlamada: null });
+  });
+
+  it('plantilla con el fijo de Netelip del comercial (Jean, 17/11/2026): variables y valores por remitente', () => {
+    const c = configCaptacionDesdeEnv({ CAPTACION_WHATSAPP_ENABLED: 'true', CLICKUP_API_TOKEN: 'pk', WHATSAPP_CLOUD_TOKEN: 't',
+      WHATSAPP_CLOUD_PHONE_NUMBER_ID: '123', CAPTACION_WHATSAPP_PLANTILLA: 'aviso_solicitud_llamada_comercial',
+      CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS: 'nombre, telefono',
+      CAPTACION_WHATSAPP_REMITENTE_ALTO_TELEFONO: '+34 865 60 83 43', CAPTACION_WHATSAPP_REMITENTE_BASE_TELEFONO: '+34 865 45 61 34' })!;
+    expect(c.cloud!.parametros).toEqual(['nombre', 'telefono']);
+    expect(c.remitentes.alto).toMatchObject({ numeroId: '123', telefonoLlamada: '+34 865 60 83 43' });
+    expect(valoresPlantilla(['nombre', 'telefono'], c.remitentes.base)).toEqual(['Victor', '+34 865 45 61 34']);
+    expect(valoresPlantilla(['telefono'], c.remitentes.alto)).toEqual(['+34 865 60 83 43']);
+    expect(valoresPlantilla([], c.remitentes.alto)).toEqual([]);
+    expect(valoresPlantilla(['telefono'], { ...c.remitentes.base, telefonoLlamada: null })).toBeNull();
+    expect(parseParametrosPlantilla('')).toEqual([]);
+    expect(() => parseParametrosPlantilla('nombre, email')).toThrow(/PLANTILLA_PARAMETROS/);
   });
 
   it('remitente por presupuesto: desde 100.000 € Ernesto; por debajo o sin presupuesto, Victor', () => {
@@ -167,6 +183,13 @@ describe('Cloud API', () => {
     expect(init.headers.Authorization).toBe('Bearer EAAT');
     expect(JSON.parse(init.body)).toEqual({ messaging_product: 'whatsapp', recipient_type: 'individual', to: '34612345678', type: 'template',
       template: { name: 'aviso_llamada', language: { code: 'es_ES' } } });
+  });
+
+  it('plantilla con variables: nombre y fijo del comercial en el cuerpo, en orden', async () => {
+    const fetcher = vi.fn().mockResolvedValue(respuesta({ messages: [{ id: 'wamid.P' }] }));
+    await crearEnviador(cloud, fetcher as unknown as typeof fetch)('+34612345678', '1098', ['Victor', '+34 865 45 61 34']);
+    expect(JSON.parse(fetcher.mock.calls[0][1].body).template).toEqual({ name: 'aviso_llamada', language: { code: 'es_ES' },
+      components: [{ type: 'body', parameters: [{ type: 'text', text: 'Victor' }, { type: 'text', text: '+34 865 45 61 34' }] }] });
   });
 
   it('caída, 5xx y límites de Meta se reintentan; un error de plantilla o de destinatario no', async () => {

@@ -21,6 +21,12 @@ export type ConfigCaptacion = {
     idioma: string;
     appSecret: string | null;    // firma de los webhooks de estado (X-Hub-Signature-256)
     verifyToken: string | null;  // verificación GET del webhook en Meta
+    /**
+     * Variables del cuerpo de la plantilla, en orden ({{1}}, {{2}}…): «nombre» del comercial o «telefono» desde el que
+     * llamará. Vacío = plantilla sin variables. Jean (17/11/2026): «…{{1}}, asesor de Grupo LyN, te llamará en breve
+     * desde el número {{2}}…» → ['nombre', 'telefono'].
+     */
+    parametros: ParametroPlantilla[];
   } | null;
   /**
    * Desde qué número sale el aviso: el del comercial que llamará (Alex, 13/11/2026). Presupuesto del formulario con
@@ -52,7 +58,30 @@ export function parseSoloTelefonos(raw: string | undefined): string[] | null {
   });
 }
 
-export type Remitente = { clave: 'alto' | 'base'; nombre: string; numeroId: string | null };
+/**
+ * numeroId: phone_number_id del que sale el WhatsApp (por defecto el número general). telefonoLlamada: fijo de Netelip
+ * desde el que llamará, tal como se muestra al lead en la plantilla («+34 865 45 61 34»); null = sin configurar.
+ */
+export type Remitente = { clave: 'alto' | 'base'; nombre: string; numeroId: string | null; telefonoLlamada: string | null };
+
+export const PARAMETROS_PLANTILLA = ['nombre', 'telefono'] as const;
+export type ParametroPlantilla = typeof PARAMETROS_PLANTILLA[number];
+
+/** «nombre, telefono» → ['nombre', 'telefono']. Vacío = []. */
+export function parseParametrosPlantilla(raw: string | undefined): ParametroPlantilla[] {
+  return String(raw || '').split(',').map((p) => p.trim().toLowerCase()).filter(Boolean).map((p) => {
+    if (!(PARAMETROS_PLANTILLA as readonly string[]).includes(p)) {
+      throw new Error(`CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS: «${p}» no válido (usa ${PARAMETROS_PLANTILLA.join(', ')})`);
+    }
+    return p as ParametroPlantilla;
+  });
+}
+
+/** Valores de las variables de la plantilla para este remitente; null si falta alguno (el aviso espera). */
+export function valoresPlantilla(parametros: ParametroPlantilla[], remitente: Remitente): string[] | null {
+  const valores = parametros.map((p) => (p === 'nombre' ? remitente.nombre : remitente.telefonoLlamada));
+  return valores.every((v): v is string => Boolean(v && v.trim())) ? valores : null;
+}
 
 const minutos = (hhmm: string) => {
   const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
@@ -86,6 +115,7 @@ export function configCaptacionDesdeEnv(env: NodeJS.ProcessEnv = process.env): C
     clave,
     nombre: env[`CAPTACION_WHATSAPP_REMITENTE_${clave.toUpperCase()}_NOMBRE`]?.trim() || nombrePorDefecto,
     numeroId: env[`CAPTACION_WHATSAPP_REMITENTE_${clave.toUpperCase()}_NUMERO_ID`]?.trim() || numeroComun,
+    telefonoLlamada: env[`CAPTACION_WHATSAPP_REMITENTE_${clave.toUpperCase()}_TELEFONO`]?.trim() || null,
   });
   return {
     clickup: {
@@ -104,6 +134,7 @@ export function configCaptacionDesdeEnv(env: NodeJS.ProcessEnv = process.env): C
       idioma: env.CAPTACION_WHATSAPP_IDIOMA?.trim() || 'es_ES',
       appSecret: env.WHATSAPP_CLOUD_APP_SECRET?.trim() || null,
       verifyToken: env.WHATSAPP_CLOUD_VERIFY_TOKEN?.trim() || null,
+      parametros: parseParametrosPlantilla(env.CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS),
     } : null,
     remitentes: { umbral, alto: remitente('alto', 'Ernesto'), base: remitente('base', 'Victor') },
     horario: parseHorario(env.CAPTACION_WHATSAPP_HORARIO),

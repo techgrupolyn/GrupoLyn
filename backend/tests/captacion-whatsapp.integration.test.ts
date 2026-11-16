@@ -18,8 +18,8 @@ const ETAPA = { id: 'f-etapa', name: 'ETAPA_CRM', type: 'drop_down', type_config
 
 const config: ConfigCaptacion = {
   clickup: { token: 'pk', lista: '901211441576', campoEtapa: 'ETAPA_CRM', etapaEspera: 'e1 EN ESPERA', campoTelefono: 'contact_phone_number', campoPresupuesto: 'Presupuesto formulario', webhookSecret: 's' },
-  cloud: { token: 't', versionApi: 'v23.0', plantilla: 'aviso_llamada', idioma: 'es_ES', appSecret: 's', verifyToken: 'v' },
-  remitentes: { umbral: 100000, alto: { clave: 'alto', nombre: 'Ernesto', numeroId: 'n-ernesto' }, base: { clave: 'base', nombre: 'Victor', numeroId: 'n-victor' } },
+  cloud: { token: 't', versionApi: 'v23.0', plantilla: 'aviso_llamada', idioma: 'es_ES', appSecret: 's', verifyToken: 'v', parametros: [] },
+  remitentes: { umbral: 100000, alto: { clave: 'alto', nombre: 'Ernesto', numeroId: 'n-ernesto', telefonoLlamada: '+34 865 60 83 43' }, base: { clave: 'base', nombre: 'Victor', numeroId: 'n-victor', telefonoLlamada: '+34 865 45 61 34' } },
   horario: null,
   caducidadMinutos: 720,
   soloTelefonos: null,
@@ -93,7 +93,7 @@ describe.skipIf(!databaseUrl)('Captación · WhatsApp a leads en espera en Postg
     expect(await aplicarWebhookClickUp(pool, clickup, cambio('t1', 'h1', Date.now(), 'o2', 'o1'))).toBe(1);
     const enviar = vi.fn<Enviar>().mockResolvedValue({ wamid: 'wamid.1' });
     expect(await procesarAvisos(pool, config, enviar)).toBe(1);
-    expect(enviar).toHaveBeenCalledWith('+34612345678', 'n-victor');   // sin presupuesto: Victor
+    expect(enviar).toHaveBeenCalledWith('+34612345678', 'n-victor', []);   // sin presupuesto: Victor
     expect(await avisos('t1')).toMatchObject([{ solicitud: 'clickup:t1:h1', origen: 'webhook', estado: 'enviado', wamid: 'wamid.1', telefono_e164: '+34612345678', intentos: 1 }]);
   });
 
@@ -180,7 +180,7 @@ describe.skipIf(!databaseUrl)('Captación · WhatsApp a leads en espera en Postg
     const enviar = vi.fn<Enviar>().mockResolvedValue({ wamid: 'wamid.real' });
     await procesarAvisos(pool, config, enviar);
     expect(enviar).toHaveBeenCalledTimes(1);
-    expect(enviar).toHaveBeenCalledWith('+34612345679', 'n-victor');
+    expect(enviar).toHaveBeenCalledWith('+34612345679', 'n-victor', []);
     const porLead = Object.fromEntries((await avisos()).map((a) => [a.clickup_task_id, a]));
     expect(porLead.p1).toMatchObject({ estado: 'no_enviado', motivo: expect.stringMatching(/^prueba:/), wamid: null });
     expect(porLead.p2).toMatchObject({ estado: 'no_enviado', motivo: expect.stringMatching(/^prueba:/) });
@@ -195,7 +195,7 @@ describe.skipIf(!databaseUrl)('Captación · WhatsApp a leads en espera en Postg
     const enviar = vi.fn<Enviar>().mockResolvedValue({ wamid: 'wamid.qa' });
     await procesarAvisos(pool, { ...config, soloTelefonos: ['+34612345670'] }, enviar);
     expect(enviar).toHaveBeenCalledTimes(1);
-    expect(enviar).toHaveBeenCalledWith('+34612345670', 'n-victor');
+    expect(enviar).toHaveBeenCalledWith('+34612345670', 'n-victor', []);
     const porLead = Object.fromEntries((await avisos()).map((a) => [a.clickup_task_id, a]));
     expect(porLead.qa).toMatchObject({ estado: 'enviado', wamid: 'wamid.qa' });
     expect(porLead.lead).toMatchObject({ estado: 'no_enviado', motivo: expect.stringMatching(/^qa:/), telefono_e164: '+34612345679', wamid: null });
@@ -268,13 +268,44 @@ describe.skipIf(!databaseUrl)('Captación · WhatsApp a leads en espera en Postg
     await barrer(pool, clickup);
     const enviar = vi.fn<Enviar>().mockImplementation(async (_t, numeroId) => ({ wamid: `wamid.${numeroId}` }));
     await procesarAvisos(pool, config, enviar);
-    expect(enviar).toHaveBeenCalledWith('+34612345678', 'n-ernesto');
-    expect(enviar).toHaveBeenCalledWith('+34612345679', 'n-victor');
+    expect(enviar).toHaveBeenCalledWith('+34612345678', 'n-ernesto', []);
+    expect(enviar).toHaveBeenCalledWith('+34612345679', 'n-victor', []);
     const filas = (await pool.query('SELECT clickup_task_id, presupuesto, remitente, remitente_numero_id FROM captacion_whatsapp_avisos ORDER BY clickup_task_id')).rows;
     expect(filas).toEqual([
       { clickup_task_id: 'alto', presupuesto: '100.000 € - 200.000 €', remitente: 'Ernesto', remitente_numero_id: 'n-ernesto' },
       { clickup_task_id: 'bajo', presupuesto: '40.000 € - 100.000 €', remitente: 'Victor', remitente_numero_id: 'n-victor' },
     ]);
+  });
+
+  it('plantilla con el fijo de Netelip (Jean, 17/11/2026): sale del número general y anuncia el fijo del comercial', async () => {
+    await barrer(pool, clickup);
+    tareas.set('alto', { etapa: 'o1', telefono: '612345678', actualizada: Date.now(), presupuesto: 'Más de 200.000 €' });
+    tareas.set('bajo', { etapa: 'o1', telefono: '612345679', actualizada: Date.now(), presupuesto: 'Menos de 40.000 €' });
+    await barrer(pool, clickup);
+    const general = { numeroId: 'n-general' };
+    const conFijo: ConfigCaptacion = { ...config, cloud: { ...config.cloud!, plantilla: 'aviso_solicitud_llamada_comercial', parametros: ['nombre', 'telefono'] },
+      remitentes: { ...config.remitentes, alto: { ...config.remitentes.alto, ...general }, base: { ...config.remitentes.base, ...general } } };
+    const enviar = vi.fn<Enviar>().mockImplementation(async (t) => ({ wamid: `wamid.${t}` }));
+    await procesarAvisos(pool, conFijo, enviar);
+    expect(enviar).toHaveBeenCalledWith('+34612345678', 'n-general', ['Ernesto', '+34 865 60 83 43']);
+    expect(enviar).toHaveBeenCalledWith('+34612345679', 'n-general', ['Victor', '+34 865 45 61 34']);
+    const filas = (await pool.query('SELECT clickup_task_id, estado, plantilla, remitente, telefono_anunciado FROM captacion_whatsapp_avisos ORDER BY clickup_task_id')).rows;
+    expect(filas).toEqual([
+      { clickup_task_id: 'alto', estado: 'enviado', plantilla: 'aviso_solicitud_llamada_comercial', remitente: 'Ernesto', telefono_anunciado: '+34 865 60 83 43' },
+      { clickup_task_id: 'bajo', estado: 'enviado', plantilla: 'aviso_solicitud_llamada_comercial', remitente: 'Victor', telefono_anunciado: '+34 865 45 61 34' },
+    ]);
+  });
+
+  it('la plantilla pide el fijo y el comercial no lo tiene configurado: el aviso espera, nunca sale incompleto', async () => {
+    await barrer(pool, clickup);
+    tareas.set('sin', { etapa: 'o1', telefono: '612345678', actualizada: Date.now() });
+    await barrer(pool, clickup);
+    const sinFijo: ConfigCaptacion = { ...config, cloud: { ...config.cloud!, parametros: ['telefono'] },
+      remitentes: { ...config.remitentes, base: { ...config.remitentes.base, telefonoLlamada: null } } };
+    const enviar = vi.fn<Enviar>();
+    await procesarAvisos(pool, sinFijo, enviar);
+    expect(enviar).not.toHaveBeenCalled();
+    expect((await avisos('sin'))[0]).toMatchObject({ estado: 'pendiente', motivo: expect.stringMatching(/REMITENTE_BASE_TELEFONO/) });
   });
 
   it('remitente sin número en la Cloud API: el aviso espera, no sale de otro número', async () => {
