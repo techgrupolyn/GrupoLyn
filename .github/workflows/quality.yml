@@ -53,6 +53,9 @@ jobs:
         working-directory: backend
       - run: npm test
         working-directory: backend
+      - name: Telegram context and privacy regressions
+        run: node node_modules/tsx/dist/cli.mjs --test --test-reporter=tap telegram-context.test.ts telegram-routes.test.ts telegram-transport.test.ts telegram-access.test.ts telegram-privacy-readiness.test.ts whatsapp-reception.test.ts telegram-privacy-regression.test.ts telegram-privacy-corpus.test.ts telegram-privacy-transport-corpus.test.ts
+        working-directory: backend
       - run: npm audit --omit=dev
         working-directory: backend
 
@@ -71,6 +74,12 @@ jobs:
       - run: npm test
         working-directory: frontend
       - run: npm run build
+        working-directory: frontend
+      - name: Telegram context UI regressions
+        run: node --test tests/telegram-context-ui.test.mjs
+        working-directory: frontend
+      - name: Verify Telegram page survives production packaging
+        run: node -e "const f=require('node:fs');if(!f.readFileSync('public/telegram-context.html').equals(f.readFileSync('dist/telegram-context.html')))throw Error('Telegram HTML missing from build')"
         working-directory: frontend
       - run: npm audit --omit=dev
         working-directory: frontend

@@ -1,10 +1,12 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import {assertTelegramTransportMedia} from './telegram-ai-privacy.ts';
 
 const apiOrigin = 'https://generativelanguage.googleapis.com';
 type GeminiFile = { name: string; uri: string; state: string };
 
 export async function uploadGeminiFile(base64: string, mimeType: string, apiKey: string, signal: AbortSignal, uploadedNames: string[]): Promise<string> {
   const buffer = Buffer.from(base64, 'base64');
+  await assertTelegramTransportMedia(buffer,mimeType);
   const started = await fetch(`${apiOrigin}/upload/v1beta/files`, {
     method: 'POST', signal, redirect: 'error',
     headers: {

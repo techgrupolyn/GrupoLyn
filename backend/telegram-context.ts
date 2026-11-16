@@ -1,0 +1,72 @@
+import type {Express,Request,Response,NextFunction} from 'express';
+import {readFile} from 'node:fs/promises';import {randomUUID} from 'node:crypto';
+import {configureAiPrivacy,prepareAiPayload,withAiPrivacyScope,conversationPersonMarker} from './telegram-ai-privacy.ts';
+type PoolLike={query:(sql:string,args?:unknown[])=>Promise<{rows:any[];rowCount?:number|null}>};
+type AgentResult={text:string;provider:string;model:string;fallback:boolean};
+type Period={from?:string;to?:string};
+function period(input:any):Period{
+ const result:Period={};for(const key of ['from','to'] as const){if(input?.[key]){if(typeof input[key]!=='string'||!Number.isFinite(Date.parse(input[key])))throw Error('invalid_period');result[key]=new Date(input[key]).toISOString();}}
+ if(result.from&&result.to&&result.from>result.to)throw Error('invalid_period');return result;
+}
+type Dependencies={pool:PoolLike;admin:(req:Request,res:Response,next:NextFunction)=>void;privacyKey:string;resolveSpecialist:(id:string)=>any;callAgent:(prompt:string,model:any,system:string)=>Promise<AgentResult>};
+export function telegramPrompt(messages:any[],speaker:(m:any)=>string=m=>m.remitente){return 'Origen: Telegram. Conversación de obra. Usa solo evidencia explícita. Los marcadores sustituyen datos personales. Los adjuntos indicados como no interpretados no constituyen evidencia de su contenido.\n'+messages.map(m=>`[${new Date(m.timestamp).toISOString()}] ${speaker(m)}: ${m.texto||''}${m.tipo&&m.tipo!=='text'?' [Adjunto '+m.tipo+'; estado '+String(m.media?.state||'pendiente')+'; contenido binario no interpretado]':''}`).join('\n');}
+export async function runTelegramAgent({chatId,messages,specialist,callAgent}:{chatId:string;messages:any[];specialist:any;callAgent:Dependencies['callAgent']}){
+ if(!specialist||!messages.length)throw Error('telegram_context_unavailable');
+ return withAiPrivacyScope(chatId,async()=>{
+  const speaker=(m:any)=>m.autor_tipo==='cliente'&&m.cliente_id?'Cliente '+conversationPersonMarker(String(m.cliente_id)):m.autor_tipo==='equipo'&&m.empleado_id?'Equipo LYN '+conversationPersonMarker(String(m.empleado_id)):m.autor_tipo==='no_identificado'?'Autor no identificado':m.remitente;
+  const safe=await prepareAiPayload({prompt:telegramPrompt(messages,speaker),systemInstruction:String(specialist.system_prompt)},'context-prepared',String(specialist.modelo));
+  const result=await callAgent(safe.prompt,specialist.modelo,safe.systemInstruction);
+  if(result.fallback||result.provider!=='gemini'||!result.text.trim())throw Error('telegram_agent_not_verified');return{...result,source:'Telegram'};
+ });
+}
+export function registerTelegramContextRoutes(app:Express,deps:Dependencies){
+ const {pool}=deps;
+ configureAiPrivacy({enabled:()=>true,secret:deps.privacyKey,loadPeople:async()=>{
+  const rows=(await pool.query("select id,nombre,apellido from clientes where activo union all select id,nombre,apellido from empleados where activo")).rows;
+  return rows.map(p=>({id:p.id,name:[p.nombre,p.apellido].filter(Boolean).join(' '),aliases:[p.nombre,p.apellido].filter(Boolean)}));
+ },audit:async r=>{await pool.query('insert into telegram_ai_egress(id,scope_hash,provider,model,payload,payload_sha256) values($1,$2,$3,$4,$5,$6)',[r.id,r.scopeHash,r.provider,r.model,JSON.stringify(r.payload),r.payloadHash]);}});
+ const enabled=(_req:Request,res:Response,next:NextFunction)=>{if(!deps.privacyKey||deps.privacyKey.length<32){res.status(503).json({error:'telegram_privacy_configuration_required'});return;}res.setHeader('Cache-Control','no-store');next();};
+ app.get('/api/telegram/context/specialists',deps.admin,enabled,async(_req,res)=>{try{
+  const configured=(await pool.query('select id,nombre from especialistas where activo order by nombre,id')).rows;
+  res.json({specialists:configured.filter(s=>deps.resolveSpecialist(s.id)).map(s=>({id:s.id,name:s.nombre}))});
+ }catch{res.status(503).json({error:'telegram_specialists_unavailable'});}});
+ app.get('/api/telegram/context/conversations',deps.admin,enabled,async(req,res)=>{try{
+  const project=String(req.query.projectId||''),client=String(req.query.clientId||'');
+  const rows=(await pool.query(`select m.chat_id,m.proyecto_id,p.nombre project_name,m.cliente_id,c.nombre client_name,'Telegram' source,count(*)::int message_count,max(m.timestamp) last_message_at
+   from mensajes m join proyectos p on p.id=m.proyecto_id left join clientes c on c.id=m.cliente_id
+   join telegram_ingestion_targets t on t.bot_id=m.telegram_bot_id and t.chat_id=m.telegram_chat_id and t.proyecto_id=m.proyecto_id
+   where m.canal='telegram' and t.enabled and t.is_test and p.activo and ($1='' or m.proyecto_id=$1) and ($2='' or m.cliente_id=$2)
+   group by m.chat_id,m.proyecto_id,p.nombre,m.cliente_id,c.nombre order by last_message_at desc limit 100`,[project,client])).rows;res.json({source:'Telegram',testOnly:true,conversations:rows});
+ }catch{res.status(503).json({error:'telegram_context_unavailable'});}});
+ async function messages(chatId:string,limit=101,before?:{timestamp:string;id:string},range:Period={}){return(await pool.query(`select m.id,m.chat_id,m.proyecto_id,m.remitente,m.autor_tipo,m.cliente_id,m.empleado_id,m.texto,m.timestamp,m.tipo,m.media,'Telegram' source
+  from mensajes m join telegram_ingestion_targets t on t.bot_id=m.telegram_bot_id and t.chat_id=m.telegram_chat_id and t.proyecto_id=m.proyecto_id
+  join proyectos p on p.id=m.proyecto_id and p.activo
+  where m.chat_id=$1 and m.canal='telegram' and t.enabled and t.is_test
+   and ($3::timestamptz is null or (m.timestamp,m.id)<($3::timestamptz,$4::text))
+   and ($5::timestamptz is null or m.timestamp >= $5::timestamptz) and ($6::timestamptz is null or m.timestamp <= $6::timestamptz)
+  order by m.timestamp desc,m.id desc limit $2`,[chatId,limit,before?.timestamp||null,before?.id||'',range.from||null,range.to||null])).rows.reverse();}
+ app.get('/api/telegram/context/messages',deps.admin,enabled,async(req,res)=>{try{
+  let before:{timestamp:string;id:string}|undefined,range:Period;try{range=period(req.query);}catch{res.status(400).json({error:'invalid_period'});return;}
+  if(req.query.before){try{before=JSON.parse(Buffer.from(String(req.query.before),'base64url').toString());if(!before||!Number.isFinite(Date.parse(before.timestamp))||typeof before.id!=='string'||before.id.length>512)throw Error();}catch{res.status(400).json({error:'invalid_message_cursor'});return;}}
+  const rows=await messages(String(req.query.chatId||''),101,before,range),hasMore=rows.length>100,page=hasMore?rows.slice(1):rows;
+  res.json({source:'Telegram',messages:page,period:range,hasMore,nextCursor:hasMore?Buffer.from(JSON.stringify({timestamp:page[0].timestamp,id:page[0].id})).toString('base64url'):null});
+ }catch{res.status(503).json({error:'telegram_context_unavailable'});}});
+ app.get('/api/telegram/context/attachment/:id',deps.admin,enabled,async(req,res)=>{try{
+  const row=(await pool.query(`select m.media from mensajes m join telegram_ingestion_targets t on t.bot_id=m.telegram_bot_id and t.chat_id=m.telegram_chat_id and t.proyecto_id=m.proyecto_id
+   join proyectos p on p.id=m.proyecto_id and p.activo
+   where m.id=$1 and m.canal='telegram' and t.enabled and t.is_test limit 1`,[String(req.params.id)])).rows[0],hash=row?.media?.storage_sha256;
+  if(!/^[a-f0-9]{64}$/u.test(hash||'')){res.status(404).end();return;}
+  const bytes=await readFile('/var/lib/club-telegram-central/attachments/'+hash);res.setHeader('Content-Type','application/octet-stream');res.setHeader('Content-Disposition','attachment; filename="adjunto-telegram"');res.setHeader('X-Content-Type-Options','nosniff');res.send(bytes);
+ }catch{res.status(404).end();}});
+ app.post('/api/telegram/context/analyze',deps.admin,enabled,async(req,res)=>{try{
+  const chatId=String(req.body?.chatId||''),specialist=deps.resolveSpecialist(String(req.body?.specialistId||'general'));if(!specialist){res.status(400).json({error:'existing_specialist_required'});return;}
+  const current=(await pool.query('select id from especialistas where id=$1 and activo',[specialist.id])).rows;
+  if(!current.some(s=>s.id===specialist.id)){res.status(400).json({error:'existing_specialist_required'});return;}
+  let range:Period;try{range=period(req.body);}catch{res.status(400).json({error:'invalid_period'});return;}
+  const text=await messages(chatId,1001,undefined,range);if(text.length>1000){res.status(422).json({error:'telegram_context_too_large',limit:1000});return;}
+  if(!text.some(m=>typeof m.texto==='string'&&m.texto.trim())){res.status(422).json({error:'telegram_text_required'});return;}
+  const result=await runTelegramAgent({chatId,messages:text,specialist,callAgent:deps.callAgent}),id=randomUUID();
+  const context={...range,messageCount:text.length,messageIds:text.map(m=>m.id)};
+  await pool.query('insert into telegram_agent_runs(id,chat_id,proyecto_id,specialist_id,source,output,provider,model,context) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)',[id,chatId,text[0].proyecto_id,specialist.id,'Telegram',result.text,result.provider,result.model,JSON.stringify(context)]);res.json({id,...result,messageCount:text.length,period:range});
+ }catch{res.status(503).json({error:'telegram_analysis_unavailable'});}});
+}
