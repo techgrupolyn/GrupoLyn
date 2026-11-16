@@ -37,23 +37,35 @@ export function isConsultationOnlyCeoUser(user) {
   return String(user?.rol || '').toLowerCase() === 'consulta_publica';
 }
 
+// Superadmin y admin que entran con el directorio de Supabase: el backend los trata como administradores (CAL-09).
+const DIRECTORY_ADMIN_ROLES = ['employee:superadmin', 'employee:admin'];
+
 export function isMeetingLimitedCeoUser(user) {
   const role = String(user?.rol || '').trim().toLowerCase();
-  return role.startsWith('employee:') && !['employee:director', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(role);
+  return role.startsWith('employee:') && ![...DIRECTORY_ADMIN_ROLES, 'employee:director', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(role);
 }
 
 export function isMeetingEditorCeoUser(user) {
   const role = String(user?.rol || '').trim().toLowerCase();
-  return ['superadmin', 'admin', 'ceo', 'employee:director', 'employee:delineante', 'employee:pmc_proyectos', 'employee:jefe_de_proyectos', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(role);
+  return ['superadmin', 'admin', 'ceo', ...DIRECTORY_ADMIN_ROLES, 'employee:director', 'employee:delineante', 'employee:pmc_proyectos', 'employee:jefe_de_proyectos', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(role);
 }
 
 // Netelip › Historial de llamadas: solo dirección y administración (pedido de Alejandro Yepez, 14/10/2026).
 // Debe coincidir con NETELIP_ACCESS_ROLES del backend (backend/netelip/routes.ts).
-export const NETELIP_ACCESS_ROLES = ['superadmin', 'admin', 'employee:director', 'employee:director_general'];
+export const NETELIP_ACCESS_ROLES = ['superadmin', 'admin', ...DIRECTORY_ADMIN_ROLES, 'employee:director', 'employee:director_general'];
 
 export function canAccessNetelipCalls(user) {
   const role = String(user?.rol || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');
   return NETELIP_ACCESS_ROLES.includes(role);
+}
+
+// Panel de marketing: Dirección (épico 869fny1et). Debe coincidir con MARKETING_ACCESS_ROLES del backend
+// (backend/marketing/routes.ts) si no se cambia por entorno.
+export const MARKETING_ACCESS_ROLES = ['superadmin', 'employee:superadmin', 'admin', 'ceo', 'employee:director', 'employee:director_general'];
+
+export function canAccessMarketing(user) {
+  const role = String(user?.rol || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');
+  return MARKETING_ACCESS_ROLES.includes(role);
 }
 
 export function CeoLogin({ onSubmit, submitting = false, error = '' }) {

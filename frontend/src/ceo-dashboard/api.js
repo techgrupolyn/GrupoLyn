@@ -157,6 +157,14 @@ export const api = {
     status: (id) => request(`/whatsapp-accounts/${encodeURIComponent(id)}/status`),
     update: (id, payload) => request(/whatsapp-accounts/, { method: 'PATCH', body: JSON.stringify(payload) }),
   },
+  // Panel de marketing (869fny1et).
+  marketing: {
+    panel: () => request('/marketing/panel'),
+    saveWeights: (body) => request('/marketing/ponderaciones', { method: 'PUT', body: JSON.stringify(body) }),
+    rules: () => request('/marketing/reglas'),
+    saveRules: (body) => request('/marketing/reglas', { method: 'PUT', body: JSON.stringify(body) }),
+    load: (fuentes) => request('/marketing/cargar', { method: 'POST', body: JSON.stringify(fuentes ? { fuentes } : {}) }),
+  },
   netelip: {
     calls: (query) => request(`/netelip/calls?${query}`),
     call: (id) => request(`/netelip/calls/${encodeURIComponent(id)}`),

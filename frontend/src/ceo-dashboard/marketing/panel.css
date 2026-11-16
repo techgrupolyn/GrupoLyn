@@ -1,0 +1,145 @@
+/* Panel de marketing (869fny1et). Basado en el mockup de Producto del 10/11/2026, con el tema oscuro del
+   Dashboard. Todo va bajo .mk para no afectar al resto de vistas. */
+.mk{
+  --bg:#0D0D0D;--panel:#141414;--panel2:#1B1B1B;--line:#2E2E2E;--grid:#222222;
+  --text:#F2F2F2;--muted:#BFBFBF;--faint:#737373;--accent:#7aa7ff;--accentw:#1b2742;
+  --ok:#4ade80;--bad:#f87171;--warn:#fbbf24;--warnw:#3a2e10;--tipbg:#F2F2F2;--tiptx:#141414;
+  color:var(--text);font-size:13px;line-height:1.45;
+}
+.mk *{box-sizing:border-box}
+.mk button{font:inherit;color:inherit}
+.mk .top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.mk .top h2{font-size:15px;font-weight:650;margin:0}
+.mk .badge{display:inline-block;margin-left:8px;padding:1px 8px;border-radius:999px;background:var(--warnw);color:var(--warn);font-size:11px;font-weight:600;vertical-align:2px}
+.mk .top .sub{margin:2px 0 0;color:var(--faint);font-size:12px}
+.mk .tc{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mk .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
+.mk .seg button{border:0;background:transparent;padding:5px 11px;cursor:pointer;color:var(--muted)}
+.mk .seg button+button{border-left:1px solid var(--line)}
+.mk .seg button[aria-pressed="true"]{background:var(--accentw);color:var(--accent);font-weight:600}
+.mk .seg button:disabled{cursor:not-allowed;opacity:.5}
+.mk .ghost{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:5px 10px;cursor:pointer;color:var(--muted)}
+.mk .ghost:hover{color:var(--text)}
+.mk .ghost:disabled{opacity:.5;cursor:wait}
+.mk .tabs{display:flex;gap:2px;padding:0 16px;background:var(--panel);border-bottom:1px solid var(--line);overflow-x:auto}
+.mk .tabs button{border:0;background:none;padding:10px 12px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;white-space:nowrap}
+.mk .tabs button[aria-selected="true"]{color:var(--text);border-bottom-color:var(--accent);font-weight:600}
+.mk .layout{display:grid;grid-template-columns:300px minmax(0,1fr)}
+.mk .side{background:var(--panel);border-right:1px solid var(--line);padding:14px 12px;align-self:start;position:sticky;top:64px;max-height:calc(100vh - 64px);overflow:auto}
+.mk .layout.noside{grid-template-columns:minmax(0,1fr)}
+.mk .layout.noside .side{display:none}
+.mk .sideh{font-size:11px;font-weight:650;color:var(--faint);text-transform:uppercase;letter-spacing:.04em;margin:12px 4px 6px}
+.mk .sideh:first-child{margin-top:0}
+.mk .shortcuts{display:flex;flex-wrap:wrap;gap:4px}
+.mk .chip{border:1px solid var(--line);background:var(--panel2);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:12px}
+.mk .chip:hover{border-color:var(--accent);color:var(--accent)}
+.mk .hint{color:var(--faint);font-size:11.5px;margin:6px 4px 0}
+.mk .tree{font-size:12.5px}
+.mk .tn{display:flex;align-items:center;gap:5px;padding:2px 4px;border-radius:6px;min-height:24px}
+.mk .tn:hover{background:var(--panel2)}
+.mk .chev{width:16px;height:16px;border:0;background:none;padding:0;cursor:pointer;color:var(--faint);font-size:11px;line-height:16px;flex:none}
+.mk .chev-sp{width:16px;flex:none}
+.mk .cb{width:15px;height:15px;border-radius:4px;border:1.5px solid var(--faint);background:var(--panel);padding:0;cursor:pointer;display:inline-grid;place-items:center;flex:none}
+.mk .cb svg{width:11px;height:11px}
+.mk .cb.on,.mk .cb.mixed{background:var(--accent);border-color:var(--accent);color:#0D0D0D}
+.mk .cb.inh{background:var(--accentw);border-color:var(--accent);color:var(--accent)}
+.mk .tl{cursor:pointer;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mk .tl.excl{text-decoration:line-through;color:var(--faint)}
+.mk .tl.lvl0{font-weight:600}
+.mk .tn.all .tl{color:var(--faint);font-size:11.5px}
+.mk .adid{font:10.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--faint);flex:none}
+.mk .exl{display:flex;flex-wrap:wrap;gap:4px;margin:6px 4px 0}
+.mk .exl span{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:11px;color:var(--muted)}
+.mk .linkbtn{border:0;background:none;color:var(--accent);cursor:pointer;padding:0;font-size:12px}
+.mk select,.mk input[type=number],.mk input[type=text]{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:4px 8px}
+.mk input[type=number]{width:78px}
+.mk .field{display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--faint)}
+.mk .chk{display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px;color:var(--text)}
+.mk .main{padding:18px 22px 40px;min-width:0}
+.mk .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+.mk .card h3.t{font-size:16px;margin:0;font-weight:650}
+.mk .card .cs{color:var(--faint);font-size:12px;margin:2px 0 12px}
+.mk .ctrls{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px 18px;margin-bottom:12px}
+.mk .legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--muted);margin:4px 0 6px}
+.mk .legend .it{display:inline-flex;align-items:center;gap:6px}
+.mk .legend .it b{color:var(--text);font-weight:600}
+.mk .lg-sw{width:12px;height:12px;border-radius:3px;display:inline-block}
+.mk .chart{display:block;overflow:visible}
+.mk .chart text{font-family:inherit}
+.mk .chart .blk{font-size:12.5px;font-weight:650;fill:var(--text)}
+.mk .chart .blks{font-size:11px;fill:var(--faint)}
+.mk .chart .ylab,.mk .chart .xlab{font-size:11px;fill:var(--muted)}
+.mk .chart .xsub{font-size:10px;fill:var(--faint)}
+.mk .chart .xsub2{font-size:10px;fill:var(--muted);font-variant-numeric:tabular-nums}
+.mk .chart .grid{stroke:var(--grid)}
+.mk .chart .zero{stroke:var(--faint)}
+.mk .chart .sep{stroke:var(--faint);stroke-dasharray:4 4}
+.mk .chart .plab{font-size:10.5px;font-weight:650;fill:var(--text);font-variant-numeric:tabular-nums}
+.mk .chart .tot{font-size:10.5px;fill:var(--muted);font-variant-numeric:tabular-nums}
+.mk .chart .refl{font-size:10.5px;fill:var(--muted)}
+.mk .chart .hl{stroke:var(--faint);stroke-width:1;stroke-dasharray:2 3}
+.mk .chart .band{fill:transparent;cursor:pointer}
+.mk .chart .bar{cursor:pointer}
+.mk .chart .empty{font-size:12px;fill:var(--faint)}
+.mk table.dt{border-collapse:collapse;width:100%;font-size:12px;font-variant-numeric:tabular-nums}
+.mk table.dt th{font-weight:600;color:var(--faint);text-align:right;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.mk table.dt th:first-child,.mk table.dt td:first-child{text-align:left}
+.mk table.dt td{padding:5px 8px;border-bottom:1px solid var(--grid);text-align:right;white-space:nowrap}
+.mk table.dt tr.tot td{font-weight:650;border-top:1px solid var(--line)}
+.mk table.dt td.gap,.mk table.dt th.gap{width:10px;padding:0;border-bottom:0}
+.mk .est{font-style:italic;color:var(--muted)}
+.mk .mb{height:4px;border-radius:2px;background:var(--panel2);margin-top:3px;overflow:hidden}
+.mk .mb i{display:block;height:100%;border-radius:2px}
+.mk .rowlab{display:flex;flex-direction:column}
+.mk .rowlab small{color:var(--faint);font-size:10.5px}
+.mk .swl{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:0}
+.mk details.fig{margin-top:10px}
+.mk details.fig summary{cursor:pointer;color:var(--faint);font-size:12.5px}
+.mk .detail{margin-top:10px;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.mk .detail h4{font-size:13px;margin:0 0 6px}
+.mk .muted{color:var(--faint)}
+.mk .note{font-size:12px;color:var(--faint);margin:2px 0 8px}
+.mk .warnbox{border:1px solid var(--warn);color:var(--warn);background:var(--warnw);border-radius:8px;padding:6px 10px;font-size:12px;margin:6px 0}
+.mk .tip{position:fixed;z-index:60;background:var(--tipbg);color:var(--tiptx);padding:8px 10px;border-radius:8px;font-size:12px;pointer-events:none;max-width:340px;box-shadow:0 6px 18px rgba(0,0,0,.35)}
+.mk .tip table{border-collapse:collapse}
+.mk .tip td{padding:1px 6px 1px 0;white-space:nowrap}
+.mk .tip td.n{text-align:right;font-variant-numeric:tabular-nums}
+.mk .tip .h{font-weight:650;margin-bottom:3px}
+.mk dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);padding:18px 20px;max-width:min(860px,94vw)}
+.mk dialog::backdrop{background:rgba(0,0,0,.6)}
+.mk dialog h4{margin:0 0 4px;font-size:15px}
+.mk .dlgf{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;align-items:center}
+.mk .primary{border:1px solid var(--accent);background:var(--accent);color:#0D0D0D;border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600}
+.mk .primary:disabled{opacity:.5;cursor:wait}
+.mk .datos h4{font-size:14px;margin:16px 0 6px}
+.mk .datos ul{margin:4px 0;padding-left:20px}
+.mk .datos li{margin:4px 0}
+.mk .ok{color:var(--ok)}.mk .bad{color:var(--bad)}
+@media (max-width:900px){
+  .mk .layout{grid-template-columns:1fr}
+  .mk .side{position:static;max-height:none;border-right:0;border-bottom:1px solid var(--line)}
+  .mk .main{padding:14px 16px 32px}
+  .mk .card{padding:14px}
+}
+/* Tema claro del mockup (botón «Tema»). */
+.mk[data-theme="light"]{
+  --bg:#f5f6f8;--panel:#ffffff;--panel2:#f0f2f5;--line:#e1e4e9;--grid:#eceef2;
+  --text:#15181d;--muted:#596273;--faint:#8b93a1;--accent:#2563eb;--accentw:#e8efff;
+  --ok:#15803d;--bad:#dc2626;--warn:#a16207;--warnw:#fef3c7;--tipbg:#15181d;--tiptx:#f3f4f6;
+  background:var(--bg);
+}
+.mk[data-theme="light"] .cb.on,.mk[data-theme="light"] .cb.mixed,.mk[data-theme="light"] .primary{color:#fff}
+/* Notas «Especificación de Alex y dudas», prueba de Alex y pestaña de notas, como el mockup. */
+.mk details.notes{border:1px dashed var(--line);border-radius:8px;padding:8px 12px;margin-top:12px;background:var(--panel2)}
+.mk details.notes summary{cursor:pointer;font-weight:600;font-size:12.5px}
+.mk details.notes ul{margin:8px 0 2px;padding-left:18px}
+.mk details.notes li{margin:3px 0}
+.mk details.notes .q{color:var(--warn)}
+.mk .testbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px}
+.mk .res{font-size:12px;margin:0 0 10px;padding-left:18px}
+.mk .res li{margin:2px 0}
+.mk .notas h4{font-size:14px;margin:16px 0 6px}
+.mk .notas ul{margin:4px 0;padding-left:20px}
+.mk .notas li{margin:4px 0}
+/* La información emergente no hereda los estilos de tabla del Dashboard (fondo y texto oscuros). */
+.mk .tip table,.mk .tip tr,.mk .tip td{background:transparent;color:inherit;border:0}

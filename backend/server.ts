@@ -28,6 +28,7 @@ import { ensureDashboardOperations, registerDashboardOperations } from './dashbo
 import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
 import { createReunionesWorkers, ensureReunionesMeet } from './reuniones-meet/index.ts';
 import { createCaptacionWhatsApp, ensureCaptacionWhatsApp, registrarApiCaptacion } from './captacion-whatsapp/index.ts';
+import { createMarketingWorker, ensureMarketing, registerMarketing } from './marketing/index.ts';
 import { idCarpetaDrive } from './netelip/entrenador/drive.ts';
 import { ensureProjectMeetingSchema, registerProjectMeetingRoutes, refreshProjectMeetings, syncProjectMeeting } from './meeting-project-workflow.ts';
 import { exactActionProject, reconcileMeetingActionProjects } from './meeting-project-linking.ts';
@@ -1044,6 +1045,7 @@ async function ensureDatabaseSchema(): Promise<void> {
   await ensureNetelipCalls(pool);
   await ensureReunionesMeet(pool);
   await ensureCaptacionWhatsApp(pool);
+  await ensureMarketing(pool);
   await ensureWhatsAppReliability(pool);
   await pool.query(
     `INSERT INTO usuarios (usuario, contraseña, password_hash, nombre, rol)
@@ -1239,7 +1241,8 @@ function requireCeoAuth(req: Request, res: Response, next: NextFunction): void {
 
 export function isCeoAdministratorRole(role: unknown): boolean {
   const normalized = String(role || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');
-  return ['superadmin', 'admin', 'ceo', 'employee:director', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(normalized);
+  // employee:superadmin / employee:admin: los roles superadmin y admin del directorio de Supabase (CAL-09).
+  return ['superadmin', 'admin', 'ceo', 'employee:superadmin', 'employee:admin', 'employee:director', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(normalized);
 }
 
 export function isCeoMeetingAccessRole(role: unknown): boolean {
@@ -8909,6 +8912,7 @@ async function bootstrap() {
   if (process.env.NETELIP_WORKERS_ENABLED !== 'false') netelipWorkers.start();
   reunionesWorkers.start();
   captacionWhatsApp.start();
+  marketingWorker.start();
   if (EVOLUTION_BACKGROUND_SYNC_ENABLED) await bootEvolution();
 }
 
@@ -9099,6 +9103,16 @@ registerNetelipCalls(app, {
   entrenadorDrive: ENTRENADOR_DRIVE_CARPETA && ENTRENADOR_DRIVE_CUENTA ? { carpetaId: ENTRENADOR_DRIVE_CARPETA, token: entrenadorDriveToken } : null,
 });
 registrarApiCaptacion(app, { pool, admin: requireCeoAuth });
+// Panel de marketing (869fny1et): gasto de Windsor + leads agregados de ClickUp + nota del calificador.
+const marketingWorker = createMarketingWorker(pool, process.env);
+registerMarketing(app, {
+  pool, admin: requireCeoAuth,
+  role: (res) => String((res.locals.ceoSession as CeoSession | undefined)?.rol || ''),
+  fail: (res, error) => {
+    console.error('[marketing] Error en la API:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudo completar la operación del panel de marketing.' });
+  },
+});
 registerDashboardOperations(app, {
   pool, admin: requireCeoAuth, actor: meetingAuditActor, identity: meetingAuditIdentity,
   audit: setMeetingAuditContext, publish, onLeadSaved: netelipWorkers.relink,
