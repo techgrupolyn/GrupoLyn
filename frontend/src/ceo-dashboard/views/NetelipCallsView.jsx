@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ArrowDownLeft, ArrowUpRight, MessageCircle } from 'lucide-react';
 import api from '../api';
+import CallAudioPlayer from './CallAudioPlayer';
 import CallEvaluationPanel, { EvaluationBadge } from './CallEvaluationPanel';
 import { ObjectionsPanel, SalespeoplePanel } from './CalificadorPanels';
 import EntrenadorPanel from './EntrenadorPanel';
@@ -90,6 +91,8 @@ function CallDrawer({ detail, loading, error, onClose, onOpenContact }) {
         <dl className="grid grid-cols-2 gap-3 rounded-md border border-[#2E2E2E] bg-[#141414] p-4 text-xs">
           {[['Teléfono', call.contact_status === 'hidden' ? 'Número oculto' : formatPhone(call.phone)], ['Dirección', <DirectionCell key="d" call={call} />], ['Agente', call.agent ? call.agent.name || `Extensión ${call.agent.extension}` : '—'], ['Fecha', formatMadridDateTime(call.occurred_at)], ['Duración', formatDuration(call.duration_seconds)], ['Resultado', CALL_RESULT_LABEL[call.result] || call.result || '—'], ['Canal', call.via === 'whatsapp' ? 'WhatsApp' : 'Teléfono (Netelip)']].map(([label, value]) => <div key={label}><dt className="font-mono text-[10px] uppercase tracking-[.12em] text-[#737373]">{label}</dt><dd className="mt-1 text-[#F2F2F2]">{value}</dd></div>)}
         </dl>
+        {/* key: al abrir otra llamada el reproductor se desmonta y el audio anterior se detiene. */}
+        <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Grabación</h3><CallAudioPlayer key={call.id} call={call} transcriptionAccess={detail.transcription_access} /></section>
         <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Evaluación del comercial</h3><CallEvaluationPanel callId={call.id} transcriptionStatus={call.transcription_status} /></section>
         <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Transcripción</h3><TranscriptionPanel detail={detail} /></section>
       </>}
