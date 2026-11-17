@@ -102,10 +102,13 @@ jobs:
         working-directory: evolution-api
       - run: npm run build
         working-directory: evolution-api
-      - run: node --test scripts/tests/dependency-compatibility.test.mjs
       - run: node --test scripts/tests/webhook-batches.test.mjs
       - run: node --test scripts/tests/history-recovery.test.mjs
       - run: node scripts/check-dashboard.cjs
+      - name: Remove build-only tools before runtime compatibility checks
+        run: npm prune --omit=dev --ignore-scripts
+        working-directory: evolution-api
+      - run: node --test scripts/tests/dependency-compatibility.test.mjs
       - run: npm audit --omit=dev
         working-directory: evolution-api
 
