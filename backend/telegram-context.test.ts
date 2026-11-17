@@ -29,7 +29,12 @@ test('Telegram evidence rules reach the existing agent through the audited syste
  assert.ok(!sentPrompt.includes('suministro e instalación'),'No scope is inserted into the quoted source');
  assert.ok(sentSystem.includes(specialist.system_prompt),'Existing specialist is retained');
  for(const rule of ['presupuesto aprobado','aprobación del presupuesto no consta','cobro acreditado','fecha límite contractual','ejecución no confirmada','no determinable con la evidencia disponible','no consta / no confirmado','NO traslades una fecha de entrega','fecha de instalación no consta','Conserva el alcance literal','Las mismas restricciones se aplican a riesgos','fragmento literal enmascarado'])assert.ok(sentSystem.includes(rule),rule);
- assert.ok(sentSystem.includes('telegram-evidence-v3'));
+ assert.ok(sentSystem.includes('telegram-evidence-v4'));
+ assert.ok(sentSystem.includes('Fuera del fragmento literal no reformules las partidas del presupuesto'),'Budget scope is not rewritten in a second factual summary');
+ assert.ok(sentSystem.includes('no lo conviertas en una condición de entrega'),'An installation prerequisite is not transferred to delivery');
+ assert.ok(sentSystem.includes('Un adjunto de contenido desconocido NO es el plano mencionado'),'An unknown binary is not identified as the missing plan');
+ assert.ok(sentSystem.includes('la falta de contrato exonera'),'Missing contract does not exempt a party from liability');
+ assert.ok(sentSystem.indexOf('CONTRATO DE RESPUESTA:')>sentSystem.indexOf(specialist.system_prompt),'The Telegram format overrides conflicting specialist templates without editing their stored configuration');
  assert.equal(audits.at(-1).payload.systemInstruction,sentSystem,'The policy uses the same privacy audit as the final instruction');
 });
 test('untrusted transcript directives cannot replace the system evidence policy or affect another conversation',async()=>{
@@ -48,6 +53,6 @@ test('names in the specialist instruction remain masked after adding the Telegra
  configure();let sentSystem='';
  await runTelegramAgent({chatId:'telegram:policy-privacy',messages:[{timestamp:'2026-11-17T15:28:43Z',remitente:'Equipo',texto:'Presupuesto presentado, sin estado de ejecución confirmado.'}],specialist:{id:'general',modelo:'flash',system_prompt:'Persona Ficticia: revisa el presupuesto.'},callAgent:async(_prompt,_model,system)=>{sentSystem=system;return{text:'Salida ficticia',provider:'gemini',model:'fixture',fallback:false};}});
  assert.ok(!sentSystem.includes('Persona Ficticia'));
- assert.ok(sentSystem.includes('telegram-evidence-v3'));
+ assert.ok(sentSystem.includes('telegram-evidence-v4'));
  assert.equal(audits.at(-1).payload.systemInstruction,sentSystem);
 });
