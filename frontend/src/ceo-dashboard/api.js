@@ -169,6 +169,8 @@ export const api = {
     calls: (query) => request(`/netelip/calls?${query}`),
     call: (id) => request(`/netelip/calls/${encodeURIComponent(id)}`),
     filterOptions: () => request('/netelip/calls/filter-options'),
+    // Audio de la llamada grabada (1an2gnpzyp7): llega con la sesión y se reproduce desde una URL blob: local.
+    audio: (id) => requestBlob(`/netelip/calls/${encodeURIComponent(id)}/audio`),
     // Calificador interno de llamadas (869e9y98n).
     evaluation: (id) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion`),
     addEvaluationFeedback: (id, texto) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion/feedback`, { method: 'POST', body: JSON.stringify({ texto }) }),

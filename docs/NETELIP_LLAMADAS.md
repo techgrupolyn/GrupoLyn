@@ -59,6 +59,15 @@ Hasta ahora solo existían en el Historial las llamadas **grabadas**. Con `NETEL
 
 **Esquema:** aditivo. `netelip_calls.audio_ref` admite NULL, hay dos columnas nuevas en `netelip_calls` (`event_uniqueid` y `resultado`) y una tabla nueva, `netelip_call_events`.
 
+## Escuchar la llamada grabada
+
+En la ventana de la transcripción del Historial, la sección **Grabación** tiene el botón **Reproducir audio** (ticket 1an2gnpzyp7).
+
+- **Quién:** los mismos roles que leen la transcripción (`NETELIP_TRANSCRIPT_READER_ROLES`).
+- **Cómo:** `GET /api/netelip/calls/:id/audio` descarga el fichero de vDrive en el servidor (`NETELIP_VDRIVE_*`) y lo entrega con la sesión y `Cache-Control: private, no-store`. El navegador lo reproduce desde una URL `blob:` local: ni las credenciales de vDrive ni la ruta del fichero llegan al navegador, y no hay ningún enlace público.
+- **Grabación no disponible:** llamadas sin grabar (no contestadas o fuera de API Voice), de WhatsApp, con el audio borrado por supresión o retención, o si vDrive no tiene el fichero o no está configurado.
+- Al cerrar la ventana o abrir otra llamada, el audio se detiene.
+
 ## Variables (`/etc/lyn/backend.env`)
 
 | Variable | Valor en producción |
