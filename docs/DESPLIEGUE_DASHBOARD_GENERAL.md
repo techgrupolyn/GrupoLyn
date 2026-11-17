@@ -50,6 +50,8 @@ El último SHA debe coincidir con el merge aprobado y con sus checks. Si hay cam
 
 ## 3. Desplegar
 
+Las herramientas de compilación, incluido `tsup`, son dependencias de desarrollo. El despliegue completo instala el lockfile, compila y retira esas herramientas antes de iniciar el servicio. La imagen Docker también elimina las dependencias de desarrollo después de compilar. Para recompilar, usa una copia de compilación con `npm ci`; una instalación de producción depurada no incluye el compilador. Los scripts históricos de compilación incremental que exigen esas herramientas deben ejecutarse solo cuando sus precondiciones y la versión esperada se cumplan.
+
 ```bash
 sudo bash /opt/lyn/deploy/scripts/preflight.sh
 sudo bash /opt/lyn/deploy/scripts/deploy.sh
