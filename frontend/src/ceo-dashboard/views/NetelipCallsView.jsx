@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowDownLeft, ArrowUpRight, MessageCircle } from 'lucide-react';
 import api from '../api';
 import CallEvaluationPanel, { EvaluationBadge } from './CallEvaluationPanel';
+import DecisionPasePanel from './DecisionPasePanel';
 import { ObjectionsPanel, SalespeoplePanel } from './CalificadorPanels';
 import EntrenadorPanel from './EntrenadorPanel';
 import { callListQuery, clearCallFilters, DEFAULT_CALL_FILTERS, formatDuration, formatMadridDateTime, formatOffset, formatPhone, readCallFilters, writeCallFilters, CALL_RESULT_LABEL } from '../netelipFormat';
@@ -91,6 +92,7 @@ function CallDrawer({ detail, loading, error, onClose, onOpenContact }) {
           {[['Teléfono', call.contact_status === 'hidden' ? 'Número oculto' : formatPhone(call.phone)], ['Dirección', <DirectionCell key="d" call={call} />], ['Agente', call.agent ? call.agent.name || `Extensión ${call.agent.extension}` : '—'], ['Fecha', formatMadridDateTime(call.occurred_at)], ['Duración', formatDuration(call.duration_seconds)], ['Resultado', CALL_RESULT_LABEL[call.result] || call.result || '—'], ['Canal', call.via === 'whatsapp' ? 'WhatsApp' : 'Teléfono (Netelip)']].map(([label, value]) => <div key={label}><dt className="font-mono text-[10px] uppercase tracking-[.12em] text-[#737373]">{label}</dt><dd className="mt-1 text-[#F2F2F2]">{value}</dd></div>)}
         </dl>
         <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Evaluación del comercial</h3><CallEvaluationPanel callId={call.id} transcriptionStatus={call.transcription_status} /></section>
+        <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Decisión de pase del SDR</h3><DecisionPasePanel callId={call.id} /></section>
         <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Transcripción</h3><TranscriptionPanel detail={detail} /></section>
       </>}
     </div>

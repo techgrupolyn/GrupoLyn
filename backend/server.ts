@@ -26,6 +26,7 @@ import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from '
 import { meetingReviewChain, meetingEmployeeRoles, meetingStageRecipientCondition, canDeleteMeetingActionsForRole } from './meeting-routing.ts';
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
 import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
+import { iniciarWebhookCaptacion } from './netelip/captacion/webhook-ruta.ts';
 import { createReunionesWorkers, ensureReunionesMeet } from './reuniones-meet/index.ts';
 import { idCarpetaDrive } from './netelip/entrenador/drive.ts';
 import { ensureProjectMeetingSchema, registerProjectMeetingRoutes, refreshProjectMeetings, syncProjectMeeting } from './meeting-project-workflow.ts';
@@ -224,6 +225,8 @@ app.use('/api/club/protocolos', express.json({ limit: '20kb' }), createClubProto
   },
   weeklySnapshot: (from, to) => loadProtocolWeeklySnapshot(pool, from, to),
 }));
+// Webhook de ClickUp de la captación ABCD: lee el cuerpo en bruto (firma HMAC), así que va antes del express.json global.
+iniciarWebhookCaptacion(app, pool);
 app.use(express.json({ limit: '10mb' }));
 
 const limiter = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false,

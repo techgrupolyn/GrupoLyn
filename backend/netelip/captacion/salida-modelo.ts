@@ -38,6 +38,8 @@ export interface ResumenSalida {
   queLoFrena: string;
   paraQueLlamarlo: string;
   fechaPrevista: string | null;
+  /** Frase literal de la llamada que demuestra la fecha prevista (el código la verifica contra la transcripción). */
+  fechaCita: string | null;
 }
 
 export interface SalidaModelo {
@@ -46,6 +48,8 @@ export interface SalidaModelo {
   noApto: NoAptoSalida;
   criterios: Record<CriterioId, CriterioSalida>;
   resumen: ResumenSalida;
+  /** Lo que el modelo devolvió como decision_ia (N-1.4), sin leer ni verificar: ver leerDecisionIA y erificarDecisionIA. */
+  decisionIA: unknown;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -140,6 +144,7 @@ function leerResumen(bruto: unknown): ResumenSalida {
     queLoFrena: texto(r.que_lo_frena),
     paraQueLlamarlo: texto(r.para_que_llamarlo),
     fechaPrevista: textoONull(r.fecha_prevista),
+    fechaCita: textoONull(r.fecha_prevista_cita),
   };
 }
 
@@ -165,6 +170,7 @@ export function validarSalidaModelo(raw: string, interaccionEsperada?: string): 
     noApto: leerNoApto(d.presupuesto_insuficiente_sin_solucion),
     criterios,
     resumen: leerResumen(d.resumen),
+    decisionIA: d.decision_ia,
   };
 }
 

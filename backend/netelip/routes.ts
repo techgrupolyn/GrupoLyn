@@ -10,6 +10,8 @@ import { CALL_RESULTS, isStatusNotification, parseStatusEvent, registeredExtensi
 // Llamadas perdidas: no llegaron a hablar.
 const MISSED = "'no_contestada','ocupado','colgada','no_disponible'";
 import { registerCalificador } from './calificador/rutas.ts';
+import { reflejoEnClickUp } from './captacion/decision-clickup.ts';
+import { registerDecisionPase } from './captacion/decision-rutas.ts';
 import type { Enviador } from './calificador/proceso.ts';
 import { registerEntrenador } from './entrenador/rutas.ts';
 import type { DriveEntrenador } from './entrenador/proceso.ts';
@@ -349,4 +351,6 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
 
   registerCalificador(app, { pool, access, role: deps.role, actor: deps.actor, enviar: deps.enviar, fail, canReadTranscripts: (role) => canReadTranscripts(role, env), env });
   registerEntrenador(app, { pool, access, role: deps.role, actor: deps.actor, fail, env, drive: deps.entrenadorDrive });
+  // N-1.4 · decisión de pase del SDR: formulario en el detalle de la llamada, bandeja de Ernesto y acierto.
+  registerDecisionPase(app, { pool, access, role: deps.role, actor: deps.actor, fail, canReadTranscripts: (role) => canReadTranscripts(role, env), env, alRevisar: reflejoEnClickUp(pool, env) });
 }

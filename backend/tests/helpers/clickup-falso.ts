@@ -16,6 +16,7 @@ export const CAMPOS_FALSOS = [
   { id: 'f-pond', name: 'valor_del_negocio', type: 'currency', type_config: {} },
   { id: 'f-fuente', name: 'Fuente del presupuesto', type: 'drop_down', type_config: { options: opciones(['Formulario', 'Llamada', 'Reunión', 'WhatsApp', 'Fase 2 LYN', 'Manual', 'Pendiente: preguntar en la 1ª llamada'], 'o-fuente') } },
   { id: 'f-desg', name: 'Desglose de calificación', type: 'short_text', type_config: {} },
+  { id: 'f-res', name: 'Resumen ejecutivo', type: 'text', type_config: {} },
   { id: 'f-tel', name: 'contact_phone_number', type: 'phone', type_config: {} },
   { id: 'f-mail', name: 'email', type: 'email', type_config: {} },
   { id: 'f-etapa', name: 'ETAPA_CRM', type: 'drop_down', type_config: { options: opciones(['e1. EN ESPERA', 'e3. VIABILIDAD', 'e4. VISITA', 'e16. RECHAZADO', 'e15. PERDIDO'], 'o-etapa') } },

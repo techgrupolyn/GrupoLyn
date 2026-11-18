@@ -16,6 +16,7 @@ const GroupsView = lazy(() => importWithChunkRecovery(() => import('./views/Grou
 const LabelsView = lazy(() => importWithChunkRecovery(() => import('./views/LabelsView')));
 const MeetingManagementView = lazy(() => importWithChunkRecovery(() => import('./views/MeetingManagementView')));
 const NetelipCallsView = lazy(() => importWithChunkRecovery(() => import('./views/NetelipCallsView')));
+const DecisionBandejaView = lazy(() => importWithChunkRecovery(() => import('./views/DecisionBandejaView')));
 const MyWorkView = lazy(() => importWithChunkRecovery(() => import('./views/MyWorkView')));
 const SettingsView = lazy(() => importWithChunkRecovery(() => import('./views/SettingsView')));
 const OperationsView = lazy(() => importWithChunkRecovery(() => import('./views/OperationsView')));
@@ -26,7 +27,7 @@ const TypeChart = lazy(() => importWithChunkRecovery(() => import('./components/
 const NAV_SECTIONS = [
   { label: 'General', items: [{ key: 'dashboard', label: 'Resumen ejecutivo', icon: LayoutDashboard, accent: 'amber' }, { key: 'work', label: 'Mis pendientes', icon: Bell, accent: 'amber' }, { key: 'ai', label: 'Consultas IA', icon: Sparkles, accent: 'violet' }] },
   { label: 'CRM', items: [{ key: 'leads', label: 'Leads / Prospectos', icon: UsersRound, accent: 'amber' }, { key: 'clients', label: 'Clientes', icon: Building2, accent: 'emerald' }, { key: 'identities', label: 'Identidades sin resolver', icon: UsersRound, accent: 'rose' }] },
-  { label: 'Netelip', items: [{ key: 'netelip', label: 'Historial de llamadas', icon: PhoneCall, accent: 'emerald' }] },
+  { label: 'Netelip', items: [{ key: 'netelip', label: 'Historial de llamadas', icon: PhoneCall, accent: 'emerald' }, { key: 'decisiones', label: 'Decisiones de pase', icon: ShieldCheck, accent: 'amber' }] },
   { label: 'Operaciones', items: [{ key: 'organigrama', label: 'Organigrama y escalado', icon: UsersRound, accent: 'amber' }, { key: 'incidents', label: 'Control de obra / Incidencias', icon: ShieldCheck, accent: 'rose' }] },
   { label: 'Agente de reuniones', items: [{ key: 'meetings', label: 'Gestión de reuniones', icon: CalendarDays, accent: 'rose', badge: 'Nuevo' }] },
   { label: 'Agente de protocolos', items: [{ key: 'protocolos', label: 'Consultar protocolos', icon: FileText, accent: 'violet' }] },
@@ -40,7 +41,7 @@ const LIMITED_NAV_SECTIONS = [
   { label: 'Agente de protocolos', items: [{ key: 'protocolos', label: 'Consultar protocolos', icon: FileText, accent: 'violet' }] },
 ];
 const VIEW_TITLES = {
-  organigrama: 'Organigrama y escalado', leads: 'Leads / Prospectos', clients: 'Clientes', identities: 'Identidades sin resolver', incidents: 'Control de obra / Incidencias', netelip: 'Historial de llamadas',
+  organigrama: 'Organigrama y escalado', leads: 'Leads / Prospectos', clients: 'Clientes', identities: 'Identidades sin resolver', incidents: 'Control de obra / Incidencias', netelip: 'Historial de llamadas', decisiones: 'Decisiones de pase',
   dashboard: 'Resumen ejecutivo',
   work: 'Mis pendientes',
   ai: 'Consultas IA',
@@ -225,6 +226,7 @@ export default function CEOApp({ user, onLogout }) {
       case 'labels': return <LabelsView />;
       case 'business': return <BusinessView />;
       case 'settings': return <SettingsView activeTab={settingsTab} onTabChange={setSettingsTab} onOpenMeeting={(id) => { setOpenMeetingId(id); setView('meetings'); }} />;
+      case 'decisiones': if (!canAccessNetelipCalls(user)) return <NetelipAccessDenied />; return <DecisionBandejaView />;
       case 'netelip': if (!canAccessNetelipCalls(user)) return <NetelipAccessDenied />; return <NetelipCallsView onOpenContact={(contact) => { setContactQuery(contact.name); setView(contact.type === 'client' ? 'clients' : 'leads'); }} />;
       case 'organigrama': case 'leads': case 'clients': case 'identities': case 'incidents': return <OperationsView key={view} mode={view} initialQuery={contactQuery} onInitialQueryUsed={() => setContactQuery('')} onOpenMeeting={(id) => { setOpenMeetingId(id); setView('meetings'); }} />;
       case 'templates': return <TemplatesView />;

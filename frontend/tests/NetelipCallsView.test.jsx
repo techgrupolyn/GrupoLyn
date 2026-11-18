@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/ceo-dashboard/api', () => ({
-  default: { netelip: { calls: vi.fn(), call: vi.fn(), filterOptions: vi.fn(), evaluation: vi.fn(), addEvaluationFeedback: vi.fn(), objections: vi.fn(), salespeople: vi.fn(), saveSalesperson: vi.fn() } },
+  default: { netelip: { calls: vi.fn(), call: vi.fn(), filterOptions: vi.fn(), evaluation: vi.fn(), addEvaluationFeedback: vi.fn(), objections: vi.fn(), salespeople: vi.fn(), saveSalesperson: vi.fn(), decision: vi.fn(), saveDecision: vi.fn() } },
 }));
 
 import api from '../src/ceo-dashboard/api';
@@ -24,6 +24,7 @@ beforeEach(() => {
   vi.mocked(api.netelip.calls).mockResolvedValue(page(calls));
   vi.mocked(api.netelip.filterOptions).mockResolvedValue({ agents: [{ extension: '109', name: 'Elena Prueba' }] });
   vi.mocked(api.netelip.evaluation).mockResolvedValue({ evaluation: null });
+  vi.mocked(api.netelip.decision).mockResolvedValue({ lead_conocido: false, motivos: {}, estado: null, sdr: null, ia: null });
   vi.mocked(api.netelip.call).mockResolvedValue({ call: calls[0], transcription_access: 'granted', transcription: { status: 'completed', text: 'Hola', segments: [{ speaker: 'agente', start: 0, end: 2, text: 'Buenos días.' }, { speaker: 'cliente', start: 2.4, end: 4, text: 'Hola, dígame.' }] } });
 });
 afterEach(() => vi.clearAllMocks());

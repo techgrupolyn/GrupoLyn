@@ -2,9 +2,13 @@
 // arranque después de las del entrenador. No tocan ninguna tabla existente: todo cuelga del id de la
 // tarea de ClickUp (`clickup_task_id`). Reversión: backend/netelip/captacion/schema-down.sql.
 
+import { DECISION_TABLES, ensureDecision } from './schema-decision.ts';
+
 export const CAPTACION_TABLES = [
   'categoria_config', 'lead_presupuesto_evento', 'lead_calificacion_historial',
   'criterio_config', 'agregacion_config', 'lead_criterio_evaluacion', 'lead_no_apto_evento',
+  'lead_resumen_historial',
+  ...DECISION_TABLES,
 ] as const;
 
 /** Acepta el `Pool` de pg o cualquier conexión con `query` (las pruebas usan una conexión con esquema propio). */
@@ -235,5 +239,31 @@ export async function ensureCaptacion(pool: { query(sql: string): Promise<unknow
 
     CREATE INDEX IF NOT EXISTS lead_no_apto_evento_lead_idx
       ON lead_no_apto_evento (clickup_task_id, fecha_interaccion DESC);
+
+    -- N-1.3 · Resumen ejecutivo del lead (ticket 869fny1ek). Un resumen por llamada procesada; nunca se borra ni se edita.
+    -- El vigente es el de la llamada más reciente POR FECHA de la interacción (como el presupuesto, RN-8): una llamada vieja
+    -- procesada tarde queda guardada pero no sustituye al resumen de una posterior. Lo que se escribe en el campo «Resumen
+    -- ejecutivo» de ClickUp es siempre el vigente. Aditivo e idempotente; reversión: schema-down.sql.
+    CREATE TABLE IF NOT EXISTS lead_resumen_historial (
+      id                 UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+      seq                BIGINT       GENERATED ALWAYS AS IDENTITY,   -- desempate estricto por orden de inserción
+      clickup_task_id    TEXT         NOT NULL,
+      interaccion_id     TEXT         NOT NULL,
+      que_quiere         TEXT         NOT NULL,
+      donde_quedo        TEXT         NOT NULL,
+      que_lo_frena       TEXT         NOT NULL,
+      para_que_llamarlo  TEXT         NOT NULL,
+      fecha_prevista     DATE,
+      fecha_interaccion  TIMESTAMPTZ  NOT NULL,
+      creado_en          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+      CONSTRAINT lead_resumen_historial_bloques_ck
+        CHECK (btrim(que_quiere) <> '' AND btrim(donde_quedo) <> '' AND btrim(que_lo_frena) <> '' AND btrim(para_que_llamarlo) <> ''),
+      CONSTRAINT lead_resumen_historial_interaccion_uq UNIQUE (interaccion_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS lead_resumen_historial_lead_idx
+      ON lead_resumen_historial (clickup_task_id, fecha_interaccion DESC, seq DESC);
   `);
+  // N-1.4 · decisión de pase del SDR (tablas propias, en schema-decision.ts).
+  await ensureDecision(pool);
 }

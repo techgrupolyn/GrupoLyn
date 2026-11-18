@@ -3,8 +3,11 @@
 // escribir en ClickUp. No escribe en ClickUp ni decide reintentos: eso es de quien lo llama (la cola o el lote).
 import { enmascarar } from '../calificador/reglas.ts';
 import type { Evaluador } from '../calificador/modelo.ts';
-import { procesarEvaluacionLlamada, type Db, type ResultadoRecalculo } from './repositorio.ts';
-import { promptSistema, promptUsuario, VERSION_PROMPT } from './prompt.ts';
+import { generaDecision, type Origen } from './decision.ts';
+import { cargarContexto, cargarMotivos } from './decision-repositorio.ts';
+import { cargarResumenVigente, procesarEvaluacionLlamada, type Db, type ResultadoDecisionGuardada, type ResultadoRecalculo, type ResultadoResumenGuardado } from './repositorio.ts';
+import { CONTEXTO_POR_DEFECTO, promptSistema, promptUsuario, VERSION_PROMPT, type ContextoDecision } from './prompt.ts';
+import { fechaMadrid } from './resumen.ts';
 import type { Categoria } from './tipos.ts';
 import { vincularLlamadaConLead, type LeadCandidato, type ResultadoVinculacion } from './vinculacion.ts';
 
@@ -30,6 +33,23 @@ export interface Dependencias {
   /** Nombre del lead en ClickUp: se sustituye por un marcador antes de que la transcripción salga hacia el modelo. */
   nombreLead: (clickupTaskId: string) => string | null;
   evaluar: Evaluador;
+  /**
+   * Número de la etapa de CRM del lead (e4 VISITA = F2 = 4). Un lead en F2 o más allá no genera decisión de pase (N-1.4). Sin esta
+   * función, o sin etapa conocida, sí se genera.
+   */
+  etapaLead?: (clickupTaskId: string) => number | null;
+  /** `historico` en la calibración con llamadas antiguas: la decisión de la IA se guarda pero no entra en la bandeja ni en el acierto. */
+  origenDecision?: Origen;
+}
+
+/** Guion, manual y motivos vigentes de la decisión de pase. Sin ellos (tablas sin configurar) la llamada se califica igual. */
+async function leerConfigDecision(db: Db): Promise<ContextoDecision | null> {
+  try {
+    const { guion, manual } = await cargarContexto(db);
+    return { guion, manual, motivos: await cargarMotivos(db) };
+  } catch {
+    return null;
+  }
 }
 
 export type ResultadoLlamada =
@@ -48,19 +68,16 @@ export type ResultadoLlamada =
       revisionManual: readonly string[];
       /** Un criterio, presupuesto o No apto nuevo se guardó (false si la llamada ya estaba procesada). */
       nuevo: boolean;
+      /** Qué pasó con el resumen ejecutivo de esta llamada. */
+      resumen: ResultadoResumenGuardado;
+      /** Qué pasó con la decisión de pase de la IA. */
+      decision: ResultadoDecisionGuardada;
       modelo: string;
       tokens: [number | null, number | null];
       versionPrompt: string;
     };
 
 export const interaccionDe = (llamadaId: string): string => `netelip:${llamadaId}`;
-
-/** AAAA-MM-DD en hora de Madrid. */
-const fechaMadrid = (d: Date): string => {
-  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid', year: 'numeric', month: '2-digit', day: '2-digit' })
-    .formatToParts(d).map((x) => [x.type, x.value]));
-  return `${p.year}-${p.month}-${p.day}`;
-};
 
 export async function evaluarLlamadaCaptacion(deps: Dependencias, llamada: EntradaLlamada): Promise<ResultadoLlamada> {
   const vinculo = vincularLlamadaConLead({ telefono: llamada.telefonoE164, email: llamada.email ?? null }, deps.leads);
@@ -70,11 +87,24 @@ export async function evaluarLlamadaCaptacion(deps: Dependencias, llamada: Entra
   if (!transcripcion.trim()) return { estado: 'sin_conversacion' };
 
   const interaccionId = interaccionDe(llamada.llamadaId);
+  // N-1.4: solo los leads antes de F2 generan decisión de pase. El modelo no recibe nunca la propuesta del SDR (decide por su cuenta).
+  const conDecision = generaDecision(deps.etapaLead?.(vinculo.clickupTaskId) ?? null);
   let respuesta;
+  let config: ContextoDecision | null = null;
   try {
+    // Una sola lectura antes de llamar al modelo (no se retiene una conexión mientras contesta): el resumen que el lead tenía ANTES de
+    // esta llamada (generación incremental, N-1.3) y el guion, el manual y los motivos vigentes (N-1.4).
+    const previo = await deps.conDb(async (db) => ({
+      resumenAnterior: await cargarResumenVigente(db, vinculo.clickupTaskId, llamada.ocurridaEn.toISOString()),
+      config: await leerConfigDecision(db),
+    }));
+    config = previo.config;
     respuesta = await deps.evaluar(
-      promptSistema(),
-      promptUsuario({ interaccionId, direccion: llamada.direccion, fecha: fechaMadrid(llamada.ocurridaEn), duracionSegundos: llamada.duracionSegundos, transcripcion }),
+      promptSistema(undefined, config ?? CONTEXTO_POR_DEFECTO),
+      promptUsuario({
+        interaccionId, direccion: llamada.direccion, fecha: fechaMadrid(llamada.ocurridaEn), duracionSegundos: llamada.duracionSegundos, transcripcion,
+        resumenAnterior: previo.resumenAnterior, sinDecision: !conDecision,
+      }),
     );
   } catch (error) {
     return { estado: 'modelo_fallo', error: (error as Error).message.slice(0, 500), clickupTaskId: vinculo.clickupTaskId };
@@ -87,6 +117,9 @@ export async function evaluarLlamadaCaptacion(deps: Dependencias, llamada: Entra
       fechaInteraccion: llamada.ocurridaEn.toISOString(),
       transcripcion,
       salidaModelo: respuesta.text,
+      decision: conDecision && config
+        ? { motivos: config.motivos, versionGuion: config.guion.version, versionManual: config.manual.version, versionPrompt: VERSION_PROMPT, origen: deps.origenDecision ?? 'nuevo' }
+        : undefined,
     }),
   );
   if (resultado.estado === 'salida_invalida') return { estado: 'salida_invalida', error: resultado.error, clickupTaskId: vinculo.clickupTaskId };
@@ -101,6 +134,8 @@ export async function evaluarLlamadaCaptacion(deps: Dependencias, llamada: Entra
     descartes,
     revisionManual: registro.revisionManual,
     nuevo: registro.criterios > 0 || registro.presupuesto || registro.noApto,
+    resumen: resultado.resumen,
+    decision: resultado.decision,
     modelo: respuesta.model,
     tokens: [respuesta.inputTokens, respuesta.outputTokens],
     versionPrompt: VERSION_PROMPT,

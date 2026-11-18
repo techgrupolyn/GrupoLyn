@@ -43,7 +43,7 @@ function salida(interaccionId: string, extra: { citaDecisor?: string } = {}): st
       decisor: { nivel: 'A', cita: extra.citaDecisor ?? FRASE.decisor, marca_tiempo: '00:01:40' },
       alcance: NE, actitud: NE, encaje_lyn: NE, predisposicion_f2f3: NE,
     },
-    resumen: { que_quiere: '', donde_quedo: '', que_lo_frena: '', para_que_llamarlo: '', fecha_prevista: null },
+    resumen: { que_quiere: '', donde_quedo: '', que_lo_frena: '', para_que_llamarlo: '', fecha_prevista: null, fecha_prevista_cita: null },
   });
 }
 
@@ -78,6 +78,16 @@ function montar(conDb: Dependencias['conDb'], modelo: (user: string) => string |
   };
 }
 const sinDb: Dependencias['conDb'] = () => { throw new Error('no debía tocar la base de datos'); };
+/** Una base que solo puede LEER (el resumen anterior que se le da al modelo): cualquier escritura rompe la prueba. */
+function soloLectura(consultas: string[] = []): Dependencias['conDb'] {
+  return (fn) => fn({
+    query: async (sql: string) => {
+      if (!/^\s*SELECT/i.test(sql)) throw new Error('no debía escribir en la base de datos');
+      consultas.push(sql);
+      return { rows: [] };
+    },
+  });
+}
 
 describe('captación · proceso · lo que NO llega al modelo ni a la base', () => {
   it.each([
@@ -97,16 +107,19 @@ describe('captación · proceso · lo que NO llega al modelo ni a la base', () =
     expect(p.usos).toEqual([]);
   });
 
-  it('el modelo falla: se devuelve el fallo (con el texto recortado) y no se toca la base', async () => {
-    const p = montar(sinDb, () => new Error('x'.repeat(900)));
+  it('el modelo falla: se devuelve el fallo (con el texto recortado) y no se escribe nada en la base (solo se leyó el resumen anterior y la configuración)', async () => {
+    const consultas: string[] = [];
+    const p = montar(soloLectura(consultas), () => new Error('x'.repeat(900)));
     const r = await evaluarLlamadaCaptacion(p.deps, llamada());
     expect(r).toMatchObject({ estado: 'modelo_fallo', clickupTaskId: 'lead-ana' });
     expect((r as { error: string }).error).toHaveLength(500);
-    expect(p.usos).toEqual(['modelo']);
+    expect(p.usos).toEqual(['db', 'modelo']);
+    // Dos lecturas: el resumen anterior y el contexto de la decisión de pase (que, sin configurar, deja el prompt por defecto).
+    expect(consultas).toHaveLength(2);
   });
 
   it('el nombre del lead y su teléfono no salen hacia el modelo; los demás datos sí', async () => {
-    const p = montar(sinDb, () => new Error('corta aquí'));
+    const p = montar(soloLectura(), () => new Error('corta aquí'));
     await evaluarLlamadaCaptacion(p.deps, llamada({ transcripcion: `${TRANSCRIPCION}\n[00:03:00] CLIENTE: Soy Ana Beltrán y mi móvil es 600 111 222.` }));
     const { system, user } = p.prompts[0]!;
     expect(user).not.toContain('Beltrán');
@@ -116,16 +129,16 @@ describe('captación · proceso · lo que NO llega al modelo ni a la base', () =
   });
 
   it('el prompt lleva el id de la interacción, el sentido, la fecha de Madrid y los minutos', async () => {
-    const p = montar(sinDb, () => new Error('corta aquí'));
+    const p = montar(soloLectura(), () => new Error('corta aquí'));
     await evaluarLlamadaCaptacion(p.deps, llamada({ llamadaId: '1234', direccion: 'inbound', duracionSegundos: 190, ocurridaEn: new Date('2026-11-10T23:30:00Z') }));
     expect(p.prompts[0]!.user).toContain('interaccion_id netelip:1234 · llamada entrante del 2026-11-11 · 3 min');
     expect(interaccionDe('1234')).toBe('netelip:1234');
   });
 
   it('el teléfono manda sobre el email y, sin teléfono, vale el email (sin distinguir mayúsculas)', async () => {
-    const p = montar(sinDb, () => new Error('corta aquí'));
+    const p = montar(soloLectura(), () => new Error('corta aquí'));
     await evaluarLlamadaCaptacion(p.deps, llamada({ telefonoE164: null, email: 'carlos@example.COM' }));
-    expect(p.usos).toEqual(['modelo']);
+    expect(p.usos).toEqual(['db', 'modelo']);
     expect(p.prompts[0]!.user).toContain('interaccion_id netelip:77');
   });
 });
@@ -154,7 +167,7 @@ describe.skipIf(!hayBaseDePruebas)('captación · proceso · con base de datos',
     expect(r.categoria).toBe('A+');
     expect(r.escrituras).toMatchObject({ categoria: 'A+', presupuesto: 100000, ponderado: 100000, fuente_presupuesto: 'Llamada' });
     expect(r.escrituras.desglose).toContain('cob. 65 %');
-    expect(p.usos).toEqual(['modelo', 'db']);
+    expect(p.usos).toEqual(['db', 'modelo', 'db']);
     expect(await contar('lead_criterio_evaluacion')).toBe(7);
     expect(await contar('lead_presupuesto_evento')).toBe(1);
     const hist = await base.query<{ clickup_task_id: string; motivo: string; categoria: string }>('SELECT clickup_task_id, motivo, categoria FROM lead_calificacion_historial');
@@ -165,10 +178,26 @@ describe.skipIf(!hayBaseDePruebas)('captación · proceso · con base de datos',
     expect(fecha.rows[0]?.f).toBe('2026-11-10T23:30');
   });
 
-  it('el modelo se consulta ANTES de abrir la base: no se retiene una conexión mientras contesta', async () => {
-    const p = montar(conDb);
+  it('no se retiene una conexión mientras el modelo contesta: se lee el resumen anterior, se suelta, y se abre otra para guardar', async () => {
+    let abiertas = 0;
+    let abiertasMientrasContesta = -1;
+    const p = montar(async (fn) => {
+      abiertas += 1;
+      try {
+        return await conDb(fn);
+      } finally {
+        abiertas -= 1;
+      }
+    });
+    const evaluar = p.deps.evaluar;
+    p.deps.evaluar = async (s, u) => {
+      abiertasMientrasContesta = abiertas;
+      return evaluar(s, u);
+    };
     await evaluarLlamadaCaptacion(p.deps, llamada());
-    expect(p.usos).toEqual(['modelo', 'db']);
+    expect(p.usos).toEqual(['db', 'modelo', 'db']);
+    expect(abiertasMientrasContesta).toBe(0);
+    expect(abiertas).toBe(0);
   });
 
   it('procesar dos veces la misma llamada no duplica nada ni añade histórico', async () => {
