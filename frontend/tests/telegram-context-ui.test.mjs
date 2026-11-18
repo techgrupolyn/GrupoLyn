@@ -13,6 +13,14 @@ test('older messages can be loaded without losing the current page or implying t
 });
 function fixtureDom(fetchImpl){return new JSDOM(html,{url:'https://ceo.grupolyn.com/telegram-context.html',runScripts:'dangerously',beforeParse(w){w.localStorage.setItem('ceo_token','synthetic-session');w.fetch=(url,options)=>url.endsWith('specialists')?Promise.resolve({ok:true,json:async()=>({specialists:[{id:'general',name:'Agente existente de prueba'}]})}):fetchImpl(url,options);}});}
 function switchToSecond(dom){const d=dom.window.document;d.getElementById('project').value='two';d.getElementById('project').dispatchEvent(new dom.window.Event('change'));d.querySelector('#groups button').click();}
+
+test('an unverified citation shows the validation error and cannot leave a previous accepted analysis visible',async()=>{
+ let reject=false;
+ const dom=fixtureDom(async url=>url.endsWith('analyze')?reject?{ok:false,status:422,json:async()=>({error:'telegram_evidence_not_verified'})}:{ok:true,json:async()=>({source:'Telegram',model:'fixture',text:'Anterior aceptado'})}:{ok:true,json:async()=>url.endsWith('conversations')?{conversations:fixtureRows}:{messages:[{timestamp:Date.now(),remitente:'Equipo',tipo:'text',texto:'Mensaje'}]}});
+ try{await tick();const d=dom.window.document;d.querySelector('#groups button').click();await tick();d.getElementById('analyze').click();await tick();assert.match(d.getElementById('analysis').textContent,/Anterior aceptado/);
+ reject=true;d.getElementById('analyze').click();await tick();assert.equal(d.getElementById('analysis').textContent,'');assert.match(d.getElementById('status').textContent,/No se pudo verificar la evidencia/);assert.ok(!d.getElementById('status').textContent.includes('No hay texto'));assert.equal(d.getElementById('analyze').disabled,false);
+ }finally{dom.window.close();}
+});
 test('a delayed response from the old work cannot replace messages in the new selection',async()=>{
  let finishOld;const dom=fixtureDom(async url=>({ok:true,json:async()=>url.endsWith('conversations')?{conversations:fixtureRows}:url.includes('telegram%3Aone')?await new Promise(r=>{finishOld=r;}):{messages:[{timestamp:Date.now(),remitente:'Equipo',tipo:'text',texto:'Mensaje de la obra dos'}]}}));
  try{await tick();const d=dom.window.document;d.querySelector('#groups button').click();await tick();assert.equal(typeof finishOld,'function');switchToSecond(dom);await tick();finishOld({messages:[{timestamp:Date.now(),remitente:'Equipo',tipo:'text',texto:'Respuesta antigua de la obra uno'}]});await tick();assert.equal(d.getElementById('title').textContent,'Obra dos');assert.match(d.getElementById('messages').textContent,/Mensaje de la obra dos/);assert.ok(!d.getElementById('messages').textContent.includes('Respuesta antigua'));}finally{dom.window.close();}

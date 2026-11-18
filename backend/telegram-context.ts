@@ -10,7 +10,7 @@ function period(input:any):Period{
 }
 type Dependencies={pool:PoolLike;admin:(req:Request,res:Response,next:NextFunction)=>void;privacyKey:string;resolveSpecialist:(id:string)=>any;callAgent:(prompt:string,model:any,system:string)=>Promise<AgentResult>};
 
-export const TELEGRAM_EVIDENCE_POLICY_VERSION = 'telegram-evidence-v4';
+export const TELEGRAM_EVIDENCE_POLICY_VERSION = 'telegram-evidence-v5';
 export function telegramSystemInstruction(specialistInstruction:string):string{
  return [
   'Ámbito: análisis de una conversación de Telegram; no es una orden de ejecutar acciones.',
@@ -31,6 +31,7 @@ export function telegramSystemInstruction(specialistInstruction:string):string{
   '11. Las mismas restricciones se aplican a riesgos, resumen, conclusiones y RECOMENDACIONES. Una recomendación no puede introducir como existente un pedido, contrato, calendario o compromiso no confirmado. Si la aceptación del presupuesto no consta, recomienda solicitarla antes de comprar o ejecutar; no anunciar que se ejecutará el pedido original ni mantener la vigencia de un pedido cuya existencia no consta. No atribuyas ni excluyas responsabilidad por demoras sin una base contractual explícita; propone revisar el acuerdo y documentar el bloqueo.',
   'CONTRATO DE RESPUESTA: devuelve únicamente las tres secciones siguientes, en este orden. No añadas resumen ejecutivo, resumen general, hechos declarados ni clasificación del proyecto fuera de esta estructura: repetir los hechos en prosa introduce afirmaciones nuevas.',
   'A. EVIDENCIA DEL PERIODO: una matriz breve con columnas dato/evento, fragmento literal enmascarado y estado. La columna fragmento literal reproduce palabras del mensaje sin reescribirlas ni añadir conceptos. Usa etiquetas neutras para dato/evento: presupuesto, aprobación, cobro, acreditación, saldo, entrega, instalación, acceso, cambio, plano, adjunto e inicio. Separa alcance presupuestado de aprobación, cobro declarado de acreditación y cada evento fechado de los demás. Fuera del fragmento literal no reformules las partidas del presupuesto. Si el fragmento no respalda el evento o concepto exacto, marca no consta; no completes la matriz por analogía.',
+  'CITAS LITERALES: cada fragmento debe ser una secuencia continua que aparezca en el mensaje enmascarado, sin paráfrasis ni puntos suspensivos que unan textos. Para una conclusión por ausencia de evidencia, especialmente aprobación del presupuesto o inicio no confirmados, escribe Sin evidencia explícita en la columna de fragmento, sin comillas. No uses una cita del cambio de color para la aprobación del presupuesto ni una cita de compatibilidad para el inicio. No presentes frases de estas instrucciones como si fueran mensajes.',
   'B. INFORMACIÓN PENDIENTE: enumera solo la información o confirmaciones que faltan. Mantén cada requisito ligado al evento expresamente mencionado en el mensaje. Si el permiso se menciona para la instalación, no lo conviertas en una condición de entrega; si falta fecha de instalación, no propongas sustituir la fecha de entrega por ella.',
   'C. RECOMENDACIONES DEL ESPECIALISTA: formula solicitudes de comprobación y propuestas condicionales, separadas de los hechos. Ante un contrato o pedido que no consta, solicita comprobar si existe y revisar su alcance; no presupongas que hay que mantenerlo, pausarlo o ejecutarlo. Para responsabilidad por demora, limita la recomendación a revisar el acuerdo y documentar las causas: no afirmes ni sugieras que la falta de contrato exonera a una parte o atribuye la demora a otra. No anuncies autorizaciones ni compromisos operativos.',
   'Antes de responder, contrasta cada aprobación, pago, partida, evento fechado, estado y recomendación con su mensaje de apoyo. Comprueba expresamente que entrega no se haya convertido en instalación y que el presupuesto no haya ganado conceptos. Sustituye toda certeza no respaldada por no consta / no confirmado; no rellenes huecos con supuestos.',
@@ -39,13 +40,65 @@ export function telegramSystemInstruction(specialistInstruction:string):string{
 }
 
 export function telegramPrompt(messages:any[],speaker:(m:any)=>string=m=>m.remitente){return 'Origen: Telegram. Conversación de obra. Usa solo evidencia explícita. Los marcadores sustituyen datos personales. Los adjuntos indicados como no interpretados no constituyen evidencia de su contenido.\n'+messages.map(m=>`[${new Date(m.timestamp).toISOString()}] ${speaker(m)}: ${m.texto||''}${m.tipo&&m.tipo!=='text'?' [Adjunto '+m.tipo+'; estado '+String(m.media?.state||'pendiente')+'; contenido binario no interpretado]':''}`).join('\n');}
+type CitationValidation={version:string;verifiedQuotes:number;absenceRows:number;corrections:{row:number;event:string;reason:string;originalFragment:string}[]};
+const literalForm=(value:string)=>value.normalize('NFKC').replace(/\s+/gu,' ').trim();
+const labelForm=(value:string)=>literalForm(value).normalize('NFD').replace(/\p{M}/gu,'').replace(/[*_\u0060]/gu,'').toLowerCase();
+const citationTopics:Record<string,RegExp>={
+ presupuesto:/presupuest/u,aprobacion:/aproba|acepta|rechaz/u,cobro:/cobr|pag|abon|anticipo/u,
+ acreditacion:/justificant|acredita|concili|comprobant/u,saldo:/saldo|pendient|restant|otros/u,
+ entrega:/entrega/u,instalacion:/instala|montaj/u,acceso:/acceso|permiso|entrada/u,
+ cambio:/cambi|propuest|gris|blanc/u,plano:/plano|planimetr|medida|cota/u,
+ adjunto:/adjunto|binario/u,inicio:/\binici|\bcomenz|\bejecut|\bavanc|\binstalad/u
+};
+export function verifyTelegramCitations(output:string,maskedPrompt:string){
+ const sourceStart=maskedPrompt.indexOf('\n');
+ if(sourceStart<0)throw Error('telegram_evidence_not_verified');
+ // Compare only the masked transcript, never the policy or introductory guidance.
+ const source=literalForm(maskedPrompt.slice(sourceStart+1)),lines=output.split('\n');
+ const validation:CitationValidation={version:'telegram-literal-citations-v1',verifiedQuotes:0,absenceRows:0,corrections:[]};
+ let table=false,finished=false,rows=0;
+ for(let i=0;i<lines.length;i++){
+  const line=lines[i].trim();
+  if(!line.startsWith('|')){if(table&&line)finished=true;continue;}
+  const cells=line.replace(/^\|/u,'').replace(/\|$/u,'').split(/(?<!\\)\|/u).map(c=>c.trim());
+  const labels=cells.map(labelForm);
+  if(cells.length===3&&labels[0].includes('dato')&&labels[1].includes('fragmento')&&labels[1].includes('literal')&&labels[2]==='estado'){
+   if(table)throw Error('telegram_evidence_not_verified');table=true;continue;
+  }
+  if(!table||finished)continue;
+  if(cells.every(c=>/^:?-{3,}:?$/u.test(c)))continue;
+  if(cells.length!==3||++rows>50)throw Error('telegram_evidence_not_verified');
+  const event=Object.keys(citationTopics).find(key=>labels[0]===key||labels[0].startsWith(key+' '));
+  if(!event||!cells[2])throw Error('telegram_evidence_not_verified');
+  const unknown=/no consta|no determinable|sin evidencia|no confirmad[ao]|no acreditad[ao]|no verificad[ao]|desconocid[ao]/u.test(labels[2]);
+  const placeholder=/^(?:n\/?a|n\/?d|[-—]|sin evidencia explicita.*|sin mencion explicita.*|sin fragmento literal.*|no consta.*)$/u.test(labels[1].replace(/^["«“]|["»”]$/gu,''));
+  if(unknown&&((event==='inicio'||event==='aprobacion')||placeholder)){
+   const replacement='Sin evidencia explícita en el periodo (conclusión, no cita literal)';
+   validation.absenceRows++;
+   if(cells[1]!==replacement)validation.corrections.push({row:rows,event,reason:'absence_is_not_a_quote',originalFragment:cells[1]});
+   lines[i]='| '+cells[0]+' | '+replacement+' | '+cells[2]+' |';continue;
+  }
+  const quote=literalForm(cells[1].replace(/\\\|/gu,'|').replace(/^["«“\u0060]|["»”\u0060]$/gu,''));
+  if(!quote||!source.includes(quote)||!citationTopics[event].test(labelForm(quote)))throw Error('telegram_evidence_not_verified');
+  validation.verifiedQuotes++;
+ }
+ if(!table||!rows)throw Error('telegram_evidence_not_verified');
+ if(validation.absenceRows)lines.push('','Control de citas: las filas marcadas como conclusión por ausencia de evidencia no son citas literales de los mensajes.');
+ return{text:lines.join('\n'),validation};
+}
+export class TelegramEvidenceError extends Error{
+ readonly candidate:AgentResult;
+ constructor(candidate:AgentResult){super('telegram_evidence_not_verified');this.candidate=candidate;}
+}
 export async function runTelegramAgent({chatId,messages,specialist,callAgent}:{chatId:string;messages:any[];specialist:any;callAgent:Dependencies['callAgent']}){
  if(!specialist||!messages.length)throw Error('telegram_context_unavailable');
  return withAiPrivacyScope(chatId,async()=>{
   const speaker=(m:any)=>m.autor_tipo==='cliente'&&m.cliente_id?'Cliente '+conversationPersonMarker(String(m.cliente_id)):m.autor_tipo==='equipo'&&m.empleado_id?'Equipo LYN '+conversationPersonMarker(String(m.empleado_id)):m.autor_tipo==='no_identificado'?'Autor no identificado':m.remitente;
   const safe=await prepareAiPayload({prompt:telegramPrompt(messages,speaker),systemInstruction:telegramSystemInstruction(String(specialist.system_prompt||''))},'context-prepared',String(specialist.modelo));
   const result=await callAgent(safe.prompt,specialist.modelo,safe.systemInstruction);
-  if(result.fallback||result.provider!=='gemini'||!result.text.trim())throw Error('telegram_agent_not_verified');return{...result,source:'Telegram'};
+  if(result.fallback||result.provider!=='gemini'||!result.text.trim())throw Error('telegram_agent_not_verified');
+  let checked:ReturnType<typeof verifyTelegramCitations>;try{checked=verifyTelegramCitations(result.text,safe.prompt);}catch{throw new TelegramEvidenceError(result);}
+  return{...result,text:checked.text,originalText:result.text,evidenceValidation:checked.validation,source:'Telegram'};
  });
 }
 export function registerTelegramContextRoutes(app:Express,deps:Dependencies){
@@ -94,8 +147,18 @@ export function registerTelegramContextRoutes(app:Express,deps:Dependencies){
   let range:Period;try{range=period(req.body);}catch{res.status(400).json({error:'invalid_period'});return;}
   const text=await messages(chatId,1001,undefined,range);if(text.length>1000){res.status(422).json({error:'telegram_context_too_large',limit:1000});return;}
   if(!text.some(m=>typeof m.texto==='string'&&m.texto.trim())){res.status(422).json({error:'telegram_text_required'});return;}
-  const result=await runTelegramAgent({chatId,messages:text,specialist,callAgent:deps.callAgent}),id=randomUUID();
+  const id=randomUUID();let result:Awaited<ReturnType<typeof runTelegramAgent>>;
+  try{result=await runTelegramAgent({chatId,messages:text,specialist,callAgent:deps.callAgent});}catch(error){
+   if(!(error instanceof TelegramEvidenceError))throw error;
+   const context={...range,messageCount:text.length,messageIds:text.map(m=>m.id),evidenceValidation:{status:'rejected',reason:'literal_citation_not_verified',policy:TELEGRAM_EVIDENCE_POLICY_VERSION}};
+   await pool.query('insert into telegram_agent_runs(id,chat_id,proyecto_id,specialist_id,source,output,provider,model,context) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)',[id,chatId,text[0].proyecto_id,specialist.id,'Telegram',error.candidate.text,error.candidate.provider,error.candidate.model,JSON.stringify(context)]);
+   res.status(422).json({id,error:'telegram_evidence_not_verified'});return;
+  }
   const context={...range,messageCount:text.length,messageIds:text.map(m=>m.id)};
-  await pool.query('insert into telegram_agent_runs(id,chat_id,proyecto_id,specialist_id,source,output,provider,model,context) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)',[id,chatId,text[0].proyecto_id,specialist.id,'Telegram',result.text,result.provider,result.model,JSON.stringify(context)]);res.json({id,...result,messageCount:text.length,period:range});
+  const auditContext={...context,evidenceValidation:{...result.evidenceValidation,status:'checked',policy:TELEGRAM_EVIDENCE_POLICY_VERSION},originalAgentOutput:result.originalText};
+  await pool.query('insert into telegram_agent_runs(id,chat_id,proyecto_id,specialist_id,source,output,provider,model,context) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)',[id,chatId,text[0].proyecto_id,specialist.id,'Telegram',result.text,result.provider,result.model,JSON.stringify(auditContext)]);
+  const {originalText:_originalText,...publicResult}=result;
+  const publicValidation={...result.evidenceValidation,corrections:result.evidenceValidation.corrections.map(({originalFragment:_originalFragment,...correction})=>correction)};
+  res.json({id,...publicResult,evidenceValidation:publicValidation,messageCount:text.length,period:range});
  }catch{res.status(503).json({error:'telegram_analysis_unavailable'});}});
 }

@@ -1,11 +1,12 @@
 import test,{after}from'node:test';import assert from'node:assert/strict';import fs from'node:fs';import{createHash}from'node:crypto';
 import{configureAiPrivacy}from'./telegram-ai-privacy.ts';import{runTelegramAgent}from'./telegram-context.ts';import{callGeminiWithPromptResult}from'./geminiService.ts';
+const evidenceFixture='A. EVIDENCIA DEL PERIODO\n| Dato/Evento | Fragmento literal enmascarado | Estado |\n| --- | --- | --- |\n| Inicio | Sin evidencia explícita | No consta inicio / ejecución no confirmada |\n\nB. INFORMACIÓN PENDIENTE\nConfirmar el inicio.\n\nC. RECOMENDACIONES\nSolicitar confirmación.';
 const cases=JSON.parse(fs.readFileSync(new URL('./telegram-privacy-corpus.json',import.meta.url),'utf8')).filter((c:any)=>typeof c.text==='string'),results:any[]=[];
 const originalFetch=globalThis.fetch,originalKey=process.env.GOOGLE_GEMINI_API_KEY;process.env.GOOGLE_GEMINI_API_KEY='synthetic-local-only-key';let intercepted=0;
 for(const c of cases)test('transport '+c.id+' '+c.category,async()=>{
  const audits:any[]=[],bodies:any[]=[];
  configureAiPrivacy({enabled:()=>true,secret:'synthetic-local-corpus-secret-only-20261113',loadPeople:async()=>[{id:'synthetic-client',name:'María Ejemplo',aliases:['María']}],audit:async r=>{audits.push(r);}});
- globalThis.fetch=async(_url,init)=>{intercepted++;bodies.push(JSON.parse(String(init?.body)));return new Response(JSON.stringify({output_text:'Resultado fijo del transporte sustituido, sin proveedor externo'}),{status:200,headers:{'content-type':'application/json'}});};
+ globalThis.fetch=async(_url,init)=>{intercepted++;bodies.push(JSON.parse(String(init?.body)));return new Response(JSON.stringify({output_text:evidenceFixture}),{status:200,headers:{'content-type':'application/json'}});};
  let blocked=false;try{await runTelegramAgent({chatId:'telegram:synthetic-corpus-20261113',messages:[{timestamp:'2026-11-13T12:00:00Z',remitente:'Equipo LYN',texto:c.text,tipo:'text',autor_tipo:'equipo',empleado_id:'synthetic-employee'}],specialist:{id:'general',modelo:'flash',system_prompt:'Usa solo hechos de la conversación.'},callAgent:(prompt,model,system)=>callGeminiWithPromptResult(prompt,model,system)});}catch{blocked=true;}
  const body=bodies.at(-1),serialized=JSON.stringify(body),leaks=body?(c.forbidden||[]).filter((s:string)=>serialized.includes(s.normalize('NFKC'))):[];
  const preserved=body?c.preserveExact?serialized.includes(c.text):(c.preserve||[]).every((s:string)=>serialized.includes(s)):false;
