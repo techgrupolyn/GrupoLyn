@@ -1,6 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {configureAiPrivacy,prepareAiPayload,withAiPrivacyScope,conversationPersonMarker} from './telegram-ai-privacy.ts';
 import {runTelegramAgent} from './telegram-context.ts';
+const evidenceFixture='A. EVIDENCIA DEL PERIODO\n| Dato/Evento | Fragmento literal enmascarado | Estado |\n| --- | --- | --- |\n| Inicio | Sin evidencia explícita | No consta inicio / ejecución no confirmada |\n\nB. INFORMACIÓN PENDIENTE\nConfirmar el inicio.\n\nC. RECOMENDACIONES\nSolicitar confirmación.';
 const configure=()=>configureAiPrivacy({enabled:()=>true,secret:'synthetic-readiness-key-long-enough-for-tests',loadPeople:async()=>[{id:'person-one',name:'María Inventada'},{id:'person-two',name:'Li'}],audit:async()=>{}});
 const corpus=[
  {text:'El código de acceso es 8472.',forbidden:['8472']},
@@ -34,7 +35,7 @@ const corpus=[
 for(let i=0;i<corpus.length;i++)test('ordinary privacy phrasing '+(i+1)+' is masked before egress',async()=>{configure();const c=corpus[i],safe=await withAiPrivacyScope('telegram:readiness',()=>prepareAiPayload({text:c.text},'fixture','fixture'));for(const value of c.forbidden)assert.ok(!safe.text.includes(value),value);});
 test('speaker IDs and directory names share one stable pseudonym without exposing the UUID',async()=>{
  configure();const value=await withAiPrivacyScope('telegram:readiness',async()=>({marker:conversationPersonMarker('person-one'),safe:await prepareAiPayload({text:'María Inventada'},'fixture','fixture')}));assert.equal(value.safe.text,value.marker);
- let sent='';await runTelegramAgent({chatId:'telegram:readiness',messages:[{timestamp:Date.now(),autor_tipo:'cliente',cliente_id:'person-one',remitente:'Cliente verificado',texto:'Llegada a las 10'},{timestamp:Date.now(),autor_tipo:'cliente',cliente_id:'person-one',remitente:'Cliente verificado',texto:'Confirmado'},{timestamp:Date.now(),autor_tipo:'equipo',empleado_id:'person-two',remitente:'Equipo LYN',texto:'Recibido'}],specialist:{modelo:'flash',system_prompt:'Solo evidencia'},callAgent:async p=>{sent=p;return{text:'fixture',provider:'gemini',model:'fixture',fallback:false};}});
+ let sent='';await runTelegramAgent({chatId:'telegram:readiness',messages:[{timestamp:Date.now(),autor_tipo:'cliente',cliente_id:'person-one',remitente:'Cliente verificado',texto:'Llegada a las 10'},{timestamp:Date.now(),autor_tipo:'cliente',cliente_id:'person-one',remitente:'Cliente verificado',texto:'Confirmado'},{timestamp:Date.now(),autor_tipo:'equipo',empleado_id:'person-two',remitente:'Equipo LYN',texto:'Recibido'}],specialist:{modelo:'flash',system_prompt:'Solo evidencia'},callAgent:async p=>{sent=p;return{text:evidenceFixture,provider:'gemini',model:'fixture',fallback:false};}});
  assert.equal(sent.split(value.marker).length-1,2);assert.match(sent,/Equipo LYN \[PERSONA:/u);assert.ok(!sent.includes('person-one'));assert.ok(!sent.includes('person-two'));
 });
 test('ordinary work dates and amounts retain their meaning after privacy preparation',async()=>{
