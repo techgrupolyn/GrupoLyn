@@ -2,6 +2,7 @@
 // arranque después de las del entrenador. No tocan ninguna tabla existente: todo cuelga del id de la
 // tarea de ClickUp (`clickup_task_id`). Reversión: backend/netelip/captacion/schema-down.sql.
 
+import { COLA_TABLES, ensureCola } from './schema-cola.ts';
 import { DECISION_TABLES, ensureDecision } from './schema-decision.ts';
 
 export const CAPTACION_TABLES = [
@@ -9,6 +10,7 @@ export const CAPTACION_TABLES = [
   'criterio_config', 'agregacion_config', 'lead_criterio_evaluacion', 'lead_no_apto_evento',
   'lead_resumen_historial',
   ...DECISION_TABLES,
+  ...COLA_TABLES,
 ] as const;
 
 /** Acepta el `Pool` de pg o cualquier conexión con `query` (las pruebas usan una conexión con esquema propio). */
@@ -266,4 +268,6 @@ export async function ensureCaptacion(pool: { query(sql: string): Promise<unknow
   `);
   // N-1.4 · decisión de pase del SDR (tablas propias, en schema-decision.ts).
   await ensureDecision(pool);
+  // Cola de llamadas por procesar (tabla propia, en schema-cola.ts).
+  await ensureCola(pool);
 }

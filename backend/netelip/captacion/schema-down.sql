@@ -3,7 +3,8 @@
 -- evaluaciones por criterio, los eventos de No apto, el histórico de resúmenes ejecutivos y todas las decisiones de pase
 -- (propuestas del SDR, decisiones de la IA y revisiones de Ernesto) con su configuración. Solo para entornos de prueba o si no
 -- llegó a usarse.
--- Orden inverso al de creación; se puede aplicar más de una vez.
+-- Orden inverso al de creación; se puede aplicar más de una vez. La cola de llamadas por procesar también se borra.
+DROP TABLE IF EXISTS captacion_cola;
 DROP TABLE IF EXISTS validacion_decision;
 DROP TABLE IF EXISTS decision_lead;
 DROP TABLE IF EXISTS decision_contexto_config;
