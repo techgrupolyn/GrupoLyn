@@ -182,7 +182,7 @@ function cleanGeminiResponse(raw: string): string {
     return normalized;
   } catch {}
   return normalized
-    .replace(/`[^`]*`/g, '')
+    .replace(/`([^`]*)`/g, '$1')
     .replace(/\*\*/g, '')
     .replace(/\*/g, '')
     .replace(/^#{1,6}\s+/gm, '')
