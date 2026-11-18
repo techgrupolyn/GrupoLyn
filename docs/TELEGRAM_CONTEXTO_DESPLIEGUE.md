@@ -25,3 +25,11 @@ Se reutilizan el receptor, el puente y la base central de Telegram ya provisiona
 5. Conservar código, configuración e interacciones durante una reversión. Verificar salud de los servicios existentes después del cambio.
 
 CI ejecuta las regresiones de contexto y privacidad, las pruebas de la página y la conservación del HTML compilado, además de las comprobaciones existentes. Los ejecutores registran sus recuentos sin sumar tandas repetidas. La aceptación física de dos titulares y el alta de una cuenta nueva necesitan las cuentas correspondientes; la aprobación legal se gestiona por separado.
+
+## Conservación del texto de las citas
+
+La política v6 conserva el control literal de v5 y exige una matriz completa: las referencias al plano ausente pertenecen a plano y la anotación del binario pertenece a adjunto. Las recomendaciones no deben presuponer condiciones pactadas que no aparecen en el periodo.
+
+El formateador de Gemini elimina únicamente los delimitadores de código en línea, conservando su contenido. La versión anterior eliminaba también ese contenido y podía vaciar las celdas antes de que el control de citas recibiera la respuesta. El cambio afecta al formateo de texto, también fuera de Telegram; JSON válido conserva su tratamiento anterior. No se reduce el enmascarado ni se admiten celdas vacías o citas de otro evento.
+
+La regresión telegram-context-transport-evidence.test.ts usa el transporte Gemini simulado y el control real de Telegram. Reproduce la pérdida de citas con el formateador anterior y verifica que el corregido conserva los fragmentos; también comprueba que se siguen rechazando una celda vacía y una referencia al plano presentada como adjunto. Para esta prueba se utiliza tsx, igual que en el backend; GeminiError contiene sintaxis TypeScript que el modo strip-only de Node no admite.
