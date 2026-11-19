@@ -172,6 +172,28 @@ describe('ejecutable de la calibración', () => {
     expect(resumenCalibracion(armarInforme([], []))).not.toContain('por motivo');
   });
 
+  it('los fallos del modelo o de la salida se cuentan por tipo y motivo, para saber qué pasó con la llamada que quedó fuera del informe', () => {
+    const base = { ocurridaEn: '2026-10-01T10:00:00.000Z', categoria: null, lead: null };
+    const i = armarInforme(
+      [
+        { ...base, llamadaId: '1', estado: 'modelo_fallo', motivo: 'Gemini 503: el modelo está sobrecargado' },
+        { ...base, llamadaId: '2', estado: 'modelo_fallo', motivo: 'Gemini 503: el modelo está sobrecargado' },
+        { ...base, llamadaId: '3', estado: 'salida_invalida', motivo: `la salida no es JSON ${'x'.repeat(200)}` },
+        { ...base, llamadaId: '4', estado: 'error', motivo: null },
+        { ...base, llamadaId: '5', estado: 'procesada', lead: { id: 'a', nombre: 'Ana', etapa: 'e3. VIABILIDAD' } },
+      ],
+      [],
+    );
+    expect(i.resumen.errores).toBe(4);
+    expect(i.resumen.erroresPorMotivo).toEqual({
+      'modelo_fallo: Gemini 503: el modelo está sobrecargado': 2,
+      [`salida_invalida: la salida no es JSON ${'x'.repeat(80 - 'la salida no es JSON '.length)}`]: 1,
+      'error: sin detalle': 1,
+    });
+    expect(resumenCalibracion(i)).toContain('Errores por motivo: modelo_fallo: Gemini 503: el modelo está sobrecargado 2');
+    expect(resumenCalibracion(armarInforme([], []))).not.toContain('Errores por motivo');
+  });
+
   it('el resumen de pantalla y el CSV dicen los motivos de las llamadas sin lead y sin decisión, sin nombres', () => {
     const i = armarInforme(
       [
@@ -199,10 +221,16 @@ describe.skipIf(!hayBaseDePruebas)('calibración con el histórico, de punta a p
   let cliente: ClickUpClient;
   const decisiones = new Map<string, unknown>();
 
+  /** Cuántas veces se le ha pedido cada llamada al modelo, y las llamadas a las que la primera vez les «olvida» la decisión. */
+  const vistas = new Map<string, number>();
+  const olvidaLaPrimera = new Set<string>();
   const evaluar = async (_s: string, usuario: string): Promise<RespuestaModelo> => {
     const id = /interaccion_id (\S+)/.exec(usuario)![1]!;
     const n = id.split(':')[1]!;
-    return { text: salidaModelo(id, { decisionIA: decisiones.get(n) }), model: 'gemini-falso', inputTokens: 1, outputTokens: 1 };
+    const vez = (vistas.get(n) ?? 0) + 1;
+    vistas.set(n, vez);
+    const decisionIA = olvidaLaPrimera.has(n) && vez === 1 ? undefined : decisiones.get(n);
+    return { text: salidaModelo(id, { decisionIA }), model: 'gemini-falso', inputTokens: 1, outputTokens: 1 };
   };
 
   beforeEach(async () => {
@@ -217,6 +245,8 @@ describe.skipIf(!hayBaseDePruebas)('calibración con el histórico, de punta a p
     falso = await levantarClickUpFalso();
     cliente = new ClickUpClient({ token: TOKEN_FALSO, listaId: LISTA_FALSA, baseUrl: falso.base, pausaMs: 0, esperar: async () => undefined });
     decisiones.clear();
+    vistas.clear();
+    olvidaLaPrimera.clear();
   });
   afterEach(async () => {
     await falso.cerrar();
@@ -280,6 +310,20 @@ describe.skipIf(!hayBaseDePruebas)('calibración con el histórico, de punta a p
     expect(i.resumen.sinDecisionPorMotivo).toMatchObject({ sin_decision: 1 });
     expect(Object.values(i.resumen.sinLeadPorMotivo).reduce((a, b) => a + b, 0)).toBe(2);
     expect(Object.keys(i.resumen.sinLeadPorMotivo)).not.toContain('desconocido');
+  });
+
+  it('si el modelo «olvida» la decisión de una llamada, la calibración se la vuelve a pedir una vez y la decisión entra en el informe', async () => {
+    tareas({ id: 'ana', nombre: 'Ana', telefono: '+34600000001', etapa: ETAPA.viabilidad }, { id: 'beto', nombre: 'Beto', telefono: '+34600000002', etapa: ETAPA.viabilidad });
+    const a = await llamada('u1', '+34600000001');
+    const b = await llamada('u2', '+34600000002');
+    decisiones.set(a, decision('seguimiento', 'pide_tiempo'));
+    decisiones.set(b, decision('seguimiento', 'pide_tiempo'));
+    olvidaLaPrimera.add(a);
+    const i = await calibrar();
+    expect(i.filas.map((f) => [f.lead, f.decisionIA, f.sinDecisionPor])).toEqual([['Ana', 'seguimiento', null], ['Beto', 'seguimiento', null]]);
+    expect(vistas.get(a)).toBe(2);
+    expect(vistas.get(b)).toBe(1);
+    expect(i.resumen.sinDecision).toBe(0);
   });
 
   it('Escenario «El histórico no cuenta para el acierto»: las decisiones quedan como históricas, sin caso en la bandeja ni casos revisados', async () => {

@@ -77,6 +77,7 @@ export function resumenCalibracion(i: InformeCalibracion): string {
   const cuentas = (m: Record<string, number>) => Object.entries(m).map(([k, v]) => `${k} ${v}`).join(' · ') || '—';
   return [
     `Llamadas con transcripción: ${r.llamadas} · analizadas (con lead identificado): ${r.analizadas} · sin lead identificado (fuera del informe): ${r.sinLead} · con error: ${r.errores}`,
+    ...(r.errores > 0 ? [`Errores por motivo: ${cuentas(r.erroresPorMotivo)}`] : []),
     ...(r.sinLead > 0 ? [`Sin lead por motivo: ${cuentas(r.sinLeadPorMotivo)}`] : []),
     `Decisión de la IA: ${r.conDecision} con decisión · ${r.sinDecision} sin ella → ${cuentas(r.porDecision)}`,
     ...(r.sinDecision > 0 ? [`Sin decisión por motivo: ${cuentas(r.sinDecisionPorMotivo)}`] : []),

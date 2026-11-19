@@ -49,6 +49,8 @@ export interface OpcionesLote {
   intentos?: number;
   /** `historico` en la calibración (N-1.4): las decisiones de la IA no entran en la bandeja ni en el acierto. Por defecto `nuevo`. */
   origenDecision?: Origen;
+  /** Volver a pedir UNA vez la decisión de pase cuando el modelo no la da (ver `Dependencias.reintentarDecision`). Por defecto no. */
+  reintentarDecision?: boolean;
   esperar?: (ms: number) => Promise<void>;
   registro?: (mensaje: string) => void;
 }
@@ -216,6 +218,7 @@ export async function ejecutarLote(o: OpcionesLote): Promise<InformeLote> {
       // del lead es justo el desenlace con el que se compara la decisión de la IA.
       etapaLead: o.origenDecision === 'historico' ? undefined : (id: string) => numeroDeEtapa(porId.get(id)?.campos[NOMBRES_CAMPOS.etapa]),
       origenDecision: o.origenDecision,
+      reintentarDecision: o.reintentarDecision,
     };
     let resultado: ResultadoLlamada | null = null;
     let error: string | null = null;

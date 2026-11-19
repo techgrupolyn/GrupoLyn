@@ -209,6 +209,7 @@ export class ProcesadorCola {
       nombreLead: (id) => inst.porId.get(id)?.nombre ?? null,
       evaluar: this.d.evaluar,
       etapaLead: (id) => numeroDeEtapa(inst.porId.get(id)?.campos[NOMBRES_CAMPOS.etapa]),
+      reintentarDecision: true,
     }, entrada);
 
     switch (resultado.estado) {

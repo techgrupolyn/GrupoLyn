@@ -40,6 +40,11 @@ export interface Dependencias {
   etapaLead?: (clickupTaskId: string) => number | null;
   /** `historico` en la calibración con llamadas antiguas: la decisión de la IA se guarda pero no entra en la bandeja ni en el acierto. */
   origenDecision?: Origen;
+  /**
+   * Si el modelo contesta sin decisión de pase para un lead que la exige, se le vuelve a pedir UNA vez. Apagado por defecto (cada
+   * reintento es una llamada más al modelo); lo encienden el flujo automático, la calibración y el lote por línea de comandos.
+   */
+  reintentarDecision?: boolean;
 }
 
 /** Guion, manual y motivos vigentes de la decisión de pase. Sin ellos (tablas sin configurar) la llamada se califica igual. */
@@ -72,6 +77,8 @@ export type ResultadoLlamada =
       resumen: ResultadoResumenGuardado;
       /** Qué pasó con la decisión de pase de la IA. */
       decision: ResultadoDecisionGuardada;
+      /** El modelo no dio decisión a la primera y se le volvió a pedir una vez (solo presente en ese caso). */
+      decisionReintentada?: true;
       modelo: string;
       tokens: [number | null, number | null];
       versionPrompt: string;
@@ -91,6 +98,7 @@ export async function evaluarLlamadaCaptacion(deps: Dependencias, llamada: Entra
   const conDecision = generaDecision(deps.etapaLead?.(vinculo.clickupTaskId) ?? null);
   let respuesta;
   let config: ContextoDecision | null = null;
+  let pedido: { sistema: string; usuario: string } | null = null;
   try {
     // Una sola lectura antes de llamar al modelo (no se retiene una conexión mientras contesta): el resumen que el lead tenía ANTES de
     // esta llamada (generación incremental, N-1.3) y el guion, el manual y los motivos vigentes (N-1.4).
@@ -99,29 +107,45 @@ export async function evaluarLlamadaCaptacion(deps: Dependencias, llamada: Entra
       config: await leerConfigDecision(db),
     }));
     config = previo.config;
-    respuesta = await deps.evaluar(
-      promptSistema(undefined, config ?? CONTEXTO_POR_DEFECTO),
-      promptUsuario({
+    pedido = {
+      sistema: promptSistema(undefined, config ?? CONTEXTO_POR_DEFECTO),
+      usuario: promptUsuario({
         interaccionId, direccion: llamada.direccion, fecha: fechaMadrid(llamada.ocurridaEn), duracionSegundos: llamada.duracionSegundos, transcripcion,
         resumenAnterior: previo.resumenAnterior, sinDecision: !conDecision,
       }),
-    );
+    };
+    respuesta = await deps.evaluar(pedido.sistema, pedido.usuario);
   } catch (error) {
     return { estado: 'modelo_fallo', error: (error as Error).message.slice(0, 500), clickupTaskId: vinculo.clickupTaskId };
   }
 
-  const resultado = await deps.conDb((db) =>
+  const guardar = (texto: string) => deps.conDb((db) =>
     procesarEvaluacionLlamada(db, {
       clickupTaskId: vinculo.clickupTaskId,
       interaccionId,
       fechaInteraccion: llamada.ocurridaEn.toISOString(),
       transcripcion,
-      salidaModelo: respuesta.text,
+      salidaModelo: texto,
       decision: conDecision && config
         ? { motivos: config.motivos, versionGuion: config.guion.version, versionManual: config.manual.version, versionPrompt: VERSION_PROMPT, origen: deps.origenDecision ?? 'nuevo' }
         : undefined,
     }),
   );
+  let resultado = await guardar(respuesta.text);
+  // N-1.4: a veces el modelo contesta la evaluación pero deja la decisión de pase vacía aunque el lead la exija (2 de 32 llamadas en la
+  // calibración del 19/11). Se le vuelve a pedir UNA vez. La calificación y el resumen ya están guardados (se guardan una vez por llamada),
+  // así que la segunda respuesta solo puede aportar la decisión; si falla o tampoco la trae, la llamada se queda como estaba.
+  let decisionReintentada = false;
+  if (deps.reintentarDecision === true && resultado.estado !== 'salida_invalida' && resultado.decision.estado === 'sin_decision' && pedido) {
+    decisionReintentada = true;
+    try {
+      const otra = await deps.evaluar(pedido.sistema, pedido.usuario);
+      const segunda = await guardar(otra.text);
+      if (segunda.estado !== 'salida_invalida') resultado = { ...resultado, decision: segunda.decision };
+    } catch {
+      /* se conserva el primer resultado */
+    }
+  }
   if (resultado.estado === 'salida_invalida') return { estado: 'salida_invalida', error: resultado.error, clickupTaskId: vinculo.clickupTaskId };
 
   const { registro, recalculo, descartes } = resultado;
@@ -136,6 +160,7 @@ export async function evaluarLlamadaCaptacion(deps: Dependencias, llamada: Entra
     nuevo: registro.criterios > 0 || registro.presupuesto || registro.noApto,
     resumen: resultado.resumen,
     decision: resultado.decision,
+    ...(decisionReintentada ? { decisionReintentada: true } : {}),
     modelo: respuesta.model,
     tokens: [respuesta.inputTokens, respuesta.outputTokens],
     versionPrompt: VERSION_PROMPT,

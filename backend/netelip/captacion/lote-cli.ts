@@ -148,7 +148,7 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
     await ensureCaptacion(pool);
     const informe = await ejecutarLote({
       pool, cliente: new ClickUpClient(config), evaluar, desde: a.desde, hasta: a.hasta, candidatos: a.candidatos,
-      escribirMaximo: a.escribir, limite: a.limite, registro: (m) => console.log(m),
+      escribirMaximo: a.escribir, limite: a.limite, reintentarDecision: true, registro: (m) => console.log(m),
     });
     writeFileSync(a.informe, informeCsv(informe), 'utf8');
     console.log(resumenTexto(informe));

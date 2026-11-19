@@ -78,7 +78,8 @@ describe.skipIf(!hayBaseDePruebas)('cola de captación, de punta a punta', () =>
     cliente = new ClickUpClient({ token: TOKEN_FALSO, listaId: LISTA_FALSA, baseUrl: falso.base, pausaMs: 0, esperar: async () => undefined });
     peticiones = [];
     fallos = 0;
-    salida = (id) => salidaModelo(id);
+    // Por defecto el modelo falso da su evaluación CON decisión: sin ella, el flujo vuelve a pedirla una vez (y los recuentos de llamadas cambian).
+    salida = (id) => salidaModelo(id, { decisionIA: decision('seguimiento', 'pide_tiempo') });
     avisos = [];
     alEvaluar = null;
   });
@@ -152,7 +153,7 @@ describe.skipIf(!hayBaseDePruebas)('cola de captación, de punta a punta', () =>
   it('procesa una llamada: la vincula con su lead, la califica y guarda resumen y decisión; en simulacro no escribe nada en ClickUp', async () => {
     tareas({ id: 'ana', nombre: 'Ana', telefono: '+34600000001', etapa: ETAPA.viabilidad });
     const id = await llamada('u1', '+34600000001');
-    salida = (i) => salidaModelo(i, { resumen: RESUMEN_BUENO });
+    salida = (i) => salidaModelo(i, { resumen: RESUMEN_BUENO, decisionIA: decision('seguimiento', 'pide_tiempo') });
     expect(await procesador().procesarSiguiente()).toBe('procesada');
     expect(await fila(id)).toMatchObject({ estado: 'procesada', clickup_task_id: 'ana', escritura: 'simulada', motivo: null });
     expect((await base.query('SELECT clickup_task_id FROM lead_criterio_evaluacion WHERE interaccion_id = $1 LIMIT 1', [`netelip:${id}`])).rows).toEqual([{ clickup_task_id: 'ana' }]);
@@ -168,7 +169,7 @@ describe.skipIf(!hayBaseDePruebas)('cola de captación, de punta a punta', () =>
     );
     const a = await llamada('u1', '+34600000001', '2026-11-17T10:00:00Z');
     const b = await llamada('u2', '+34600000002', '2026-11-17T11:00:00Z');
-    salida = (i) => salidaModelo(i, { resumen: RESUMEN_BUENO });
+    salida = (i) => salidaModelo(i, { resumen: RESUMEN_BUENO, decisionIA: decision('seguimiento', 'pide_tiempo') });
     const p = procesador({ escribir: true });
     expect(await p.procesarSiguiente()).toBe('procesada');
     const escritos = posts().map((x) => x.ruta);
@@ -196,7 +197,7 @@ describe.skipIf(!hayBaseDePruebas)('cola de captación, de punta a punta', () =>
     tareas({ id: 'ana', nombre: 'Ana', telefono: '+34600000001', etapa: ETAPA.viabilidad });
     const tarde = await llamada('u2', '+34600000001', '2026-11-18T10:00:00Z');
     const pronto = await llamada('u1', '+34600000001', '2026-11-17T10:00:00Z');
-    salida = (i) => salidaModelo(i, { resumen: RESUMEN_BUENO });
+    salida = (i) => salidaModelo(i, { resumen: RESUMEN_BUENO, decisionIA: decision('seguimiento', 'pide_tiempo') });
     expect(await procesador().vaciar()).toBe(2);
     expect(peticiones.map((x) => x.interaccion)).toEqual([`netelip:${pronto}`, `netelip:${tarde}`]);
     expect(peticiones[0]!.usuario).toContain('Resumen anterior del lead: ninguno');
@@ -244,6 +245,17 @@ describe.skipIf(!hayBaseDePruebas)('cola de captación, de punta a punta', () =>
     expect(peticiones).toHaveLength(3);
     // No quedó nada a medias: ni evaluaciones, ni resumen, ni decisión.
     expect((await base.query('SELECT count(*)::int AS n FROM lead_criterio_evaluacion')).rows[0]!.n).toBe(0);
+  });
+
+  it('si el modelo contesta sin decisión de pase, la cola se la vuelve a pedir una vez y la decisión se guarda', async () => {
+    tareas({ id: 'ana', nombre: 'Ana', telefono: '+34600000001', etapa: ETAPA.viabilidad });
+    const id = await llamada('u1', '+34600000001');
+    let n = 0;
+    salida = (i) => { n += 1; return salidaModelo(i, n === 1 ? {} : { decisionIA: decision('seguimiento', 'pide_tiempo') }); };
+    expect(await procesador().procesarSiguiente()).toBe('procesada');
+    expect(n).toBe(2);
+    expect(await fila(id)).toMatchObject({ estado: 'procesada', intentos: 1 });
+    expect((await base.query("SELECT decision FROM decision_lead WHERE actor = 'ia'")).rows).toEqual([{ decision: 'seguimiento' }]);
   });
 
   it('un fallo seguido de un acierto deja la llamada procesada con sus intentos', async () => {
@@ -364,7 +376,7 @@ describe.skipIf(!hayBaseDePruebas)('cola de captación, de punta a punta', () =>
   it('si la escritura en ClickUp falla, la llamada queda evaluada y la escritura se repara después sin volver a llamar al modelo', async () => {
     tareas({ id: 'ana', nombre: 'Ana', telefono: '+34600000001', etapa: ETAPA.viabilidad });
     const id = await llamada('u1', '+34600000001');
-    salida = (i) => salidaModelo(i, { resumen: RESUMEN_BUENO });
+    salida = (i) => salidaModelo(i, { resumen: RESUMEN_BUENO, decisionIA: decision('seguimiento', 'pide_tiempo') });
     falso.fallar = (x) => x.metodo === 'POST';
     const p = procesador({ escribir: true });
     expect(await p.procesarSiguiente()).toBe('procesada');
@@ -479,7 +491,7 @@ describe.skipIf(!hayBaseDePruebas)('cola de captación, de punta a punta', () =>
   it('antes de evaluar deja los datos de la tarjeta: el alcance provisional y el rango del formulario como presupuesto', async () => {
     tareas({ id: 'ana', nombre: 'Ana', telefono: '+34600000001', etapa: ETAPA.viabilidad, tipoContacto: 0, tipoReforma: 0, presupuestoFormulario: 2 });
     await llamada('u1', '+34600000001');
-    salida = (i) => salidaModelo(i, { presupuesto: null });
+    salida = (i) => salidaModelo(i, { presupuesto: null, decisionIA: decision('seguimiento', 'pide_tiempo') });
     expect((await base.query('SELECT count(*)::int AS n FROM lead_presupuesto_evento')).rows[0]!.n).toBe(0);
     expect(await procesador().procesarSiguiente()).toBe('procesada');
     expect((await base.query('SELECT count(*)::int AS n FROM lead_presupuesto_evento')).rows[0]!.n).toBe(1);

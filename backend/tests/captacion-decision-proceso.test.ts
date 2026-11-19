@@ -60,6 +60,74 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase de la IA en el proceso de 
   };
   const filaIA = async () => (await base.query('SELECT * FROM decision_lead WHERE actor = $1', ['ia'])).rows[0];
 
+  // --- Reintento cuando el modelo no da decisión ---------------------------------------------------------------------------------
+
+  /** Un modelo que contesta cada vez con la decisión siguiente de la lista (la última se repite); `undefined` = sin decisión. */
+  const guionado = (...respuestas: Array<unknown | { roto: true } | { falla: true }>) => {
+    const cuenta = { n: 0 };
+    const evaluar: Dependencias['evaluar'] = async (_system, user): Promise<RespuestaModelo> => {
+      const r = respuestas[Math.min(cuenta.n, respuestas.length - 1)] as { roto?: true; falla?: true } | undefined;
+      cuenta.n += 1;
+      if (r?.falla) throw new Error('el modelo no contesta');
+      const id = /interaccion_id (\S+)/.exec(user)![1]!;
+      return { text: r?.roto ? 'esto no es JSON' : salidaModelo(id, { decisionIA: r }), model: 'gemini-falso', inputTokens: 1, outputTokens: 1 };
+    };
+    return { evaluar, cuenta };
+  };
+  const correr = async (m: ReturnType<typeof guionado>, extra: Partial<Dependencias> = {}) => {
+    const r = await evaluarLlamadaCaptacion(montar(undefined, { evaluar: m.evaluar, ...extra }).deps, llamada());
+    if (r.estado !== 'procesada') throw new Error(`no procesada: ${r.estado}`);
+    return r;
+  };
+
+  it('si el modelo no da decisión para un lead que la exige, se le vuelve a pedir UNA vez y la segunda se guarda', async () => {
+    const m = guionado(undefined, DECISION);
+    const r = await correr(m, { reintentarDecision: true });
+    expect(m.cuenta.n).toBe(2);
+    expect(r.decision).toEqual({ estado: 'guardada', decision: 'pasar_a_reunion' });
+    expect(r.decisionReintentada).toBe(true);
+    expect(await contar('decision_lead', "actor = 'ia'")).toBe(1);
+    // La calificación y el resumen no se duplican por la segunda respuesta.
+    expect(await contar('lead_criterio_evaluacion')).toBe(7);
+  });
+
+  it('sin la bandera, o con decisión a la primera, no hay segunda llamada al modelo', async () => {
+    const apagado = guionado(undefined, DECISION);
+    expect((await correr(apagado)).decision).toEqual({ estado: 'sin_decision' });
+    expect(apagado.cuenta.n).toBe(1);
+    const completo = guionado(DECISION, DECISION);
+    const r = await correr(completo, { reintentarDecision: true });
+    expect(completo.cuenta.n).toBe(1);
+    expect(r.decisionReintentada).toBeUndefined();
+  });
+
+  it('se reintenta una sola vez: si la segunda tampoco trae decisión, la llamada queda sin decisión tras dos llamadas', async () => {
+    const m = guionado(undefined);
+    const r = await correr(m, { reintentarDecision: true });
+    expect(m.cuenta.n).toBe(2);
+    expect(r.decision).toEqual({ estado: 'sin_decision' });
+    expect(r.decisionReintentada).toBe(true);
+    expect(await contar('decision_lead')).toBe(0);
+  });
+
+  it('un lead en F2 o más allá no genera decisión y tampoco la pide otra vez', async () => {
+    const m = guionado(undefined, DECISION);
+    const r = await correr(m, { reintentarDecision: true, etapaLead: () => 4 });
+    expect(m.cuenta.n).toBe(1);
+    expect(r.decision).toEqual({ estado: 'omitida' });
+  });
+
+  it('si la segunda respuesta viene rota o el modelo falla, la llamada no se pierde: queda calificada y sin decisión', async () => {
+    for (const segunda of [{ roto: true as const }, { falla: true as const }]) {
+      await base.query('TRUNCATE decision_lead, lead_criterio_evaluacion, lead_presupuesto_evento, lead_calificacion_historial, lead_resumen_historial CASCADE');
+      const m = guionado(undefined, segunda);
+      const r = await correr(m, { reintentarDecision: true });
+      expect(m.cuenta.n).toBe(2);
+      expect(r.decision).toEqual({ estado: 'sin_decision' });
+      expect(await contar('lead_criterio_evaluacion')).toBe(7);
+    }
+  });
+
   it('guarda la decisión de la IA con su motivo, sus pasos y las versiones del guion, del manual y del prompt con que decidió', async () => {
     const { r } = await procesar(DECISION);
     expect(r.decision).toEqual({ estado: 'guardada', decision: 'pasar_a_reunion' });

@@ -70,6 +70,8 @@ export interface InformeCalibracion {
     sinLeadPorMotivo: Record<string, number>;
     /** Fallos del modelo o de la salida: ni se analizaron ni están en el informe. */
     errores: number;
+    /** Los fallos, por tipo y primeras palabras del motivo (`modelo_fallo: …`); sin nombres ni teléfonos. */
+    erroresPorMotivo: Record<string, number>;
     conDecision: number;
     sinDecision: number;
     /** Las analizadas sin decisión, por motivo. */
@@ -125,6 +127,10 @@ export function armarInforme(
       sinLead: filasLote.filter((f) => f.estado === 'sin_lead' || f.estado === 'sin_conversacion').length,
       sinLeadPorMotivo: contar(filasLote.filter((f) => f.estado === 'sin_lead' || f.estado === 'sin_conversacion'), (f) => (f.estado === 'sin_conversacion' ? 'sin_conversacion' : (f.motivo ?? 'desconocido'))),
       errores: filasLote.filter((f) => f.estado === 'error' || f.estado === 'modelo_fallo' || f.estado === 'salida_invalida').length,
+      erroresPorMotivo: contar(
+        filasLote.filter((f) => f.estado === 'error' || f.estado === 'modelo_fallo' || f.estado === 'salida_invalida'),
+        (f) => `${f.estado}: ${(f.motivo ?? 'sin detalle').replace(/\s+/g, ' ').slice(0, 80)}`,
+      ),
       conDecision: filas.filter((f) => f.decisionIA !== null).length,
       sinDecision: filas.filter((f) => f.decisionIA === null).length,
       sinDecisionPorMotivo: contar(filas, (f) => f.sinDecisionPor),
@@ -144,7 +150,7 @@ export interface OpcionesCalibracion extends Omit<OpcionesLote, 'candidatos' | '
  * son los que tienen desenlace), sin escribir nada en ClickUp y guardando las decisiones como históricas.
  */
 export async function ejecutarCalibracion(o: OpcionesCalibracion): Promise<InformeCalibracion> {
-  const lote = await ejecutarLote({ ...o, candidatos: 'todos', escribirMaximo: 0, origenDecision: 'historico' });
+  const lote = await ejecutarLote({ ...o, candidatos: 'todos', escribirMaximo: 0, origenDecision: 'historico', reintentarDecision: true });
   const ids = lote.filas.filter((f) => f.estado === 'procesada').map((f) => interaccionDe(f.llamadaId));
   const { rows } = await o.pool.query<{ llamada_id: string; decision: Decision; motivo_codigo: string | null; excepciones: string[]; dudas: string[]; pendiente_ernesto: unknown }>(
     `SELECT llamada_id, decision, motivo_codigo, excepciones, dudas, pendiente_ernesto FROM decision_lead
