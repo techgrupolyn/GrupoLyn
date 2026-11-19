@@ -65,7 +65,18 @@ export async function ensureCaptacionWhatsApp(pool: Consultable): Promise<void> 
     ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS remitente_numero_id TEXT;   -- phone_number_id del que salió
     -- Jean (17/11/2026): el aviso sale del número general y anuncia el fijo de Netelip desde el que llamará el comercial.
     ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS telefono_anunciado TEXT;    -- fijo anunciado al lead
+    -- Jean (19/11/2026): el número general no lo ve nadie, así que el comercial recibe en su WhatsApp una copia de cada
+    -- aviso enviado (a quién y a qué teléfono). copia_estado NULL = sin copia configurada.
+    ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS copia_destino TEXT;         -- WhatsApp del comercial (E.164)
+    ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS copia_estado TEXT
+      CHECK (copia_estado IN ('pendiente','enviada','fallida'));
+    ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS copia_intentos INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS copia_siguiente_intento TIMESTAMPTZ;
+    ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS copia_wamid TEXT;
+    ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS copia_enviada_en TIMESTAMPTZ;
+    ALTER TABLE captacion_whatsapp_avisos ADD COLUMN IF NOT EXISTS copia_motivo TEXT;
     CREATE INDEX IF NOT EXISTS captacion_whatsapp_avisos_pendientes ON captacion_whatsapp_avisos(siguiente_intento) WHERE estado = 'pendiente';
+    CREATE INDEX IF NOT EXISTS captacion_whatsapp_avisos_copias ON captacion_whatsapp_avisos(copia_siguiente_intento) WHERE copia_estado = 'pendiente';
     CREATE INDEX IF NOT EXISTS captacion_whatsapp_avisos_lead ON captacion_whatsapp_avisos(clickup_task_id, creado_en DESC);
 
     -- Línea base: el primer barrido marca los leads que YA estaban en e1 al activar el módulo, sin escribirles.

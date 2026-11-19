@@ -15,14 +15,15 @@ const CODIGOS_TEMPORALES = new Set(['1', '2', '4', '10', '17', '80007', '130429'
 
 /**
  * Envía la plantilla al lead desde el número `numeroId` (phone_number_id de la Cloud API). `parametros`: valores de
- * {{1}}, {{2}}… del cuerpo, en orden; vacío = plantilla sin variables.
+ * {{1}}, {{2}}… del cuerpo, en orden; vacío = plantilla sin variables. `plantilla`: otra plantilla aprobada en vez de
+ * la del aviso (la copia al comercial).
  */
-export type Enviar = (telefonoE164: string, numeroId: string, parametros?: string[]) => Promise<{ wamid: string }>;
+export type Enviar = (telefonoE164: string, numeroId: string, parametros?: string[], plantilla?: string) => Promise<{ wamid: string }>;
 
 type ConfigEnvio = Pick<ConfigCloud, 'token' | 'versionApi' | 'plantilla' | 'idioma'>;
 
 export function crearEnviador(cloud: ConfigEnvio, fetcher: typeof fetch = fetch): Enviar {
-  return async (telefonoE164, numeroId, parametros = []) => {
+  return async (telefonoE164, numeroId, parametros = [], plantilla = cloud.plantilla) => {
     const url = `https://graph.facebook.com/${encodeURIComponent(cloud.versionApi)}/${encodeURIComponent(numeroId)}/messages`;
     let response: Response;
     try {
@@ -35,7 +36,7 @@ export function crearEnviador(cloud: ConfigEnvio, fetcher: typeof fetch = fetch)
           to: telefonoE164.replace(/\D/g, ''),
           type: 'template',
           template: {
-            name: cloud.plantilla,
+            name: plantilla,
             language: { code: cloud.idioma },
             ...(parametros.length ? { components: [{ type: 'body', parameters: parametros.map((text) => ({ type: 'text', text })) }] } : {}),
           },

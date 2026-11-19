@@ -53,6 +53,33 @@ Meta ──webhook firmado──► /webhook/whatsapp-cloud ──► entregado 
   `CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS` vacío se usa una plantilla sin variables (la primera,
   `aviso_solicitud_llamada`). `…_REMITENTE_*_NUMERO_ID` solo hace falta si algún día un comercial envía desde su propio
   número de la Cloud API.
+- **Plantilla con el nombre del cliente** (Alex y Jean, 19/11/2026): `aviso_llamada_comercial_cliente`, con
+  `CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS=cliente,nombre,telefono`:
+
+  > Hola, {{1}}. Soy {{2}}, de Grupo LYN. Hemos recibido su solicitud de reforma y le llamaré en breve desde el
+  > número {{3}} para hablar de su proyecto. Guárdelo para reconocer la llamada. Este chat no recibe respuestas: si
+  > necesita hablar conmigo antes, llámeme o escríbame por WhatsApp a ese número.
+
+  `cliente` es el nombre de pila sacado del nombre de la tarea, que el equipo escribe a mano: la primera palabra,
+  sin notas tras « - » («Victor Manuel Cebrian Morales - pendiente agendar fase 2» → «Victor»), con mayúscula inicial
+  («LYDIA GARCIA» → «Lydia»). Si no hay un nombre usable («Y», «El Viajero») va «buenas»: «Hola, buenas. Soy…». Meta
+  no admite variables vacías, así que nunca falta. Para que salga «Víctor» con tilde:
+  `CAPTACION_WHATSAPP_REMITENTE_BASE_NOMBRE="Víctor"`. El fijo anunciado tiene WhatsApp Business: si el lead escribe,
+  lo ve el comercial en su móvil. El número general no lo tiene nadie en un móvil (está en la Cloud API), por eso la
+  plantilla avisa de que ese chat no recibe respuestas.
+- **Copia al comercial** (Jean, 19/11/2026): como nadie ve el número general, tras cada aviso enviado el comercial
+  recibe en su WhatsApp, desde el mismo número, la plantilla `copia_aviso_comercial`:
+
+  > Aviso de solicitud de llamada enviado a {{1}} ({{2}}). Ha recibido el WhatsApp de Grupo LYN con tu número;
+  > llámale en breve.
+
+  {{1}} es el nombre de la tarea sin las notas tras « - » y {{2}} el teléfono del lead. Se activa con
+  `CAPTACION_WHATSAPP_PLANTILLA_COPIA`; va al fijo del comercial (`…_REMITENTE_*_TELEFONO`, que tiene WhatsApp
+  Business) o a `…_REMITENTE_*_COPIA` si se quiere otro. Se reintenta como el aviso; si sigue fallando queda
+  `copia_estado = 'fallida'` y avisa a soporte técnico, sin tocar el aviso al lead. En modo QA la copia solo sale si
+  el WhatsApp del comercial también está en `CAPTACION_WHATSAPP_SOLO_TELEFONOS`. Columnas: `copia_destino`,
+  `copia_estado`, `copia_intentos`, `copia_wamid`, `copia_enviada_en`, `copia_motivo`. Es provisional: con la
+  coexistencia el aviso saldrá del número del comercial y lo verá en su chat.
 - **Tareas de prueba:** si el nombre de la tarea lleva «NO USAR» o la palabra «prueba» (convención del equipo,
   p. ej. «prueba Mateo-Roger(NO USAR)»), no se envía: queda `no_enviado` con motivo `prueba`. Sus teléfonos suelen
   ser inventados y podrían ser de alguien real. Para probar el envío de verdad, usar un lead con otro nombre y un
@@ -177,7 +204,9 @@ GET /api/captacion/whatsapp/avisos?limit=50                  los últimos avisos
 | `WHATSAPP_CLOUD_API_VERSION` | `v23.0` | Versión de la Graph API. |
 | `WHATSAPP_CLOUD_APP_SECRET`, `WHATSAPP_CLOUD_VERIFY_TOKEN` | — | Webhook de estados de Meta. |
 | `CAPTACION_WHATSAPP_PLANTILLA`, `CAPTACION_WHATSAPP_IDIOMA` | —, `es_ES` | Plantilla aprobada (`aviso_solicitud_llamada_comercial`). |
-| `CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS` | vacío | Variables de la plantilla, en orden: `nombre`, `telefono`. Con la de Jean: `nombre,telefono`. |
+| `CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS` | vacío | Variables de la plantilla, en orden: `cliente`, `nombre`, `telefono`. Con la de Jean: `nombre,telefono`; con la de Alex: `cliente,nombre,telefono`. |
+| `CAPTACION_WHATSAPP_PLANTILLA_COPIA` | vacío | Plantilla aprobada de la copia al comercial (`copia_aviso_comercial`). Vacío = sin copia. |
+| `CAPTACION_WHATSAPP_REMITENTE_ALTO_COPIA`, `…_BASE_COPIA` | su `…_TELEFONO` | WhatsApp que recibe la copia, si no es el fijo. |
 | `CAPTACION_WHATSAPP_HORARIO` | vacío | Franja de envío (Madrid). Producción: `07:00-20:00`. |
 | `CAPTACION_WHATSAPP_SOLO_TELEFONOS` | vacío | Modo QA: solo se escribe a estos móviles. **Vacío en producción.** |
 | `CAPTACION_WHATSAPP_CADUCIDAD_MINUTOS` | `720` | Antigüedad máxima para enviar. |

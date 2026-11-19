@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { cambiosDeEtapa, crearClienteClickUp, firmaClickUpValida, nombreOpcion } from '../captacion-whatsapp/clickup.ts';
 import { crearEnviador, ErrorCloud, estadosDelWebhook, firmaMetaValida } from '../captacion-whatsapp/cloud-api.ts';
-import { configCaptacionDesdeEnv, dentroDeHorario, elegirRemitente, limiteInferiorPresupuesto, parseHorario, parseParametrosPlantilla, parseSoloTelefonos, valoresPlantilla } from '../captacion-whatsapp/config.ts';
+import { configCaptacionDesdeEnv, dentroDeHorario, elegirRemitente, limiteInferiorPresupuesto, nombreDePila, nombreParaCopia, parseHorario, parseParametrosPlantilla, parseSoloTelefonos, valoresPlantilla } from '../captacion-whatsapp/config.ts';
 import { esLeadDePrueba, telefonoParaWhatsApp } from '../captacion-whatsapp/proceso.ts';
 
 const OPCIONES = [{ id: 'o1', name: 'e1 EN ESPERA', orderindex: 0 }, { id: 'o2', name: 'e2 CONTACTADO', orderindex: 1 }];
@@ -25,12 +25,12 @@ describe('configuración', () => {
     expect(conCloud.cloud).toMatchObject({ plantilla: 'aviso_llamada', idioma: 'es_ES', versionApi: 'v23.0' });
     // Sin número propio, cada remitente usa el común.
     expect(conCloud.remitentes).toEqual({ umbral: 100000,
-      alto: { clave: 'alto', nombre: 'Ernesto', numeroId: '123', telefonoLlamada: null }, base: { clave: 'base', nombre: 'Victor', numeroId: '123', telefonoLlamada: null } });
+      alto: { clave: 'alto', nombre: 'Ernesto', numeroId: '123', telefonoLlamada: null, copiaA: null }, base: { clave: 'base', nombre: 'Victor', numeroId: '123', telefonoLlamada: null, copiaA: null } });
     expect(conCloud.cloud!.parametros).toEqual([]);
     const propios = configCaptacionDesdeEnv({ CAPTACION_WHATSAPP_ENABLED: 'true', CLICKUP_API_TOKEN: 'pk',
       CAPTACION_WHATSAPP_REMITENTE_ALTO_NUMERO_ID: 'n-ernesto', CAPTACION_WHATSAPP_REMITENTE_BASE_NOMBRE: 'Víctor' })!;
     expect(propios.remitentes.alto.numeroId).toBe('n-ernesto');
-    expect(propios.remitentes.base).toEqual({ clave: 'base', nombre: 'Víctor', numeroId: null, telefonoLlamada: null });
+    expect(propios.remitentes.base).toEqual({ clave: 'base', nombre: 'Víctor', numeroId: null, telefonoLlamada: null, copiaA: null });
   });
 
   it('plantilla con el fijo de Netelip del comercial (Jean, 17/11/2026): variables y valores por remitente', () => {
@@ -44,8 +44,39 @@ describe('configuración', () => {
     expect(valoresPlantilla(['telefono'], c.remitentes.alto)).toEqual(['+34 865 60 83 43']);
     expect(valoresPlantilla([], c.remitentes.alto)).toEqual([]);
     expect(valoresPlantilla(['telefono'], { ...c.remitentes.base, telefonoLlamada: null })).toBeNull();
+    expect(valoresPlantilla(['cliente', 'nombre', 'telefono'], c.remitentes.base, 'LYDIA GARCIA')).toEqual(['Lydia', 'Victor', '+34 865 45 61 34']);
+    expect(valoresPlantilla(['cliente'], c.remitentes.base, null)).toEqual(['buenas']);
+    expect(parseParametrosPlantilla('cliente,nombre,telefono')).toEqual(['cliente', 'nombre', 'telefono']);
     expect(parseParametrosPlantilla('')).toEqual([]);
     expect(() => parseParametrosPlantilla('nombre, email')).toThrow(/PLANTILLA_PARAMETROS/);
+  });
+
+  it('copia al comercial (Jean, 19/11/2026): por defecto a su fijo en E.164, o a otro WhatsApp; sin plantilla, sin copia', () => {
+    const base = { CAPTACION_WHATSAPP_ENABLED: 'true', CLICKUP_API_TOKEN: 'pk', WHATSAPP_CLOUD_TOKEN: 't', CAPTACION_WHATSAPP_PLANTILLA: 'aviso',
+      CAPTACION_WHATSAPP_REMITENTE_ALTO_TELEFONO: '+34 865 60 83 43', CAPTACION_WHATSAPP_REMITENTE_BASE_TELEFONO: '+34 865 45 61 34' };
+    const c = configCaptacionDesdeEnv({ ...base, CAPTACION_WHATSAPP_PLANTILLA_COPIA: 'copia_aviso', CAPTACION_WHATSAPP_REMITENTE_ALTO_COPIA: '600 11 22 33' })!;
+    expect(c.cloud!.plantillaCopia).toBe('copia_aviso');
+    expect(c.remitentes.base.copiaA).toBe('+34865456134');
+    expect(c.remitentes.alto.copiaA).toBe('+34600112233');
+    expect(configCaptacionDesdeEnv(base)!.cloud!.plantillaCopia).toBeNull();
+    expect(() => configCaptacionDesdeEnv({ ...base, CAPTACION_WHATSAPP_REMITENTE_BASE_COPIA: 'abc' })).toThrow(/BASE_COPIA/);
+    expect(nombreParaCopia('Ana Mir - LLAMAR 11/11 - 17.00 H')).toBe('Ana Mir');
+    expect(nombreParaCopia('Dori_Campillo')).toBe('Dori Campillo');
+    expect(nombreParaCopia('  ')).toBe('sin nombre');
+  });
+
+  it('nombre de pila del lead a partir del nombre de la tarea (nombres reales de «Contacto de Reforma»)', () => {
+    expect(nombreDePila('Victor Manuel Cebrian Morales - pendiente agendar fase 2')).toBe('Victor');
+    expect(nombreDePila('LYDIA GARCIA')).toBe('Lydia');
+    expect(nombreDePila('mohamed gueye')).toBe('Mohamed');
+    expect(nombreDePila('Dori_Campillo')).toBe('Dori');
+    expect(nombreDePila('María José Pelegrín')).toBe('María');
+    expect(nombreDePila('chusa - fase 2 23/11 - 10.00 h')).toBe('Chusa');
+    expect(nombreDePila('McDonald')).toBe('McDonald');
+    expect(nombreDePila('Y')).toBeNull();
+    expect(nombreDePila('El Viajero')).toBeNull();
+    expect(nombreDePila('123')).toBeNull();
+    expect(nombreDePila(null)).toBeNull();
   });
 
   it('remitente por presupuesto: desde 100.000 € Ernesto; por debajo o sin presupuesto, Victor', () => {

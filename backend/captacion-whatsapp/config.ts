@@ -27,6 +27,11 @@ export type ConfigCaptacion = {
      * desde el número {{2}}…» → ['nombre', 'telefono'].
      */
     parametros: ParametroPlantilla[];
+    /**
+     * Plantilla aprobada de la copia al comercial (Jean, 19/11/2026): {{1}} nombre del lead, {{2}} su teléfono. Sale
+     * del mismo número que el aviso hacia el WhatsApp del comercial (Remitente.copiaA). null = sin copia.
+     */
+    plantillaCopia: string | null;
   } | null;
   /**
    * Desde qué número sale el aviso: el del comercial que llamará (Alex, 13/11/2026). Presupuesto del formulario con
@@ -62,12 +67,53 @@ export function parseSoloTelefonos(raw: string | undefined): string[] | null {
  * numeroId: phone_number_id del que sale el WhatsApp (por defecto el número general). telefonoLlamada: fijo de Netelip
  * desde el que llamará, tal como se muestra al lead en la plantilla («+34 865 45 61 34»); null = sin configurar.
  */
-export type Remitente = { clave: 'alto' | 'base'; nombre: string; numeroId: string | null; telefonoLlamada: string | null };
+export type Remitente = { clave: 'alto' | 'base'; nombre: string; numeroId: string | null; telefonoLlamada: string | null; copiaA: string | null };
 
-export const PARAMETROS_PLANTILLA = ['nombre', 'telefono'] as const;
+/** WhatsApp del comercial que recibe la copia, en E.164: el explícito o, por defecto, su fijo (tiene WhatsApp Business). */
+function destinoCopia(variable: string, raw: string | undefined): string | null {
+  const valor = String(raw || '').trim();
+  if (!valor) return null;
+  try {
+    return toE164(valor);
+  } catch {
+    throw new Error(`${variable}: teléfono no válido «${valor}»`);
+  }
+}
+
+/** Nombre del lead para la copia: el de la tarea sin las notas tras « - » («Ana Mir - LLAMAR 11/11» → «Ana Mir»). */
+export function nombreParaCopia(nombreTarea: string | null | undefined): string {
+  const nombre = String(nombreTarea || '').split(/\s+-\s+/)[0].replace(/_+/g, ' ').replace(/\s+/g, ' ').trim();
+  return nombre || 'sin nombre';
+}
+
+/**
+ * Variables posibles: «cliente» (nombre de pila del lead), «nombre» (del comercial) y «telefono» (fijo desde el que
+ * llamará). Alex (19/11/2026): «Hola, {{1}}. Soy {{2}}, de Grupo LYN… desde el número {{3}}…» → cliente,nombre,telefono.
+ */
+export const PARAMETROS_PLANTILLA = ['cliente', 'nombre', 'telefono'] as const;
 export type ParametroPlantilla = typeof PARAMETROS_PLANTILLA[number];
 
-/** «nombre, telefono» → ['nombre', 'telefono']. Vacío = []. */
+/** Si el nombre de la tarea no da un nombre de pila usable: «Hola, buenas. Soy Víctor…». */
+export const CLIENTE_SIN_NOMBRE = 'buenas';
+
+// Primeras palabras que no son un nombre de pila («El Viajero», «Sr. Pérez»).
+const NO_SON_NOMBRE = new Set(['el', 'la', 'los', 'las', 'sr', 'sra', 'srta', 'don', 'dona', 'doña', 'senor', 'señor', 'senora', 'señora']);
+
+/**
+ * Nombre de pila del lead a partir del nombre de la tarea de ClickUp, que el equipo escribe a mano: «Victor Manuel
+ * Cebrian Morales - pendiente agendar fase 2» → «Victor», «LYDIA GARCIA» → «Lydia», «Dori_Campillo» → «Dori»,
+ * «mohamed gueye» → «Mohamed». null si no hay un nombre usable («Y», «El Viajero», vacío).
+ */
+export function nombreDePila(nombreTarea: string | null | undefined): string | null {
+  const base = String(nombreTarea || '').split(/\s+-\s+|[(\[,/|]/)[0].replace(/[_.]+/g, ' ').trim();
+  const primera = base.split(/\s+/)[0] || '';
+  if (!/^\p{L}[\p{L}'’-]*\p{L}$/u.test(primera)) return null;
+  if (NO_SON_NOMBRE.has(primera.toLowerCase())) return null;
+  const mixto = primera !== primera.toUpperCase() && primera !== primera.toLowerCase();
+  return mixto ? primera : primera.charAt(0).toUpperCase() + primera.slice(1).toLowerCase();
+}
+
+/** «cliente, nombre, telefono» → ['cliente', 'nombre', 'telefono']. Vacío = []. */
 export function parseParametrosPlantilla(raw: string | undefined): ParametroPlantilla[] {
   return String(raw || '').split(',').map((p) => p.trim().toLowerCase()).filter(Boolean).map((p) => {
     if (!(PARAMETROS_PLANTILLA as readonly string[]).includes(p)) {
@@ -77,9 +123,13 @@ export function parseParametrosPlantilla(raw: string | undefined): ParametroPlan
   });
 }
 
-/** Valores de las variables de la plantilla para este remitente; null si falta alguno (el aviso espera). */
-export function valoresPlantilla(parametros: ParametroPlantilla[], remitente: Remitente): string[] | null {
-  const valores = parametros.map((p) => (p === 'nombre' ? remitente.nombre : remitente.telefonoLlamada));
+/**
+ * Valores de las variables de la plantilla para este remitente y lead; null si falta alguno del comercial (el aviso
+ * espera). El del cliente nunca falta: sin nombre usable va CLIENTE_SIN_NOMBRE.
+ */
+export function valoresPlantilla(parametros: ParametroPlantilla[], remitente: Remitente, leadNombre: string | null = null): string[] | null {
+  const valores = parametros.map((p) => (p === 'cliente' ? nombreDePila(leadNombre) ?? CLIENTE_SIN_NOMBRE
+    : p === 'nombre' ? remitente.nombre : remitente.telefonoLlamada));
   return valores.every((v): v is string => Boolean(v && v.trim())) ? valores : null;
 }
 
@@ -111,12 +161,18 @@ export function configCaptacionDesdeEnv(env: NodeJS.ProcessEnv = process.env): C
   const umbral = Number(env.CAPTACION_WHATSAPP_UMBRAL_PRESUPUESTO || 100_000);
   if (!Number.isFinite(umbral) || umbral < 0) throw new Error('CAPTACION_WHATSAPP_UMBRAL_PRESUPUESTO debe ser un número >= 0');
   // Sin número propio, el remitente usa el común (WHATSAPP_CLOUD_PHONE_NUMBER_ID), si lo hay.
-  const remitente = (clave: 'alto' | 'base', nombrePorDefecto: string): Remitente => ({
-    clave,
-    nombre: env[`CAPTACION_WHATSAPP_REMITENTE_${clave.toUpperCase()}_NOMBRE`]?.trim() || nombrePorDefecto,
-    numeroId: env[`CAPTACION_WHATSAPP_REMITENTE_${clave.toUpperCase()}_NUMERO_ID`]?.trim() || numeroComun,
-    telefonoLlamada: env[`CAPTACION_WHATSAPP_REMITENTE_${clave.toUpperCase()}_TELEFONO`]?.trim() || null,
-  });
+  const remitente = (clave: 'alto' | 'base', nombrePorDefecto: string): Remitente => {
+    const prefijo = `CAPTACION_WHATSAPP_REMITENTE_${clave.toUpperCase()}`;
+    const telefonoLlamada = env[`${prefijo}_TELEFONO`]?.trim() || null;
+    const copia = env[`${prefijo}_COPIA`]?.trim();
+    return {
+      clave,
+      nombre: env[`${prefijo}_NOMBRE`]?.trim() || nombrePorDefecto,
+      numeroId: env[`${prefijo}_NUMERO_ID`]?.trim() || numeroComun,
+      telefonoLlamada,
+      copiaA: destinoCopia(copia ? `${prefijo}_COPIA` : `${prefijo}_TELEFONO`, copia || telefonoLlamada || undefined),
+    };
+  };
   return {
     clickup: {
       token,
@@ -135,6 +191,7 @@ export function configCaptacionDesdeEnv(env: NodeJS.ProcessEnv = process.env): C
       appSecret: env.WHATSAPP_CLOUD_APP_SECRET?.trim() || null,
       verifyToken: env.WHATSAPP_CLOUD_VERIFY_TOKEN?.trim() || null,
       parametros: parseParametrosPlantilla(env.CAPTACION_WHATSAPP_PLANTILLA_PARAMETROS),
+      plantillaCopia: env.CAPTACION_WHATSAPP_PLANTILLA_COPIA?.trim() || null,
     } : null,
     remitentes: { umbral, alto: remitente('alto', 'Ernesto'), base: remitente('base', 'Victor') },
     horario: parseHorario(env.CAPTACION_WHATSAPP_HORARIO),
