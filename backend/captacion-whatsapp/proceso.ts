@@ -3,6 +3,7 @@
 //   procesarInbox     webhooks de ClickUp → entradas y salidas de e1 (crea el aviso pendiente)
 //   barrer            leads en e1 según ClickUp → entradas que no llegaron por webhook, y salidas
 //   procesarAvisos    avisos pendientes → teléfono, horario, envío de la plantilla con reintentos
+//   procesarCopias    avisos enviados → copia al WhatsApp del comercial (a quién se escribió), con reintentos
 //   aplicarEstados    webhooks de estado de Meta → entregado, leído o fallido
 //
 // Nada de esto modifica el lead en ClickUp ni bloquea su avance: un aviso fallido solo queda registrado.
@@ -12,7 +13,7 @@ import { notifyTech } from '../netelip/processing.ts';
 import { InvalidPhone, toE164 } from '../netelip/phone.ts';
 import { cambiosDeEtapa, mismaEtapa, type ClienteClickUp, type Tarea, type WebhookClickUp } from './clickup.ts';
 import { ErrorCloud, type Enviar, type EstadoMeta } from './cloud-api.ts';
-import { dentroDeHorario, elegirRemitente, valoresPlantilla, type ConfigCaptacion } from './config.ts';
+import { dentroDeHorario, elegirRemitente, nombreParaCopia, valoresPlantilla, type ConfigCaptacion } from './config.ts';
 import { fijarLineaBase, registrarEntrada, registrarSalida } from './solicitudes.ts';
 
 type Db = Pick<Pool, 'query' | 'connect'>;
@@ -202,8 +203,9 @@ export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: 
       await esperar(aviso.id, ESPERA_SIN_CLOUD_MS, `sin_configuracion: ${remitente.nombre} aún no tiene número en la Cloud API`);
       continue;
     }
-    // Variables de la plantilla (nombre y fijo del comercial). Si falta alguna, espera: nunca sale incompleta.
-    const parametros = valoresPlantilla(config.cloud.parametros, remitente);
+    // Variables de la plantilla (nombre del cliente, nombre y fijo del comercial). Si falta alguna del comercial,
+    // espera: nunca sale incompleta.
+    const parametros = valoresPlantilla(config.cloud.parametros, remitente, aviso.lead_nombre);
     if (!parametros) {
       await esperar(aviso.id, ESPERA_SIN_CLOUD_MS, `sin_configuracion: ${remitente.nombre} no tiene CAPTACION_WHATSAPP_REMITENTE_${remitente.clave.toUpperCase()}_TELEFONO para la plantilla`);
       continue;
@@ -213,12 +215,17 @@ export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: 
       continue;
     }
     const anunciado = config.cloud.parametros.includes('telefono') ? remitente.telefonoLlamada : null;
+    // Copia al comercial: solo si hay plantilla de copia y a dónde mandarla (por defecto, su fijo con WhatsApp Business).
+    // En modo QA, solo si su WhatsApp también está en la lista: así las pruebas no le llegan al comercial sin querer.
+    const copiaA = config.cloud.plantillaCopia && remitente.copiaA && (!config.soloTelefonos || config.soloTelefonos.includes(remitente.copiaA))
+      ? remitente.copiaA : null;
     const intento = aviso.intentos + 1;
     try {
       const { wamid } = await enviar(telefono.e164, remitente.numeroId, parametros);
       await actualizar(aviso.id, `estado = 'enviado', intentos = $2, telefono_e164 = $3, wamid = $4, plantilla = $5, enviado_en = $6, motivo = NULL,
-        remitente = $7, remitente_numero_id = $8, telefono_anunciado = $9`,
-        [intento, telefono.e164, wamid, config.cloud.plantilla, ahora, remitente.nombre, remitente.numeroId, anunciado]);
+        remitente = $7, remitente_numero_id = $8, telefono_anunciado = $9,
+        copia_destino = $10, copia_estado = CASE WHEN $10::text IS NULL THEN NULL ELSE 'pendiente' END, copia_siguiente_intento = $6`,
+        [intento, telefono.e164, wamid, config.cloud.plantilla, ahora, remitente.nombre, remitente.numeroId, anunciado, copiaA]);
       console.log(JSON.stringify({ msg: 'captacion_aviso_enviado', aviso_id: aviso.id, task_id: aviso.clickup_task_id }));
     } catch (error) {
       const reintentable = !(error instanceof ErrorCloud) || error.reintentable;
@@ -230,6 +237,48 @@ export async function procesarAvisos(pool: Db, config: ConfigCaptacion, enviar: 
         await actualizar(aviso.id, `estado = 'fallido', intentos = $2, telefono_e164 = $3, motivo = $4, fallido_en = $5, remitente = $6, remitente_numero_id = $7`,
           [intento, telefono.e164, `envio_fallido: ${mensaje}`, ahora, remitente.nombre, remitente.numeroId]);
         await notifyTech('Captación: aviso de WhatsApp fallido', { aviso_id: aviso.id, task_id: aviso.clickup_task_id, intentos: intento, error: mensaje });
+      }
+    }
+  }
+  return rows.length;
+}
+
+// --- Copia al comercial ---------------------------------------------------------------------------
+
+type FilaCopia = { id: string; clickup_task_id: string; lead_nombre: string | null; telefono_e164: string; remitente_numero_id: string; copia_destino: string; copia_intentos: number };
+
+/**
+ * Manda al WhatsApp del comercial la copia de cada aviso enviado: «{{1}} ({{2}})», nombre y teléfono del lead. El número
+ * general no lo ve nadie (Jean, 19/11/2026), así el comercial sabe a quién se escribió. Un fallo de la copia nunca
+ * toca el aviso al lead: se reintenta como el aviso y, si sigue fallando, queda copia_estado = 'fallida' y avisa a
+ * soporte técnico. Devuelve cuántas se trataron.
+ */
+export async function procesarCopias(pool: Db, config: ConfigCaptacion, enviar: Enviar | null, ahora = new Date(), limite = 10): Promise<number> {
+  const plantilla = config.cloud?.plantillaCopia;
+  if (!enviar || !plantilla) return 0;
+  const { rows } = await pool.query<FilaCopia>(
+    `UPDATE captacion_whatsapp_avisos SET copia_siguiente_intento = NOW() + INTERVAL '5 minutes'
+     WHERE id IN (SELECT id FROM captacion_whatsapp_avisos WHERE copia_estado = 'pendiente' AND copia_siguiente_intento <= NOW()
+                  ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED)
+     RETURNING id, clickup_task_id, lead_nombre, telefono_e164, remitente_numero_id, copia_destino, copia_intentos`, [limite]);
+  const actualizar = (id: string, sql: string, params: unknown[]) =>
+    pool.query(`UPDATE captacion_whatsapp_avisos SET ${sql}, actualizado_en = NOW() WHERE id = $1`, [id, ...params]);
+
+  for (const copia of rows) {
+    const intento = copia.copia_intentos + 1;
+    try {
+      const { wamid } = await enviar(copia.copia_destino, copia.remitente_numero_id, [nombreParaCopia(copia.lead_nombre), copia.telefono_e164], plantilla);
+      await actualizar(copia.id, `copia_estado = 'enviada', copia_intentos = $2, copia_wamid = $3, copia_enviada_en = $4, copia_motivo = NULL`,
+        [intento, wamid, ahora]);
+    } catch (error) {
+      const reintentable = !(error instanceof ErrorCloud) || error.reintentable;
+      const mensaje = (error as Error).message.slice(0, 500);
+      if (reintentable && intento <= ESPERAS_REINTENTO_SEGUNDOS.length) {
+        await actualizar(copia.id, 'copia_intentos = $2, copia_motivo = $3, copia_siguiente_intento = $4',
+          [intento, `reintento: ${mensaje}`, new Date(ahora.getTime() + ESPERAS_REINTENTO_SEGUNDOS[intento - 1] * 1000)]);
+      } else {
+        await actualizar(copia.id, `copia_estado = 'fallida', copia_intentos = $2, copia_motivo = $3`, [intento, `envio_fallido: ${mensaje}`]);
+        await notifyTech('Captación: copia del aviso al comercial fallida', { aviso_id: copia.id, task_id: copia.clickup_task_id, intentos: intento, error: mensaje });
       }
     }
   }

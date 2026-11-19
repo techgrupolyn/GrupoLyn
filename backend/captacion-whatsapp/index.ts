@@ -10,7 +10,7 @@ import type { Pool } from 'pg';
 import { crearClienteClickUp, type ClienteClickUp } from './clickup.ts';
 import { crearEnviador, type Enviar } from './cloud-api.ts';
 import { configCaptacionDesdeEnv } from './config.ts';
-import { barrer, procesarAvisos, procesarInbox } from './proceso.ts';
+import { barrer, procesarAvisos, procesarCopias, procesarInbox } from './proceso.ts';
 import { crearRouterWebhooks } from './rutas.ts';
 
 export { ensureCaptacionWhatsApp } from './schema.ts';
@@ -37,6 +37,7 @@ export function createCaptacionWhatsApp(pool: Pool, env: NodeJS.ProcessEnv = pro
   const avisos = unaVez('envío de avisos', async () => {
     if (!config) return;
     while ((await procesarAvisos(pool, config, enviar)) > 0) { /* siguiente lote */ }
+    while ((await procesarCopias(pool, config, enviar)) > 0) { /* siguiente lote */ }
   });
   const inbox = unaVez('bandeja de ClickUp', async () => {
     if (!clickup) return;
@@ -60,6 +61,11 @@ export function createCaptacionWhatsApp(pool: Pool, env: NodeJS.ProcessEnv = pro
       if (!config.cloud) console.warn('[captacion] Sin WHATSAPP_CLOUD_TOKEN / CAPTACION_WHATSAPP_PLANTILLA: los avisos se registran pero no se envían');
       for (const r of [config.remitentes.alto, config.remitentes.base]) {
         if (!r.numeroId) console.warn(`[captacion] ${r.nombre} sin número en la Cloud API (CAPTACION_WHATSAPP_REMITENTE_${r.clave.toUpperCase()}_NUMERO_ID): sus avisos esperan`);
+      }
+      if (config.cloud?.plantillaCopia) {
+        for (const r of [config.remitentes.alto, config.remitentes.base]) {
+          if (!r.copiaA) console.warn(`[captacion] ${r.nombre} sin WhatsApp para la copia (CAPTACION_WHATSAPP_REMITENTE_${r.clave.toUpperCase()}_COPIA o _TELEFONO): sus avisos salen sin copia`);
+        }
       }
       if (config.soloTelefonos) console.warn(`[captacion] MODO QA: solo se escribe a ${config.soloTelefonos.length} teléfono(s) de CAPTACION_WHATSAPP_SOLO_TELEFONOS`);
       if (!config.clickup.webhookSecret) console.warn('[captacion] Sin CAPTACION_CLICKUP_WEBHOOK_SECRET: solo el barrido detecta las entradas en e1');

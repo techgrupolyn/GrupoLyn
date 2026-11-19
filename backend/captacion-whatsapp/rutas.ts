@@ -71,7 +71,7 @@ export function crearRouterWebhooks(pool: Pick<Pool, 'query'>, config: ConfigCap
 }
 
 const COLUMNAS = `id, solicitud, clickup_task_id, origen, entrada_en, lead_nombre, telefono_e164, presupuesto, remitente, telefono_anunciado, estado, motivo, plantilla,
-  intentos, creado_en, enviado_en, entregado_en, leido_en, fallido_en, actualizado_en`;
+  intentos, creado_en, enviado_en, entregado_en, leido_en, fallido_en, actualizado_en, copia_destino, copia_estado, copia_enviada_en, copia_motivo`;
 
 /** Historial de avisos: por lead (?clickup_task_id=) o los últimos. Solo con sesión de administración. */
 export function registrarApiCaptacion(app: Express, deps: { pool: Pick<Pool, 'query'>; admin: RequestHandler }): void {

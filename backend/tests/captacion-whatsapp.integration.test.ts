@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { ClienteClickUp, Tarea } from '../captacion-whatsapp/clickup.ts';
 import { ErrorCloud, type Enviar } from '../captacion-whatsapp/cloud-api.ts';
 import type { ConfigCaptacion } from '../captacion-whatsapp/config.ts';
-import { aplicarEstados, aplicarWebhookClickUp, barrer, procesarAvisos } from '../captacion-whatsapp/proceso.ts';
+import { aplicarEstados, aplicarWebhookClickUp, barrer, procesarAvisos, procesarCopias } from '../captacion-whatsapp/proceso.ts';
 import { ensureCaptacionWhatsApp } from '../captacion-whatsapp/schema.ts';
 
 vi.mock('../netelip/processing.ts', () => ({ notifyTech: vi.fn(async () => undefined) }));
@@ -18,8 +18,8 @@ const ETAPA = { id: 'f-etapa', name: 'ETAPA_CRM', type: 'drop_down', type_config
 
 const config: ConfigCaptacion = {
   clickup: { token: 'pk', lista: '901211441576', campoEtapa: 'ETAPA_CRM', etapaEspera: 'e1 EN ESPERA', campoTelefono: 'contact_phone_number', campoPresupuesto: 'Presupuesto formulario', webhookSecret: 's' },
-  cloud: { token: 't', versionApi: 'v23.0', plantilla: 'aviso_llamada', idioma: 'es_ES', appSecret: 's', verifyToken: 'v', parametros: [] },
-  remitentes: { umbral: 100000, alto: { clave: 'alto', nombre: 'Ernesto', numeroId: 'n-ernesto', telefonoLlamada: '+34 865 60 83 43' }, base: { clave: 'base', nombre: 'Victor', numeroId: 'n-victor', telefonoLlamada: '+34 865 45 61 34' } },
+  cloud: { token: 't', versionApi: 'v23.0', plantilla: 'aviso_llamada', idioma: 'es_ES', appSecret: 's', verifyToken: 'v', parametros: [], plantillaCopia: null },
+  remitentes: { umbral: 100000, alto: { clave: 'alto', nombre: 'Ernesto', numeroId: 'n-ernesto', telefonoLlamada: '+34 865 60 83 43', copiaA: '+34865608343' }, base: { clave: 'base', nombre: 'Victor', numeroId: 'n-victor', telefonoLlamada: '+34 865 45 61 34', copiaA: '+34865456134' } },
   horario: null,
   caducidadMinutos: 720,
   soloTelefonos: null,
@@ -316,6 +316,46 @@ describe.skipIf(!databaseUrl)('Captación · WhatsApp a leads en espera en Postg
     await procesarAvisos(pool, { ...config, remitentes: { ...config.remitentes, alto: { ...config.remitentes.alto, numeroId: null } } }, enviar);
     expect(enviar).not.toHaveBeenCalled();
     expect(await avisos('alto')).toMatchObject([{ estado: 'pendiente', motivo: 'sin_configuracion: Ernesto aún no tiene número en la Cloud API' }]);
+  });
+
+  it('plantilla de Alex y copia al comercial (Jean, 19/11/2026): nombre del cliente, y el comercial recibe a quién se escribió', async () => {
+    await barrer(pool, clickup);
+    tareas.set('ana', { etapa: 'o1', telefono: '612345678', actualizada: Date.now(), nombre: 'ANA MIR - LLAMAR 11/11 - 17.00 H' });
+    tareas.set('y', { etapa: 'o1', telefono: '612345679', actualizada: Date.now(), nombre: 'Y', presupuesto: 'Más de 200.000 €' });
+    await barrer(pool, clickup);
+    const general = { numeroId: 'n-general' };
+    const alex: ConfigCaptacion = { ...config,
+      cloud: { ...config.cloud!, plantilla: 'aviso_llamada_comercial_cliente', parametros: ['cliente', 'nombre', 'telefono'], plantillaCopia: 'copia_aviso_comercial' },
+      remitentes: { ...config.remitentes, alto: { ...config.remitentes.alto, ...general }, base: { ...config.remitentes.base, ...general } } };
+    const enviar = vi.fn<Enviar>().mockImplementation(async (t, _n, _p, plantilla) => ({ wamid: `wamid.${plantilla ?? 'aviso'}.${t}` }));
+    await procesarAvisos(pool, alex, enviar);
+    expect(enviar).toHaveBeenCalledWith('+34612345678', 'n-general', ['Ana', 'Victor', '+34 865 45 61 34']);
+    expect(enviar).toHaveBeenCalledWith('+34612345679', 'n-general', ['buenas', 'Ernesto', '+34 865 60 83 43']);
+    // Un fallo temporal de la copia se reintenta sin tocar el aviso al lead, que ya salió.
+    enviar.mockRejectedValueOnce(new ErrorCloud('La API de WhatsApp no responde', true, null));
+    await procesarCopias(pool, alex, enviar);
+    await pool.query('UPDATE captacion_whatsapp_avisos SET copia_siguiente_intento = NOW()');
+    await procesarCopias(pool, alex, enviar);
+    expect(enviar).toHaveBeenCalledWith('+34865456134', 'n-general', ['ANA MIR', '+34612345678'], 'copia_aviso_comercial');
+    expect(enviar).toHaveBeenCalledWith('+34865608343', 'n-general', ['Y', '+34612345679'], 'copia_aviso_comercial');
+    const filas = (await pool.query('SELECT clickup_task_id, estado, copia_destino, copia_estado, copia_intentos FROM captacion_whatsapp_avisos ORDER BY clickup_task_id')).rows;
+    expect(filas).toEqual([
+      { clickup_task_id: 'ana', estado: 'enviado', copia_destino: '+34865456134', copia_estado: 'enviada', copia_intentos: expect.any(Number) },
+      { clickup_task_id: 'y', estado: 'enviado', copia_destino: '+34865608343', copia_estado: 'enviada', copia_intentos: expect.any(Number) },
+    ]);
+    expect(filas.map((f) => f.copia_intentos).sort()).toEqual([1, 2]);
+    expect(await procesarCopias(pool, alex, enviar)).toBe(0);   // sin duplicados
+  });
+
+  it('copia al comercial: sin plantilla de copia no se manda; en modo QA solo si su WhatsApp está en la lista', async () => {
+    await barrer(pool, clickup);
+    tareas.set('t1', { etapa: 'o1', telefono: '612345678', actualizada: Date.now() });
+    await barrer(pool, clickup);
+    const enviar = vi.fn<Enviar>().mockResolvedValue({ wamid: 'wamid.1' });
+    await procesarAvisos(pool, { ...config, soloTelefonos: ['+34612345678'], cloud: { ...config.cloud!, plantillaCopia: 'copia' } }, enviar);
+    expect((await pool.query('SELECT estado, copia_estado FROM captacion_whatsapp_avisos')).rows).toEqual([{ estado: 'enviado', copia_estado: null }]);
+    expect(await procesarCopias(pool, config, enviar)).toBe(0);
+    expect(enviar).toHaveBeenCalledTimes(1);
   });
 
   it('un lead creado directamente en e1 (taskCreated) y su webhook de cambio cuentan como una sola solicitud', async () => {
