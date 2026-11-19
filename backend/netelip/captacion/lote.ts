@@ -69,6 +69,12 @@ export interface FilaLote {
   resumen: string | null;
   /** Decisión de pase que tomó la IA en esta llamada (N-1.4); null si no hubo (lead en F2 o más allá, o sin decisión válida). */
   decisionIA: string | null;
+  /**
+   * Por qué hay o no decisión de pase en esta llamada: `guardada`, `ya_existia`, `omitida` (el lead ya estaba en F2 o más allá, o no hay
+   * configuración), `sin_decision` (el modelo no devolvió ninguna) o `invalida: <motivo>` (la verificó y la descartó). Null si la llamada no
+   * llegó a procesarse.
+   */
+  decisionEstado: string | null;
   citas: CitaLote[];
   descartes: number;
   revisionManual: string[];
@@ -230,7 +236,7 @@ export async function ejecutarLote(o: OpcionesLote): Promise<InformeLote> {
 
     const base = { llamadaId: entrada.llamadaId, ocurridaEn: entrada.ocurridaEn.toISOString(), duracionSegundos: entrada.duracionSegundos, intentos };
     if (resultado === null) {
-      filas.push({ ...base, lead: null, via: null, estado: 'error', motivo: error, categoria: null, desglose: null, resumen: null, decisionIA: null, citas: [], descartes: 0, revisionManual: [] });
+      filas.push({ ...base, lead: null, via: null, estado: 'error', motivo: error, categoria: null, desglose: null, resumen: null, decisionIA: null, decisionEstado: null, citas: [], descartes: 0, revisionManual: [] });
     } else if (resultado.estado === 'procesada') {
       const t = porId.get(resultado.clickupTaskId);
       ultima.set(resultado.clickupTaskId, resultado);
@@ -239,6 +245,7 @@ export async function ejecutarLote(o: OpcionesLote): Promise<InformeLote> {
         via: resultado.via, estado: 'procesada', motivo: null, categoria: resultado.categoria, desglose: resultado.escrituras.desglose ?? null,
         resumen: resultado.escrituras.resumen ?? null,
         decisionIA: resultado.decision.estado === 'guardada' || resultado.decision.estado === 'ya_existia' ? resultado.decision.decision : null,
+        decisionEstado: resultado.decision.estado === 'invalida' ? `invalida: ${resultado.decision.motivo}` : resultado.decision.estado,
         citas: await citasDe(o.pool, interaccionDe(entrada.llamadaId)), descartes: resultado.descartes.length, revisionManual: [...resultado.revisionManual],
       });
     } else {
@@ -246,7 +253,7 @@ export async function ejecutarLote(o: OpcionesLote): Promise<InformeLote> {
       filas.push({
         ...base, lead: lead ? { id: lead.id, nombre: lead.nombre, etapa: (lead.campos[NOMBRES_CAMPOS.etapa] as string | null) ?? null } : null,
         via: null, estado: resultado.estado, motivo: 'motivo' in resultado ? resultado.motivo : 'error' in resultado ? resultado.error : null,
-        categoria: null, desglose: null, resumen: null, decisionIA: null, citas: [], descartes: 0, revisionManual: [],
+        categoria: null, desglose: null, resumen: null, decisionIA: null, decisionEstado: null, citas: [], descartes: 0, revisionManual: [],
       });
     }
     if ((i + 1) % 10 === 0) registro(`  ${i + 1}/${llamadas.length} llamadas`);

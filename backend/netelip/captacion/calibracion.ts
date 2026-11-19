@@ -45,6 +45,8 @@ export interface FilaCalibracion {
   etapa: string | null;
   categoria: string | null;
   decisionIA: Decision | null;
+  /** Por qué no hay decisión (`sin_decision`, `invalida: …`, `omitida`); null si la hay. Ver `FilaLote.decisionEstado`. */
+  sinDecisionPor: string | null;
   motivo: string | null;
   excepciones: string[];
   dudas: string[];
@@ -63,10 +65,14 @@ export interface InformeCalibracion {
     analizadas: number;
     /** Sin lead identificado (o sin conversación): quedan fuera del informe. */
     sinLead: number;
+    /** Las que quedan sin lead, por motivo (`sin_coincidencia`, `ambiguo`…); sin nombres ni teléfonos. */
+    sinLeadPorMotivo: Record<string, number>;
     /** Fallos del modelo o de la salida: ni se analizaron ni están en el informe. */
     errores: number;
     conDecision: number;
     sinDecision: number;
+    /** Las analizadas sin decisión, por motivo. */
+    sinDecisionPorMotivo: Record<string, number>;
     porDecision: Record<string, number>;
     porContraste: Record<string, number>;
     /** Coincidencias entre las que tienen referencia, en porcentaje entero; null si ninguna la tiene. */
@@ -94,7 +100,7 @@ const contar = <T>(xs: readonly T[], clave: (x: T) => string | null): Record<str
 
 /** Arma el informe con lo que analizó el lote y las decisiones históricas guardadas. Pura. */
 export function armarInforme(
-  filasLote: ReadonlyArray<{ llamadaId: string; ocurridaEn: string; estado: string; categoria: string | null; lead: { id: string; nombre: string; etapa: string | null; noContinuidad?: string | null } | null }>,
+  filasLote: ReadonlyArray<{ llamadaId: string; ocurridaEn: string; estado: string; categoria: string | null; lead: { id: string; nombre: string; etapa: string | null; noContinuidad?: string | null } | null; motivo?: string | null; decisionEstado?: string | null }>,
   decisiones: ReadonlyArray<DecisionHistorica>,
 ): InformeCalibracion {
   const porLlamada = new Map(decisiones.map((d) => [d.llamadaId, d]));
@@ -104,7 +110,7 @@ export function armarInforme(
     const desenlace = desenlaceDeLead(f.lead!.etapa);
     return {
       fecha: f.ocurridaEn, llamadaId: f.llamadaId, lead: f.lead!.nombre, leadId: f.lead!.id, etapa: f.lead!.etapa, categoria: f.categoria,
-      decisionIA: d?.decision ?? null, motivo: d?.motivo ?? null, excepciones: d?.excepciones ?? [], dudas: d?.dudas ?? [], pendienteErnesto: d?.pendienteErnesto ?? false,
+      decisionIA: d?.decision ?? null, sinDecisionPor: d ? null : (f.decisionEstado ?? 'desconocido'), motivo: d?.motivo ?? null, excepciones: d?.excepciones ?? [], dudas: d?.dudas ?? [], pendienteErnesto: d?.pendienteErnesto ?? false,
       desenlace, noContinuidad: f.lead!.noContinuidad ?? null, contraste: d ? contrastar(d.decision, desenlace) : null,
     };
   });
@@ -116,9 +122,11 @@ export function armarInforme(
       llamadas: filasLote.length,
       analizadas: filas.length,
       sinLead: filasLote.filter((f) => f.estado === 'sin_lead' || f.estado === 'sin_conversacion').length,
+      sinLeadPorMotivo: contar(filasLote.filter((f) => f.estado === 'sin_lead' || f.estado === 'sin_conversacion'), (f) => (f.estado === 'sin_conversacion' ? 'sin_conversacion' : (f.motivo ?? 'desconocido'))),
       errores: filasLote.filter((f) => f.estado === 'error' || f.estado === 'modelo_fallo' || f.estado === 'salida_invalida').length,
       conDecision: filas.filter((f) => f.decisionIA !== null).length,
       sinDecision: filas.filter((f) => f.decisionIA === null).length,
+      sinDecisionPorMotivo: contar(filas, (f) => f.sinDecisionPor),
       porDecision: contar(filas, (f) => f.decisionIA),
       porContraste: contar(filas, (f) => f.contraste),
       coincidenciaPorcentaje: conReferencia.length === 0 ? null : Math.round((coinciden / conReferencia.length) * 100),

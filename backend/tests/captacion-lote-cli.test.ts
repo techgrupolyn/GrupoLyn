@@ -49,7 +49,7 @@ const informe: InformeLote = {
     {
       llamadaId: '12', ocurridaEn: '2026-11-10T09:30:00.000Z', duracionSegundos: 240, lead: { id: 'abc', nombre: 'Ana "la Grande"; López', etapa: 'e3_VIABILIDAD' }, via: 'telefono',
       estado: 'procesada', motivo: null, categoria: 'A+', desglose: 'Pres A · Urg A · 3,60 · cob. 65 %',
-      resumen: 'Qué quiere: Reforma integral\nDónde quedó: Cita el jueves', decisionIA: 'seguimiento',
+      resumen: 'Qué quiere: Reforma integral\nDónde quedó: Cita el jueves', decisionIA: 'seguimiento', decisionEstado: 'guardada',
       citas: [{ criterio: 'decisor', nivel: 'A', cita: 'Lo decidimos mi marido y yo' }, { criterio: 'urgencia', nivel: 'A', cita: 'en unos dos meses' }],
       descartes: 1, revisionManual: ['punto uno', 'punto dos'], intentos: 2,
     },
@@ -68,11 +68,11 @@ const informe: InformeLote = {
 describe('captación · lote-cli · informe', () => {
   it('el CSV es para Excel: BOM, separador «;», cabecera y una fila por llamada, con comillas escapadas', () => {
     const csv = informeCsv(informe);
-    expect(csv.startsWith('\uFEFFfecha;llamada;lead;lead_id;etapa;via;estado;motivo;categoria;desglose;resumen;decision_ia;frases_citadas;descartes;revision_manual;intentos\r\n')).toBe(true);
+    expect(csv.startsWith('\uFEFFfecha;llamada;lead;lead_id;etapa;via;estado;motivo;categoria;desglose;resumen;decision_ia;decision_estado;frases_citadas;descartes;revision_manual;intentos\r\n')).toBe(true);
     const lineas = csv.split('\r\n');
     expect(lineas).toHaveLength(4);
-    expect(lineas[1]).toBe('2026-11-10T09:30:00.000Z;12;"Ana ""la Grande""; López";abc;e3_VIABILIDAD;telefono;procesada;;A+;Pres A · Urg A · 3,60 · cob. 65 %;Qué quiere: Reforma integral | Dónde quedó: Cita el jueves;seguimiento;decisor A: «Lo decidimos mi marido y yo» | urgencia A: «en unos dos meses»;1;punto uno | punto dos;2');
-    expect(lineas[2]).toBe('2026-11-10T10:00:00.000Z;13;;;;;sin_lead;sin_coincidencia;;;;;;0;;1');
+    expect(lineas[1]).toBe('2026-11-10T09:30:00.000Z;12;"Ana ""la Grande""; López";abc;e3_VIABILIDAD;telefono;procesada;;A+;Pres A · Urg A · 3,60 · cob. 65 %;Qué quiere: Reforma integral | Dónde quedó: Cita el jueves;seguimiento;guardada;decisor A: «Lo decidimos mi marido y yo» | urgencia A: «en unos dos meses»;1;punto uno | punto dos;2');
+    expect(lineas[2]).toBe('2026-11-10T10:00:00.000Z;13;;;;;sin_lead;sin_coincidencia;;;;;;;0;;1');
     expect(lineas[3]).toBe('');
   });
 
@@ -125,13 +125,13 @@ describe('captación · lote-cli · informe', () => {
 
   it('también se neutralizan el motivo de un fallo y la revisión manual', () => {
     const fila = informeCsv({ ...informe, filas: [{ ...informe.filas[1]!, motivo: '=cmd|calc', revisionManual: ['@x'] }] }).split('\r\n')[1]!;
-    expect(fila).toBe("2026-11-10T10:00:00.000Z;13;;;;;sin_lead;'=cmd|calc;;;;;;0;'@x;1");
+    expect(fila).toBe("2026-11-10T10:00:00.000Z;13;;;;;sin_lead;'=cmd|calc;;;;;;;0;'@x;1");
   });
 
   it('entrecomilla una celda que solo lleva «;» o un salto de línea, y deja tal cual la que lleva comas', () => {
     const una = { ...informe.filas[1]!, motivo: 'a;b', desglose: 'x, y', revisionManual: ['línea1\nlínea2'] };
     const fila = informeCsv({ ...informe, filas: [una] }).split('\r\n')[1]!;
-    expect(fila).toBe('2026-11-10T10:00:00.000Z;13;;;;;sin_lead;"a;b";;x, y;;;;0;"línea1\nlínea2";1');
+    expect(fila).toBe('2026-11-10T10:00:00.000Z;13;;;;;sin_lead;"a;b";;x, y;;;;;0;"línea1\nlínea2";1');
   });
 
   it('un informe vacío da solo la cabecera y un resumen con guiones', () => {

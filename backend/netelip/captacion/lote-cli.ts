@@ -85,10 +85,10 @@ export const celda = (v: unknown): string => {
 
 /** CSV para Excel (UTF-8 con BOM, separador «;»): una fila por llamada con letra, desglose y frases citadas. */
 export function informeCsv(i: InformeLote): string {
-  const cabecera = ['fecha', 'llamada', 'lead', 'lead_id', 'etapa', 'via', 'estado', 'motivo', 'categoria', 'desglose', 'resumen', 'decision_ia', 'frases_citadas', 'descartes', 'revision_manual', 'intentos'];
+  const cabecera = ['fecha', 'llamada', 'lead', 'lead_id', 'etapa', 'via', 'estado', 'motivo', 'categoria', 'desglose', 'resumen', 'decision_ia', 'decision_estado', 'frases_citadas', 'descartes', 'revision_manual', 'intentos'];
   const filas = i.filas.map((f) => [
     f.ocurridaEn, f.llamadaId, f.lead?.nombre ?? '', f.lead?.id ?? '', f.lead?.etapa ?? '', f.via ?? '', f.estado, f.motivo ?? '', f.categoria ?? '', f.desglose ?? '',
-    (f.resumen ?? '').split('\n').join(' | '), f.decisionIA ?? '',
+    (f.resumen ?? '').split('\n').join(' | '), f.decisionIA ?? '', f.decisionEstado ?? '',
     f.citas.map((c) => `${c.criterio} ${c.nivel}: «${c.cita}»`).join(' | '), f.descartes, f.revisionManual.join(' | '), f.intentos,
   ]);
   return `\uFEFF${[cabecera, ...filas].map((fila) => fila.map(celda).join(';')).join('\r\n')}\r\n`;

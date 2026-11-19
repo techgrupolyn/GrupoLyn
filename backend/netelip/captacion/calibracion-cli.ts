@@ -63,10 +63,10 @@ export function leerArgumentosCalibracion(argv: readonly string[], ahora: Date =
 
 /** CSV para Excel (UTF-8 con BOM, «;»): una fila por llamada analizada, con la decisión de la IA y el desenlace del lead. */
 export function informeCsvCalibracion(i: InformeCalibracion): string {
-  const cabecera = ['fecha', 'llamada', 'lead', 'lead_id', 'etapa_actual', 'categoria', 'decision_ia', 'motivo', 'excepciones', 'dudas', 'pendiente_de_ernesto', 'desenlace', 'no_continuidad', 'contraste'];
+  const cabecera = ['fecha', 'llamada', 'lead', 'lead_id', 'etapa_actual', 'categoria', 'decision_ia', 'motivo', 'excepciones', 'dudas', 'pendiente_de_ernesto', 'desenlace', 'no_continuidad', 'contraste', 'sin_decision_por'];
   const filas = i.filas.map((f) => [
     f.fecha, f.llamadaId, f.lead, f.leadId, f.etapa ?? '', f.categoria ?? '', f.decisionIA ?? '', f.motivo ?? '', f.excepciones.join(' | '), f.dudas.join(' | '),
-    f.pendienteErnesto ? 'sí' : 'no', f.desenlace, f.noContinuidad ?? '', f.contraste ?? '',
+    f.pendienteErnesto ? 'sí' : 'no', f.desenlace, f.noContinuidad ?? '', f.contraste ?? '', f.sinDecisionPor ?? '',
   ]);
   return `\uFEFF${[cabecera, ...filas].map((fila) => fila.map(celda).join(';')).join('\r\n')}\r\n`;
 }
@@ -77,7 +77,9 @@ export function resumenCalibracion(i: InformeCalibracion): string {
   const cuentas = (m: Record<string, number>) => Object.entries(m).map(([k, v]) => `${k} ${v}`).join(' · ') || '—';
   return [
     `Llamadas con transcripción: ${r.llamadas} · analizadas (con lead identificado): ${r.analizadas} · sin lead identificado (fuera del informe): ${r.sinLead} · con error: ${r.errores}`,
+    ...(r.sinLead > 0 ? [`Sin lead por motivo: ${cuentas(r.sinLeadPorMotivo)}`] : []),
     `Decisión de la IA: ${r.conDecision} con decisión · ${r.sinDecision} sin ella → ${cuentas(r.porDecision)}`,
+    ...(r.sinDecision > 0 ? [`Sin decisión por motivo: ${cuentas(r.sinDecisionPorMotivo)}`] : []),
     `Frente al desenlace del lead: ${cuentas(r.porContraste)}${r.coincidenciaPorcentaje === null ? '' : ` · coincide el ${r.coincidenciaPorcentaje} % de los que tienen referencia`}`,
   ].join('\n');
 }

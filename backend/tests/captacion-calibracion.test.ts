@@ -61,6 +61,28 @@ describe('armarInforme', () => {
     expect(i.resumen).toMatchObject({ analizadas: 1, conDecision: 0, sinDecision: 1, porDecision: {}, porContraste: {}, coincidenciaPorcentaje: null });
   });
 
+  it('el informe dice por qué una llamada procesada no tiene decisión y por qué otras quedaron sin lead', () => {
+    const f = (id: string, estado: string, l: ReturnType<typeof lead> | null, extra: { motivo?: string | null; decisionEstado?: string | null } = {}) => ({ ...fila(id, estado, l), ...extra });
+    const i = armarInforme(
+      [
+        f('1', 'procesada', lead('a', 'e3. VIABILIDAD'), { decisionEstado: 'guardada' }),
+        f('2', 'procesada', lead('b', 'e3. VIABILIDAD'), { decisionEstado: 'sin_decision' }),
+        f('3', 'procesada', lead('c', 'e3. VIABILIDAD'), { decisionEstado: 'invalida: la cita no está en la llamada' }),
+        f('4', 'procesada', lead('d', 'e3. VIABILIDAD')),
+        f('5', 'sin_lead', null, { motivo: 'sin_coincidencia' }),
+        f('6', 'sin_lead', null, { motivo: 'sin_coincidencia' }),
+        f('7', 'sin_lead', null, { motivo: 'telefono_ambiguo' }),
+        f('8', 'sin_conversacion', null),
+      ],
+      [dec('1', 'seguimiento')],
+    );
+    expect(i.filas.map((x) => [x.leadId, x.sinDecisionPor])).toEqual([
+      ['a', null], ['b', 'sin_decision'], ['c', 'invalida: la cita no está en la llamada'], ['d', 'desconocido'],
+    ]);
+    expect(i.resumen.sinDecisionPorMotivo).toEqual({ sin_decision: 1, 'invalida: la cita no está en la llamada': 1, desconocido: 1 });
+    expect(i.resumen.sinLeadPorMotivo).toEqual({ sin_coincidencia: 2, telefono_ambiguo: 1, sin_conversacion: 1 });
+  });
+
   it('el porcentaje de coincidencia solo cuenta los casos con referencia (no los «sin referencia») y se redondea', () => {
     const i = armarInforme(
       [fila('1', 'procesada', lead('a', 'e4. VISITA')), fila('2', 'procesada', lead('b', 'e3. VIABILIDAD')), fila('3', 'procesada', lead('c', 'e16. RECHAZADO')), fila('4', 'procesada', lead('d', 'e4. VISITA'))],
@@ -116,10 +138,10 @@ describe('ejecutable de la calibración', () => {
   );
   it('el CSV es para Excel: BOM, «;», cabecera y una fila por llamada analizada, con las celdas peligrosas neutralizadas', () => {
     const csv = informeCsvCalibracion(informe);
-    expect(csv.startsWith('﻿fecha;llamada;lead;lead_id;etapa_actual;categoria;decision_ia;motivo;excepciones;dudas;pendiente_de_ernesto;desenlace;no_continuidad;contraste\r\n')).toBe(true);
+    expect(csv.startsWith('﻿fecha;llamada;lead;lead_id;etapa_actual;categoria;decision_ia;motivo;excepciones;dudas;pendiente_de_ernesto;desenlace;no_continuidad;contraste;sin_decision_por\r\n')).toBe(true);
     const lineas = csv.split('\r\n');
     expect(lineas).toHaveLength(3);
-    expect(lineas[1]).toBe('2026-10-01T10:00:00.000Z;1;"\'=HYPERLINK(""x"")";a;e4. VISITA;A+;pasar_a_reunion;cumple_criterios;descuento;encaje_incierto | presupuesto_limite;sí;avanzo;;coincide');
+    expect(lineas[1]).toBe('2026-10-01T10:00:00.000Z;1;"\'=HYPERLINK(""x"")";a;e4. VISITA;A+;pasar_a_reunion;cumple_criterios;descuento;encaje_incierto | presupuesto_limite;sí;avanzo;;coincide;');
   });
   it('el resumen de pantalla lleva solo totales: ni nombres ni citas', () => {
     const t = resumenCalibracion(informe);
@@ -130,6 +152,23 @@ describe('ejecutable de la calibración', () => {
     ].join('\n'));
     expect(t).not.toContain('HYPERLINK');
     expect(resumenCalibracion(armarInforme([], []))).toContain('Frente al desenlace del lead: —');
+    // Sin llamadas sin lead ni sin decisión, las líneas de motivos no salen.
+    expect(resumenCalibracion(armarInforme([], []))).not.toContain('por motivo');
+  });
+
+  it('el resumen de pantalla y el CSV dicen los motivos de las llamadas sin lead y sin decisión, sin nombres', () => {
+    const i = armarInforme(
+      [
+        { llamadaId: '1', ocurridaEn: '2026-10-01T10:00:00.000Z', estado: 'procesada', categoria: 'B', lead: { id: 'a', nombre: 'Ana Secreta', etapa: 'e3. VIABILIDAD' }, decisionEstado: 'sin_decision' },
+        { llamadaId: '2', ocurridaEn: '2026-10-01T11:00:00.000Z', estado: 'sin_lead', categoria: null, lead: null, motivo: 'sin_coincidencia' },
+      ],
+      [],
+    );
+    const t = resumenCalibracion(i);
+    expect(t).toContain('Sin lead por motivo: sin_coincidencia 1');
+    expect(t).toContain('Sin decisión por motivo: sin_decision 1');
+    expect(t).not.toContain('Ana Secreta');
+    expect(informeCsvCalibracion(i).split('\r\n')[1]!.endsWith(';sin_decision')).toBe(true);
   });
 });
 
@@ -204,6 +243,27 @@ describe.skipIf(!hayBaseDePruebas)('calibración con el histórico, de punta a p
     ]);
     expect(i.resumen).toMatchObject({ llamadas: 5, analizadas: 3, sinLead: 2, errores: 0, conDecision: 3, coincidenciaPorcentaje: 100 });
     expect(posts()).toEqual([]);
+  });
+
+  it('el informe explica por qué una llamada no tiene decisión (el modelo no la dio, o dio una que no existe) y por qué otras no tienen lead', async () => {
+    tareas(
+      { id: 'ana', nombre: 'Ana', telefono: '+34600000001', etapa: ETAPA.viabilidad },
+      { id: 'beto', nombre: 'Beto', telefono: '+34600000002', etapa: ETAPA.viabilidad },
+      { id: 'caro', nombre: 'Caro', telefono: '+34600000003', etapa: ETAPA.viabilidad },
+    );
+    await llamada('u1', '+34600000001');
+    decisiones.set(await llamada('u2', '+34600000002'), { ...decision('descartar', 'no_interesado'), decision: 'dejarlo_en_el_aire' });
+    decisiones.set(await llamada('u3', '+34600000003'), decision('seguimiento', 'pide_tiempo'));
+    await llamada('u4', '+34699999999');
+    await llamada('u5', null);
+
+    const i = await calibrar();
+    expect(i.filas.map((f) => [f.lead, f.decisionIA, f.sinDecisionPor])).toEqual([
+      ['Ana', null, 'sin_decision'], ['Beto', null, 'invalida: la decisión de la IA no es una de las cuatro posibles'], ['Caro', 'seguimiento', null],
+    ]);
+    expect(i.resumen.sinDecisionPorMotivo).toMatchObject({ sin_decision: 1 });
+    expect(Object.values(i.resumen.sinLeadPorMotivo).reduce((a, b) => a + b, 0)).toBe(2);
+    expect(Object.keys(i.resumen.sinLeadPorMotivo)).not.toContain('desconocido');
   });
 
   it('Escenario «El histórico no cuenta para el acierto»: las decisiones quedan como históricas, sin caso en la bandeja ni casos revisados', async () => {
