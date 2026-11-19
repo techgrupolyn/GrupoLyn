@@ -14,11 +14,12 @@ export type Contraste = 'coincide' | 'difiere' | 'sin_referencia';
 /**
  * Qué pasó con el lead según su fase actual: de F2 (e4) en adelante, o GANADO (e14) o PASE (e18) = avanzó; PERDIDO (e15) o RECHAZADO
  * (e16) = perdido; antes de F2 (e1 a e3) = aún no pasó; cualquier otra cosa o sin fase = sin referencia.
+ * Una tarjeta cerrada con «No continuidad = Error» (duplicada o creada por equivocación) no es un resultado de negocio: sin referencia.
  */
-export function desenlaceDeLead(etapa: string | null): Desenlace {
+export function desenlaceDeLead(etapa: string | null, noContinuidad: string | null = null): Desenlace {
   const n = numeroDeEtapa(etapa);
   if (n === null) return 'sin_etapa';
-  if (n === 15 || n === 16) return 'perdido';
+  if (n === 15 || n === 16) return noContinuidad?.trim().toLowerCase() === 'error' ? 'sin_etapa' : 'perdido';
   if ((n >= 4 && n <= 14) || n === 18) return 'avanzo';
   if (n >= 1 && n < 4) return 'antes_de_f2';
   return 'sin_etapa';
@@ -107,7 +108,7 @@ export function armarInforme(
   const analizadas = filasLote.filter((f) => f.estado === 'procesada' && f.lead !== null);
   const filas: FilaCalibracion[] = analizadas.map((f) => {
     const d = porLlamada.get(interaccionDe(f.llamadaId)) ?? null;
-    const desenlace = desenlaceDeLead(f.lead!.etapa);
+    const desenlace = desenlaceDeLead(f.lead!.etapa, f.lead!.noContinuidad ?? null);
     return {
       fecha: f.ocurridaEn, llamadaId: f.llamadaId, lead: f.lead!.nombre, leadId: f.lead!.id, etapa: f.lead!.etapa, categoria: f.categoria,
       decisionIA: d?.decision ?? null, sinDecisionPor: d ? null : (f.decisionEstado ?? 'desconocido'), motivo: d?.motivo ?? null, excepciones: d?.excepciones ?? [], dudas: d?.dudas ?? [], pendienteErnesto: d?.pendienteErnesto ?? false,

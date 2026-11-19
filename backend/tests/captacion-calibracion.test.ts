@@ -25,6 +25,22 @@ describe('desenlace del lead según su fase', () => {
   });
 });
 
+describe('una tarjeta cerrada por «Error» no es un resultado de negocio', () => {
+  it.each([
+    ['e16. RECHAZADO', 'Error', 'sin_etapa'], ['e15. PERDIDO', ' error ', 'sin_etapa'], ['e16. RECHAZADO', 'Presupuesto insuficiente', 'perdido'],
+    ['e16. RECHAZADO', null, 'perdido'], ['e4. VISITA', 'Error', 'avanzo'], ['e3. VIABILIDAD', 'Error', 'antes_de_f2'],
+  ] as const)('«%s» con No continuidad «%s» → %s', (etapa, noContinuidad, esperado) => {
+    expect(desenlaceDeLead(etapa, noContinuidad)).toBe(esperado);
+  });
+
+  it('en el informe, la decisión sobre una tarjeta duplicada (Error) queda sin referencia en vez de «difiere»', () => {
+    const fila = { llamadaId: '1', ocurridaEn: '2026-11-11T10:17:29.000Z', estado: 'procesada', categoria: 'A', lead: { id: 'a', nombre: 'Lead', etapa: 'e16. RECHAZADO', noContinuidad: 'Error' } };
+    const i = armarInforme([fila], [{ llamadaId: 'netelip:1', decision: 'pasar_a_reunion', motivo: 'cita_agendada', excepciones: [], dudas: [], pendienteErnesto: false }]);
+    expect(i.filas[0]).toMatchObject({ desenlace: 'sin_etapa', contraste: 'sin_referencia' });
+    expect(i.resumen.coincidenciaPorcentaje).toBeNull();
+  });
+});
+
 describe('contrastar la decisión de la IA con el desenlace', () => {
   const tabla: Array<[Decision, ...Array<'coincide' | 'difiere' | 'sin_referencia'>]> = [
     // avanzo, perdido, antes_de_f2, sin_etapa
