@@ -38,6 +38,25 @@ export function claveEmail(valor: string | null | undefined): string | null {
 const unicas = (ids: string[]): string[] => [...new Set(ids)];
 
 /**
+ * Las tarjetas padre que coinciden con la llamada y por qué vía: por teléfono si alguna coincide y, si no, por email. Es lo que
+ * `vincularLlamadaConLead` decide; sirve para listar entre qué tarjetas hay que elegir cuando son varias. null si ninguna coincide.
+ */
+export function coincidenciasDeLlamada(contacto: ContactoLlamada, leads: readonly LeadCandidato[]): { via: 'telefono' | 'email'; ids: string[] } | null {
+  const telefono = claveTelefono(contacto.telefono);
+  const email = claveEmail(contacto.email);
+  const padres = leads.filter((l) => l.esTareaPadre);
+  if (telefono !== null) {
+    const ids = unicas(padres.filter((l) => claveTelefono(l.telefono) === telefono).map((l) => l.clickupTaskId));
+    if (ids.length > 0) return { via: 'telefono', ids };
+  }
+  if (email !== null) {
+    const ids = unicas(padres.filter((l) => claveEmail(l.email) === email).map((l) => l.clickupTaskId));
+    if (ids.length > 0) return { via: 'email', ids };
+  }
+  return null;
+}
+
+/**
  * Primero por teléfono; si ninguna tarea coincide, por email. Sin una coincidencia única (ninguna o
  * varias) la llamada queda como «sin lead» y no escribe nada.
  */

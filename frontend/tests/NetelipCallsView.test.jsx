@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/ceo-dashboard/api', () => ({
-  default: { netelip: { calls: vi.fn(), call: vi.fn(), filterOptions: vi.fn(), evaluation: vi.fn(), addEvaluationFeedback: vi.fn(), objections: vi.fn(), salespeople: vi.fn(), saveSalesperson: vi.fn() } },
+  default: { netelip: { calls: vi.fn(), call: vi.fn(), filterOptions: vi.fn(), evaluation: vi.fn(), addEvaluationFeedback: vi.fn(), objections: vi.fn(), salespeople: vi.fn(), saveSalesperson: vi.fn(), decision: vi.fn(), saveDecision: vi.fn() }, captacionLlamadas: { sinAsignar: vi.fn(), asignar: vi.fn() } },
 }));
 
 import api from '../src/ceo-dashboard/api';
@@ -24,6 +24,8 @@ beforeEach(() => {
   vi.mocked(api.netelip.calls).mockResolvedValue(page(calls));
   vi.mocked(api.netelip.filterOptions).mockResolvedValue({ agents: [{ extension: '109', name: 'Elena Prueba' }] });
   vi.mocked(api.netelip.evaluation).mockResolvedValue({ evaluation: null });
+  vi.mocked(api.netelip.decision).mockResolvedValue({ lead_conocido: false, motivos: {}, estado: null, sdr: null, ia: null });
+  vi.mocked(api.captacionLlamadas.sinAsignar).mockResolvedValue({ resumen: {}, items: [] });
   vi.mocked(api.netelip.call).mockResolvedValue({ call: calls[0], transcription_access: 'granted', transcription: { status: 'completed', text: 'Hola', segments: [{ speaker: 'agente', start: 0, end: 2, text: 'Buenos días.' }, { speaker: 'cliente', start: 2.4, end: 4, text: 'Hola, dígame.' }] } });
 });
 afterEach(() => vi.clearAllMocks());
@@ -277,5 +279,76 @@ describe('EvaluationBadge', () => {
     expect(screen.queryByText('No evaluada')).not.toBeInTheDocument();
     rerender(<EvaluationBadge evaluation={{ status: 'no_evaluada', score: null, pass: null, escalated: false, no_consent: false }} />);
     expect(screen.getByText('No evaluada')).toBeInTheDocument();
+  });
+});
+
+describe('N-1.0 · lead de «Contacto de Reforma»', () => {
+  const conLead = { id: 5, via: 'phone', direction: 'outbound', occurred_at: '2026-11-15T09:00:00Z', phone: '+34600000555', contact_status: 'unknown', contact: null, agent: null, duration_seconds: 120, transcription_status: 'completed', captacion: { status: 'vinculada', via: 'telefono', task_id: 'abc123', name: 'Ana Beltrán', url: 'https://app.clickup.com/t/abc123' } };
+  const variasTarjetas = { id: 6, via: 'phone', direction: 'outbound', occurred_at: '2026-11-15T10:00:00Z', phone: '+34600000666', contact_status: 'unknown', contact: null, agent: null, duration_seconds: 120, transcription_status: 'completed', captacion: { status: 'varias_coincidencias' } };
+
+  it('la fila muestra el nombre del lead de ClickUp con su enlace, en vez de «Sin contacto identificado»', async () => {
+    vi.mocked(api.netelip.calls).mockResolvedValue(page([conLead, variasTarjetas]));
+    render(<NetelipCallsView />);
+    const enlace = await screen.findByRole('link', { name: 'Ana Beltrán' });
+    expect(enlace).toHaveAttribute('href', 'https://app.clickup.com/t/abc123');
+    const filas = screen.getAllByRole('row').slice(1);
+    expect(within(filas[0]).getByText('Lead ClickUp')).toBeInTheDocument();
+    expect(within(filas[0]).queryByText('Sin contacto identificado')).toBeNull();
+    expect(within(filas[1]).getByText('Varias tarjetas en ClickUp: pendiente de elegir')).toBeInTheDocument();
+  });
+
+  it('el detalle de la llamada pone el lead de ClickUp como título y dice si se asignó a mano', async () => {
+    vi.mocked(api.netelip.calls).mockResolvedValue(page([conLead]));
+    vi.mocked(api.netelip.call).mockResolvedValue({ call: { ...conLead, captacion: { ...conLead.captacion, via: 'manual' } }, transcription_access: 'granted', transcription: null });
+    render(<NetelipCallsView />);
+    fireEvent.click(await screen.findByText('15/11/2026 10:00'));
+    const dialogo = await screen.findByRole('dialog', { name: 'Detalle de llamada' });
+    expect(await within(dialogo).findByRole('heading', { name: 'Ana Beltrán' })).toBeInTheDocument();
+    expect(within(dialogo).getByText(/asignado a mano/)).toBeInTheDocument();
+    expect(within(dialogo).getByRole('link', { name: 'Ver tarjeta' })).toHaveAttribute('href', 'https://app.clickup.com/t/abc123');
+  });
+
+  it('sin llamadas con varias coincidencias no aparece el panel; con ellas se elige la tarjeta y la lista se recarga', async () => {
+    const { rerender } = render(<NetelipCallsView />);
+    await screen.findByText('Lucía Ficticia');
+    expect(screen.queryByRole('region', { name: 'Llamadas con varias coincidencias' })).toBeNull();
+    rerender(<div />);
+
+    const item = { llamada_id: 6, occurred_at: '2026-11-15T10:00:00Z', phone: '+34600000666', candidatos: [{ id: 'T1', nombre: 'Ana', url: 'https://app.clickup.com/t/T1' }, { id: 'T2', nombre: 'Ana duplicada', url: null }] };
+    vi.mocked(api.captacionLlamadas.sinAsignar).mockResolvedValueOnce({ resumen: {}, items: [item] }).mockResolvedValue({ resumen: {}, items: [] });
+    vi.mocked(api.captacionLlamadas.asignar).mockResolvedValue({ llamada_id: 6 });
+    render(<NetelipCallsView />);
+    const panel = await screen.findByRole('region', { name: 'Llamadas con varias coincidencias' });
+    expect(within(panel).getByText(/1 llamada tiene su teléfono en varias tarjetas/)).toBeInTheDocument();
+    expect(within(panel).queryByText('Ana duplicada')).toBeNull();
+    fireEvent.click(within(panel).getByRole('button', { name: /Elegir a mano/ }));
+    expect(within(panel).getByRole('link', { name: 'Ver tarjeta' })).toHaveAttribute('href', 'https://app.clickup.com/t/T1');
+    fireEvent.click(within(panel).getByRole('button', { name: /Asignar la llamada de \+34 600 000 666 a Ana duplicada/ }));
+    await waitFor(() => expect(api.captacionLlamadas.asignar).toHaveBeenCalledWith(6, 'T2'));
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Llamadas con varias coincidencias' })).toBeNull());
+  });
+
+  it('si la lista no carga, el panel lo dice y deja reintentar (las llamadas pendientes no quedan invisibles)', async () => {
+    vi.mocked(api.captacionLlamadas.sinAsignar).mockRejectedValueOnce(new Error('caído'));
+    render(<NetelipCallsView />);
+    const aviso = await screen.findByRole('alert', { name: 'Llamadas con varias coincidencias' });
+    expect(aviso).toHaveTextContent('No se pudo cargar la lista de llamadas con varias coincidencias.');
+    const item = { llamada_id: 6, occurred_at: '2026-11-15T10:00:00Z', phone: '+34600000666', candidatos: [{ id: 'T1', nombre: 'Ana', url: null }] };
+    vi.mocked(api.captacionLlamadas.sinAsignar).mockResolvedValue({ resumen: { varias_coincidencias: 700 }, items: [item] });
+    fireEvent.click(within(aviso).getByRole('button', { name: 'Reintentar' }));
+    const panel = await screen.findByRole('region', { name: 'Llamadas con varias coincidencias' });
+    expect(within(panel).getByText(/700 llamadas tienen su teléfono en varias tarjetas/)).toBeInTheDocument();
+  });
+
+  it('si asignar falla, lo dice y deja la lista como estaba', async () => {
+    const item = { llamada_id: 6, occurred_at: '2026-11-15T10:00:00Z', phone: '+34600000666', candidatos: [{ id: 'T1', nombre: 'Ana', url: null }] };
+    vi.mocked(api.captacionLlamadas.sinAsignar).mockResolvedValue({ resumen: {}, items: [item] });
+    vi.mocked(api.captacionLlamadas.asignar).mockRejectedValue(Object.assign(new Error('x'), { body: 'No tienes permiso para asignar llamadas a un lead.' }));
+    render(<NetelipCallsView />);
+    const panel = await screen.findByRole('region', { name: 'Llamadas con varias coincidencias' });
+    fireEvent.click(within(panel).getByRole('button', { name: /Elegir a mano/ }));
+    fireEvent.click(within(panel).getByRole('button', { name: /Asignar la llamada/ }));
+    expect(await within(panel).findByRole('alert')).toHaveTextContent('No tienes permiso para asignar llamadas a un lead.');
+    expect(within(panel).getByText('Ana')).toBeInTheDocument();
   });
 });

@@ -132,9 +132,22 @@ describe('validarSalidaModelo · contrato', () => {
     expect(ok.noApto.valor).toBe(true);
   });
 
-  it('el resumen es opcional para N-1.2: si falta, queda vacío', () => {
+  it('el resumen es opcional para el contrato: si falta, queda vacío y el resumen no se guarda (ver validarResumen)', () => {
     const s = validarSalidaModelo(con((o) => { delete o.resumen; }));
-    expect(s.resumen).toEqual({ queQuiere: '', dondeQuedo: '', queLoFrena: '', paraQueLlamarlo: '', fechaPrevista: null });
+    expect(s.resumen).toEqual({ queQuiere: '', dondeQuedo: '', queLoFrena: '', paraQueLlamarlo: '', fechaPrevista: null, fechaCita: null });
+  });
+
+  it('lee la fecha prevista con la cita que la demuestra (N-1.3) y recorta los textos', () => {
+    const s = validarSalidaModelo(con((o) => {
+      o.resumen = { ...o.resumen, que_lo_frena: '  Nada  ', fecha_prevista: ' 2026-11-20 ', fecha_prevista_cita: '  Podemos ir el viernes 20 a las seis ' };
+    }));
+    expect(s.resumen).toMatchObject({ queLoFrena: 'Nada', fechaPrevista: '2026-11-20', fechaCita: 'Podemos ir el viernes 20 a las seis' });
+    expect(validarSalidaModelo(con((o) => { o.resumen = { ...o.resumen, fecha_prevista_cita: '   ' }; })).resumen.fechaCita).toBeNull();
+  });
+
+  it('un resumen con tipos raros no rompe el contrato: lo que no es texto queda vacío', () => {
+    const s = validarSalidaModelo(con((o) => { o.resumen = { que_quiere: 5, donde_quedo: null, que_lo_frena: {}, para_que_llamarlo: ['x'], fecha_prevista: 20261120 }; }));
+    expect(s.resumen).toEqual({ queQuiere: '', dondeQuedo: '', queLoFrena: '', paraQueLlamarlo: '', fechaPrevista: null, fechaCita: null });
   });
 });
 

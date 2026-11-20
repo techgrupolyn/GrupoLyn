@@ -15,9 +15,13 @@ import {
   valorVigenteDe,
   type Calificacion,
   type Disparador,
+  type EscriturasConTextos,
   type EstadoPrevio,
 } from './motor.ts';
-import { SalidaInvalida, validarSalidaModelo, verificarSalida, type SalidaVerificada } from './salida-modelo.ts';
+import { leerDecisionIA, verificarDecisionIA, type MotivosPorDecision, type Origen } from './decision.ts';
+import { registrarDecisionIA } from './decision-repositorio.ts';
+import { fechaMadrid, renderResumen, validarResumen, type ResumenLead } from './resumen.ts';
+import { SalidaInvalida, validarSalidaModelo, verificarSalida, type ResumenSalida, type SalidaModelo, type SalidaVerificada } from './salida-modelo.ts';
 import { CATEGORIAS, type Categoria, type ConfigCategoria, type EventoPresupuesto, type Fuente } from './tipos.ts';
 
 // Capa de datos de N-1.1 y N-1.2: guarda lo que decide la lógica pura y lee el estado de un lead.
@@ -190,6 +194,74 @@ export async function registrarEvaluacionLlamada(db: Db, r: RegistroEvaluacion):
   return { criterios, presupuesto, noApto, revisionManual };
 }
 
+export interface RegistroResumen {
+  clickupTaskId: string;
+  interaccionId: string;
+  fechaInteraccion: string;
+  /** Lo que propuso el modelo (sin validar). */
+  resumen: ResumenSalida;
+  /** Transcripción ya enmascarada, tal como se le dio al modelo. */
+  transcripcion: string;
+  /** El lead ya tiene un presupuesto vigente. */
+  tienePresupuesto: boolean;
+}
+
+export type ResultadoResumenGuardado =
+  /** Es el resumen nuevo de esta llamada. */
+  | { estado: 'guardado' }
+  /** La llamada ya tenía su resumen (reintento): se conserva el que había. */
+  | { estado: 'ya_existia' }
+  /** El modelo no devolvió ninguno (los cuatro bloques vacíos): se mantiene el anterior. */
+  | { estado: 'vacio' }
+  /** No cumple las reglas (importes, contacto, fecha sin cita, más de 600 caracteres…): no se guarda y se mantiene el anterior. */
+  | { estado: 'descartado'; motivo: string };
+
+/**
+ * Valida el resumen de una llamada y, si vale, lo agrega al histórico. Nunca lanza por un resumen malo: un defecto del
+ * texto no debe costar la calificación de la llamada. Idempotente por interacción.
+ */
+export async function registrarResumenLlamada(db: Db, r: RegistroResumen): Promise<ResultadoResumenGuardado> {
+  const v = validarResumen(r.resumen, {
+    transcripcion: r.transcripcion,
+    fechaLlamada: fechaMadrid(new Date(r.fechaInteraccion)),
+    tienePresupuesto: r.tienePresupuesto,
+  });
+  if (!v.ok) return v.motivo === 'vacio' ? { estado: 'vacio' } : { estado: 'descartado', motivo: v.detalle };
+  const s = v.resumen;
+  const res = await db.query(
+    `INSERT INTO lead_resumen_historial
+       (clickup_task_id, interaccion_id, que_quiere, donde_quedo, que_lo_frena, para_que_llamarlo, fecha_prevista, fecha_interaccion)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (interaccion_id) DO NOTHING
+     RETURNING id`,
+    [r.clickupTaskId, r.interaccionId, s.queQuiere, s.dondeQuedo, s.queLoFrena, s.paraQueLlamarlo, s.fechaPrevista, r.fechaInteraccion],
+  );
+  return { estado: res.rows.length > 0 ? 'guardado' : 'ya_existia' };
+}
+
+/**
+ * Resumen vigente del lead: el de la llamada más reciente por fecha de la interacción. Con `antesDe` solo cuenta lo anterior a esa
+ * fecha: es el «resumen anterior» que se le da al modelo para actualizarlo con una llamada nueva (generación incremental).
+ */
+export async function cargarResumenVigente(db: Db, clickupTaskId: string, antesDe?: string): Promise<ResumenLead | null> {
+  const r = await db.query(
+    `SELECT que_quiere, donde_quedo, que_lo_frena, para_que_llamarlo, to_char(fecha_prevista, 'YYYY-MM-DD') AS fecha_prevista
+     FROM lead_resumen_historial
+     WHERE clickup_task_id = $1 AND ($2::timestamptz IS NULL OR fecha_interaccion < $2::timestamptz)
+     ORDER BY fecha_interaccion DESC, seq DESC LIMIT 1`,
+    [clickupTaskId, antesDe ?? null],
+  );
+  const f = r.rows[0];
+  if (!f) return null;
+  return {
+    queQuiere: String(f.que_quiere),
+    dondeQuedo: String(f.donde_quedo),
+    queLoFrena: String(f.que_lo_frena),
+    paraQueLlamarlo: String(f.para_que_llamarlo),
+    fechaPrevista: texto(f.fecha_prevista),
+  };
+}
+
 /** Nivel provisional de Alcance desde el formulario. Un solo registro por lead; si es NE no se guarda. */
 export async function registrarAlcanceProvisional(
   db: Db,
@@ -227,6 +299,52 @@ export async function registrarPresupuestoFormulario(
     [datos.clickupTaskId, p.tipo, p.valorMin, p.valorMax, p.valorVigente, datos.opcion, `formulario:${datos.clickupTaskId}`, datos.fechaInteraccion],
   );
   return res.rows.length > 0;
+}
+
+/**
+ * Presupuesto que un comercial escribió a mano en la tarjeta de ClickUp (fuente «manual»). Cuenta siempre como
+ * presupuesto del proyecto (emisor «cliente», sin el mínimo de las cifras de LYN) y manda por la fecha del cambio (RN-8).
+ * El mismo cambio (misma tarea, fecha e importe) no se duplica aunque ClickUp reenvíe el aviso. Devuelve false si ya estaba.
+ */
+export async function registrarPresupuestoManual(
+  db: Db,
+  datos: { clickupTaskId: string; valor: number; usuarioId: string | null; fecha: string },
+): Promise<boolean> {
+  const valor = Math.round(datos.valor);
+  if (!Number.isFinite(valor) || valor <= 0) throw new Error('El presupuesto manual debe ser un importe mayor que 0');
+  const res = await db.query(
+    `INSERT INTO lead_presupuesto_evento
+       (clickup_task_id, fuente, tipo, valor_min, valor_max, valor_vigente, moneda, emisor, interaccion_id,
+        fecha_interaccion, registrado_por, usuario_id)
+     VALUES ($1, 'manual', 'exacto', $2, $2, $2, 'EUR', 'cliente', $3, $4, 'usuario', $5)
+     ON CONFLICT ON CONSTRAINT lead_presupuesto_evento_interaccion_uq DO NOTHING
+     RETURNING id`,
+    [datos.clickupTaskId, valor, `manual:${datos.clickupTaskId}:${datos.fecha}:${valor}`, datos.fecha, datos.usuarioId],
+  );
+  return res.rows.length > 0;
+}
+
+/** Espacio de los bloqueos de la captación (el primer número de `pg_advisory_xact_lock`): no choca con los de otras partes. */
+const ESPACIO_BLOQUEO_CAPTACION = 7101;
+
+/**
+ * Bloquea un lead hasta el final de la transacción: dos procesos a la vez (un aviso de ClickUp y la carga inicial, o dos
+ * avisos en dos instancias) no pueden calificarlo a la vez ni darlo de alta dos veces. Va PRIMERO dentro de la transacción,
+ * antes de leer el estado. Con una sola conexión (pruebas) no espera a nadie.
+ */
+export async function bloquearLead(db: Db, clickupTaskId: string): Promise<void> {
+  await db.query('SELECT pg_advisory_xact_lock($1::int, hashtext($2))', [ESPACIO_BLOQUEO_CAPTACION, clickupTaskId]);
+}
+
+/** Última categoría del lead que no fue No apto (para volver a ella cuando se levanta el No apto a mano). */
+export async function categoriaAntesDeNoApto(db: Db, clickupTaskId: string): Promise<Categoria> {
+  const r = await db.query(
+    `SELECT categoria FROM lead_calificacion_historial
+     WHERE clickup_task_id = $1 AND categoria <> 'no_apto' ORDER BY seq DESC LIMIT 1`,
+    [clickupTaskId],
+  );
+  const c = r.rows[0]?.categoria;
+  return (CATEGORIAS as readonly string[]).includes(String(c)) ? (c as Categoria) : 'sin_calificar';
 }
 
 /** El comercial marca o quita a mano el No apto (no exige cita). */
@@ -341,7 +459,7 @@ export interface ResultadoRecalculo {
   calificacion: Calificacion;
   agregacion: ResultadoAgregacion;
   /** Lo único que hay que escribir en la tarea de ClickUp (ya validado contra los campos permitidos). */
-  escrituras: Calificacion['escrituras'] & { desglose?: string };
+  escrituras: EscriturasConTextos;
   filasInsertadas: number;
 }
 
@@ -396,9 +514,11 @@ export async function recalcularLead(
     );
   }
 
-  const escrituras = validarEscrituras({
+  const resumen = await cargarResumenVigente(db, clickupTaskId);
+  const escrituras = validarEscrituras<EscriturasConTextos>({
     ...calificacion.escrituras,
     ...(estado.evaluaciones.length > 0 ? { desglose: agregacion.desglose } : {}),
+    ...(resumen ? { resumen: renderResumen(resumen) } : {}),
   });
   return { calificacion, agregacion, escrituras, filasInsertadas: calificacion.historial.length };
 }
@@ -449,7 +569,30 @@ export interface LlamadaAProcesar {
   transcripcion: string;
   /** Texto JSON que devolvió el modelo. */
   salidaModelo: string;
+  /**
+   * N-1.4: con esto se guarda la decisión de pase de la IA. Sin esto (lead en F2 o más allá, o sin la configuración de la decisión)
+   * la llamada se califica igual y no se guarda ninguna decisión.
+   */
+  decision?: ConfigDecisionLlamada;
 }
+
+export interface ConfigDecisionLlamada {
+  /** Lista de motivos vigente: un código que no está en ella pasa a «otro». */
+  motivos: MotivosPorDecision;
+  versionGuion: number;
+  versionManual: number;
+  versionPrompt: string;
+  /** `historico` en la calibración: la decisión se guarda pero no entra en la bandeja ni en el acierto. */
+  origen: Origen;
+}
+
+/** Qué pasó con la decisión de pase de la IA en una llamada (nunca impide guardar la calificación). */
+export type ResultadoDecisionGuardada =
+  | { estado: 'omitida' }
+  | { estado: 'sin_decision' }
+  | { estado: 'guardada'; decision: string }
+  | { estado: 'ya_existia'; decision: string }
+  | { estado: 'invalida'; motivo: string };
 
 export type ResultadoProcesar =
   | { estado: 'salida_invalida'; error: string }
@@ -458,6 +601,10 @@ export type ResultadoProcesar =
       registro: ResultadoRegistro;
       recalculo: ResultadoRecalculo;
       descartes: SalidaVerificada['descartes'];
+      /** Qué pasó con el resumen ejecutivo de esta llamada (un resumen malo no impide guardar la calificación). */
+      resumen: ResultadoResumenGuardado;
+      /** Qué pasó con la decisión de pase de la IA (N-1.4). */
+      decision: ResultadoDecisionGuardada;
     };
 
 /**
@@ -467,20 +614,60 @@ export type ResultadoProcesar =
  */
 export async function procesarEvaluacionLlamada(db: Db, l: LlamadaAProcesar): Promise<ResultadoProcesar> {
   let verificada: SalidaVerificada;
+  let salida: SalidaModelo;
   try {
-    verificada = verificarSalida(validarSalidaModelo(l.salidaModelo, l.interaccionId), l.transcripcion);
+    salida = validarSalidaModelo(l.salidaModelo, l.interaccionId);
+    verificada = verificarSalida(salida, l.transcripcion);
   } catch (error) {
     if (error instanceof SalidaInvalida) return { estado: 'salida_invalida', error: error.message };
     throw error;
   }
   return enTransaccion(db, async () => {
+    // El lead se bloquea PRIMERO (igual que cuando el SDR registra su propuesta): así la decisión de la IA y la propuesta del SDR no pueden
+    // guardarse a la vez sin ver cada una la fila de la otra, y el caso de Ernesto no se queda sin crear (N-1.4).
+    await bloquearLead(db, l.clickupTaskId);
     const registro = await registrarEvaluacionLlamada(db, {
       clickupTaskId: l.clickupTaskId,
       interaccionId: l.interaccionId,
       fechaInteraccion: l.fechaInteraccion,
       verificada,
     });
+    // El resumen se guarda ANTES de recalcular, para que la escritura a ClickUp ya lleve el vigente. «Preguntar presupuesto»
+    // depende de si el lead tiene presupuesto con las evaluaciones de esta llamada ya registradas.
+    const estado = await cargarEstado(db, l.clickupTaskId);
+    const resumen = await registrarResumenLlamada(db, {
+      clickupTaskId: l.clickupTaskId,
+      interaccionId: l.interaccionId,
+      fechaInteraccion: l.fechaInteraccion,
+      resumen: salida.resumen,
+      transcripcion: l.transcripcion,
+      tienePresupuesto: presupuestoVigente(estado.eventosPresupuesto) !== null,
+    });
     const recalculo = await recalcularLead(db, l.clickupTaskId, { disparador: 'evaluacion_ia' });
-    return { estado: 'procesada' as const, registro, recalculo, descartes: verificada.descartes };
+    const descartes: SalidaVerificada['descartes'] = [...verificada.descartes];
+    if (resumen.estado === 'descartado') descartes.push({ campo: 'resumen', motivo: resumen.motivo, cita: null });
+
+    // La decisión de pase de la IA (N-1.4): se verifica y se guarda; un defecto suyo no cuesta la calificación.
+    let decision: ResultadoDecisionGuardada = { estado: 'omitida' };
+    if (l.decision) {
+      const bruta = leerDecisionIA(salida.decisionIA);
+      if (bruta === null) {
+        decision = { estado: 'sin_decision' };
+      } else {
+        const v = verificarDecisionIA(bruta, l.transcripcion, l.decision.motivos);
+        if (!v.ok) {
+          decision = { estado: 'invalida', motivo: v.detalle };
+          descartes.push({ campo: 'decision_ia', motivo: v.detalle, cita: null });
+        } else {
+          for (const d of v.descartes) descartes.push({ campo: d.campo, motivo: d.motivo, cita: null });
+          const nueva = await registrarDecisionIA(db, {
+            leadId: l.clickupTaskId, llamadaId: l.interaccionId, decision: v.decision, versionGuion: l.decision.versionGuion,
+            versionManual: l.decision.versionManual, versionPrompt: l.decision.versionPrompt, origen: l.decision.origen,
+          });
+          decision = { estado: nueva ? 'guardada' : 'ya_existia', decision: v.decision.decision };
+        }
+      }
+    }
+    return { estado: 'procesada' as const, registro, recalculo, descartes, resumen, decision };
   });
 }

@@ -8,7 +8,7 @@ import { ejecutarLote, esVivo, type OpcionesLote } from '../netelip/captacion/lo
 import { registrarPresupuestoFormulario } from '../netelip/captacion/repositorio.ts';
 import { ensureNetelipCalls } from '../netelip/schema.ts';
 import { abrirBaseAislada, hayBaseDePruebas, type BaseAislada } from './helpers/captacion-base.ts';
-import { FRASE, salidaModelo, TRANSCRIPCION_BASE, type OpcionesSalida } from './helpers/captacion-llamadas.ts';
+import { FRASE, RESUMEN_BUENO, salidaModelo, TRANSCRIPCION_BASE, TRANSCRIPCION_CON_FECHA, type OpcionesSalida } from './helpers/captacion-llamadas.ts';
 import { levantarClickUpFalso, LISTA_FALSA, TOKEN_FALSO, type ClickUpFalso, type TareaFalsa } from './helpers/clickup-falso.ts';
 
 const DESDE = new Date('2026-11-01T00:00:00Z');
@@ -237,6 +237,39 @@ describe.skipIf(!hayBaseDePruebas)('captación · lote · de punta a punta', () 
     const informe = await lote({ escribirMaximo: 1 });
     expect(informe.escrituras[0]).toMatchObject({ resultado: 'escrito', campos: 5, detalle: 'indice_orden (el campo no existe en la lista)' });
     expect(posts().some((p) => p.ruta.includes('f-indice'))).toBe(false);
+  });
+
+  it('N-1.3 · el resumen ejecutivo de la llamada llega a la fila del informe y, al escribir, al campo «Resumen ejecutivo» de la tarjeta', async () => {
+    tareas({ id: 'r1', nombre: 'Lead R1', telefono: '+34600000001', etapa: ETAPA.viabilidad });
+    guiones.set(await llamada({ id: 'u1', telefono: '+34600000001', texto: TRANSCRIPCION_CON_FECHA }), { resumen: RESUMEN_BUENO });
+    const simulacro = await lote();
+    expect(simulacro.filas[0]!.resumen).toBe(
+      'Qué quiere: Reforma integral de la vivienda\nDónde quedó: Vendrá a la oficina el viernes a las seis\nQué lo frena: Falta firmar la compra\nPara qué llamarlo: Confirmar la visita del viernes',
+    );
+    expect(posts()).toEqual([]);
+    const informe = await lote({ escribirMaximo: 1 });
+    expect(informe.escrituras[0]).toMatchObject({ resultado: 'escrito', campos: 7, detalle: null });
+    expect(escritoDe('r1')['f-res']).toBe(informe.filas[0]!.resumen);
+    expect(informe.filas[0]!.resumen!.split('\n')).toHaveLength(4);
+  });
+
+  it('N-1.3 · un lead sin resumen (el modelo lo dejó vacío) no recibe nada en ese campo y la fila lo dice', async () => {
+    tareas({ id: 'r2', nombre: 'Lead R2', telefono: '+34600000002', etapa: ETAPA.viabilidad });
+    await llamada({ id: 'u2', telefono: '+34600000002' });
+    const informe = await lote({ escribirMaximo: 1 });
+    expect(informe.filas[0]!.resumen).toBeNull();
+    expect(informe.escrituras[0]).toMatchObject({ resultado: 'escrito', campos: 6 });
+    expect(escritoDe('r2')['f-res']).toBeUndefined();
+  });
+
+  it('N-1.3 · si la lista aún no tiene el campo «Resumen ejecutivo», el lote escribe el resto y lo anota', async () => {
+    tareas({ id: 'r3', nombre: 'Lead R3', telefono: '+34600000003', etapa: ETAPA.viabilidad });
+    guiones.set(await llamada({ id: 'u3', telefono: '+34600000003', texto: TRANSCRIPCION_CON_FECHA }), { resumen: RESUMEN_BUENO });
+    falso.campos = falso.campos.filter((c) => c.name !== 'Resumen ejecutivo') as typeof falso.campos;
+    const informe = await lote({ escribirMaximo: 1 });
+    expect(informe.escrituras[0]).toMatchObject({ resultado: 'escrito', campos: 6, detalle: 'resumen (el campo no existe en la lista)' });
+    expect(informe.filas[0]!.resumen).toContain('Qué quiere: Reforma integral');
+    expect(posts().some((p) => p.ruta.includes('f-res'))).toBe(false);
   });
 
   // Lo que ClickUp recibió de una tarjeta: campo → valor del POST.

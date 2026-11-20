@@ -174,6 +174,9 @@ export const api = {
     // Calificador interno de llamadas (869e9y98n).
     evaluation: (id) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion`),
     addEvaluationFeedback: (id, texto) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion/feedback`, { method: 'POST', body: JSON.stringify({ texto }) }),
+    // Decisión de pase del SDR (N-1.4): su propuesta en el detalle de la llamada; la de la IA solo se ve tras registrar la suya.
+    decision: (id) => request(`/netelip/calls/${encodeURIComponent(id)}/decision`),
+    saveDecision: (id, body) => request(`/netelip/calls/${encodeURIComponent(id)}/decision`, { method: 'POST', body: JSON.stringify(body) }),
     objections: (filters = {}) => request(`/netelip/objeciones?${new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== '' && value != null))}`),
     salespeople: () => request('/netelip/comerciales'),
     saveSalesperson: (extension, body) => request(`/netelip/comerciales/${encodeURIComponent(extension)}`, { method: 'PUT', body: JSON.stringify(body) }),
@@ -182,6 +185,19 @@ export const api = {
     updateTrainer: () => request('/netelip/entrenador/actualizar', { method: 'POST' }),
     publishTrainer: (numero) => request(`/netelip/entrenador/versiones/${encodeURIComponent(numero)}/publicar`, { method: 'POST' }),
     trainerDocx: (numero) => requestBlob(`/netelip/entrenador/versiones/${encodeURIComponent(numero)}/docx`),
+  },
+  // N-1.0: llamadas cuyo teléfono coincide con varias tarjetas de ClickUp y su asignación a mano.
+  captacionLlamadas: {
+    sinAsignar: () => request('/captacion/llamadas/sin-asignar'),
+    asignar: (llamadaId, tarea) => request(`/captacion/llamadas/${encodeURIComponent(llamadaId)}/asignar`, { method: 'POST', body: JSON.stringify({ clickup_task_id: tarea }) }),
+  },
+  // Bandeja de Ernesto (N-1.4): casos con la propuesta del SDR y la de la IA, confirmar o corregir, y el acierto del piloto.
+  decisiones: {
+    bandeja: (estado = 'pendientes') => request(`/captacion/decisiones/bandeja?estado=${encodeURIComponent(estado)}`),
+    caso: (llamadaId) => request(`/captacion/decisiones/llamada/${encodeURIComponent(llamadaId)}`),
+    confirmar: (llamadaId, body = {}) => request(`/captacion/decisiones/llamada/${encodeURIComponent(llamadaId)}/confirmar`, { method: 'POST', body: JSON.stringify(body) }),
+    corregir: (llamadaId, body) => request(`/captacion/decisiones/llamada/${encodeURIComponent(llamadaId)}/corregir`, { method: 'POST', body: JSON.stringify(body) }),
+    acierto: () => request('/captacion/decisiones/acierto'),
   },
   meetings: {
     recording: (id) => request(`/meetings/${encodeURIComponent(id)}/recording`),

@@ -11,6 +11,10 @@ import { VdriveClient, vdriveConfigFromEnv } from './vdrive.ts';
 import { encolarPendientes } from './calificador/encolar.ts';
 import { evaluadorGemini } from './calificador/modelo.ts';
 import { configDesdeEnv, enviarPendientes, procesarSiguienteEvaluacion, type Enviador } from './calificador/proceso.ts';
+import { ClickUpClient, clickupConfigDesdeEnv } from './captacion/clickup.ts';
+import { configColaDesdeEnv, encolarPendientesCaptacion, ProcesadorCola } from './captacion/cola.ts';
+import { ESQUEMA_SALIDA } from './captacion/prompt.ts';
+import { VinculadorLlamadas } from './captacion/vinculo-llamadas.ts';
 
 export { ensureNetelipCalls } from './schema.ts';
 export { registerNetelipCalls } from './routes.ts';
@@ -24,6 +28,9 @@ const RETENTION_INTERVAL_MS = 24 * 3600_000;
 const RECOVERY_INTERVAL_MS = 5 * 60_000;
 const EVALUATION_INTERVAL_MS = 15_000;
 const EVALUATION_RECOVERY_INTERVAL_MS = 5 * 60_000;
+const CAPTACION_INTERVAL_MS = 30_000;
+const CAPTACION_RECOVERY_INTERVAL_MS = 10 * 60_000;
+const VINCULO_INTERVAL_MS = 60_000;
 
 function days(name: string, env: NodeJS.ProcessEnv): number | null {
   const raw = String(env[name] || '').trim();
@@ -79,6 +86,40 @@ export function createNetelipWorkers(pool: Pool, env: NodeJS.ProcessEnv = proces
     console.log(JSON.stringify({ msg: 'netelip_retention_done', transcript_days: transcriptDays, audio_days: audioDays, ...summary }));
   });
 
+  // Captación ABCD (869fny187): cada llamada transcrita se evalúa contra su lead (calificación, resumen y decisión de pase). Apagado por
+  // defecto: CAPTACION_WORKER_ENABLED=true lo enciende, y CAPTACION_ESCRIBIR_CLICKUP=true permite escribir en las tarjetas (sin ella, simulacro).
+  const colaConfig = configColaDesdeEnv(env);
+  const clickupConfig = clickupConfigDesdeEnv(env);
+  const modeloCaptacion = colaConfig.activa
+    ? evaluadorGemini({ ...env, GOOGLE_GEMINI_API_KEY: env.CAPTACION_GEMINI_API_KEY?.trim() || env.GOOGLE_GEMINI_API_KEY, CALIFICADOR_MODEL: env.CAPTACION_MODEL?.trim() || env.CALIFICADOR_MODEL }, fetch, { schema: ESQUEMA_SALIDA, maxOutputTokens: 4096 })
+    : null;
+  const procesadorCola = colaConfig.activa && modeloCaptacion && clickupConfig
+    ? new ProcesadorCola({ pool, cliente: new ClickUpClient(clickupConfig), evaluar: modeloCaptacion, escribir: colaConfig.escribirClickUp, avisar: notifyTech, registro: (m) => console.log(`[captacion] ${m}`) })
+    : null;
+  const captacion = singleFlight('captación', async () => {
+    if (!procesadorCola) return;
+    const n = await procesadorCola.vaciar();
+    if (n) console.log(JSON.stringify({ msg: 'captacion_procesadas', llamadas: n }));
+  });
+  const captacionRecuperacion = singleFlight('captación · recuperación', async () => {
+    if (!procesadorCola) return;
+    const queued = await encolarPendientesCaptacion(pool, days('CAPTACION_RECUPERACION_DIAS', env) ?? 2);
+    if (queued) console.log(JSON.stringify({ msg: 'captacion_encoladas', llamadas: queued }));
+    const rewritten = await procesadorCola.reescribirPendientes();
+    if (rewritten) console.log(JSON.stringify({ msg: 'captacion_reescritas', leads: rewritten }));
+  });
+
+  // N-1.0 · cada llamada de Netelip queda asociada a su lead de «Contacto de Reforma» (por teléfono y, si no, por email). Solo LEE ClickUp.
+  // Apagado por defecto: CAPTACION_VINCULO_ENABLED=true (necesita CLICKUP_API_TOKEN y CAPTACION_CLICKUP_LIST_ID; no necesita Gemini).
+  const vinculador = env.CAPTACION_VINCULO_ENABLED === 'true' && clickupConfig
+    ? new VinculadorLlamadas({ pool, cliente: new ClickUpClient(clickupConfig), registro: (m) => console.log(`[captacion] ${m}`) })
+    : null;
+  const vinculo = singleFlight('captación · cruce de llamadas', async () => {
+    if (!vinculador) return;
+    const r = await vinculador.ejecutar();
+    if (r.vinculadas || r.variasCoincidencias) console.log(JSON.stringify({ msg: 'captacion_vinculo', ...r }));
+  });
+
   // Calificador interno de llamadas (869e9y98n): evalúa con Gemini y envía el feedback por WhatsApp.
   const evaluador = env.CALIFICADOR_ENABLED === 'false' ? null : evaluadorGemini(env);
   const calificadorConfig = configDesdeEnv(env);
@@ -105,6 +146,20 @@ export function createNetelipWorkers(pool: Pool, env: NodeJS.ProcessEnv = proces
       if (!vdrive) console.warn('[netelip] Sin acceso a vDrive (NETELIP_VDRIVE_USER / NETELIP_VDRIVE_APP_PASSWORD): no se recuperan llamadas sin aviso de grabación ni se podrán transcribir las pendientes cuando caduque su URL');
       // Las transcripciones pendientes dependen de vDrive para descargar el audio: si las credenciales fallan, avisar al arrancar.
       else vdrive.list('/APIVoice/Record').catch((error) => notifyTech('vDrive de Netelip inaccesible', { error: (error as Error).message.slice(0, 300) }));
+      if (colaConfig.activa && !procesadorCola) console.warn('[captacion] CAPTACION_WORKER_ENABLED=true pero faltan la clave de Gemini (CAPTACION_GEMINI_API_KEY o GOOGLE_GEMINI_API_KEY) o CLICKUP_API_TOKEN y CAPTACION_CLICKUP_LIST_ID: las llamadas se encolan pero no se procesan');
+      if (env.CAPTACION_VINCULO_ENABLED === 'true' && !vinculador) console.warn('[captacion] CAPTACION_VINCULO_ENABLED=true pero faltan CLICKUP_API_TOKEN y CAPTACION_CLICKUP_LIST_ID: las llamadas no se asocian a su lead');
+      if (vinculador) {
+        console.log('[captacion] cruce de llamadas con leads encendido (solo lee ClickUp)');
+        vinculo();
+        setInterval(vinculo, VINCULO_INTERVAL_MS).unref();
+      }
+      if (procesadorCola) {
+        console.log(`[captacion] flujo automático encendido (${colaConfig.escribirClickUp ? 'escribe en ClickUp' : 'simulacro: no escribe en ClickUp'})`);
+        for (const [task, ms] of [[captacion, CAPTACION_INTERVAL_MS], [captacionRecuperacion, CAPTACION_RECOVERY_INTERVAL_MS]] as const) {
+          task();
+          setInterval(task, ms).unref();
+        }
+      }
       for (const [task, ms] of [[inbox, INBOX_INTERVAL_MS], [transcribe, TRANSCRIPTION_INTERVAL_MS], [relink, RELINK_INTERVAL_MS],
         [reconcileTask, RECONCILE_INTERVAL_MS], [retention, RETENTION_INTERVAL_MS], [recover, RECOVERY_INTERVAL_MS],
         [evaluate, EVALUATION_INTERVAL_MS], [evaluationRecovery, EVALUATION_RECOVERY_INTERVAL_MS]] as const) {

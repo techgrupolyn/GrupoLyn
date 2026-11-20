@@ -76,7 +76,7 @@ export function leerArgumentos(argv: readonly string[]): Argumentos {
 /** Excel lee como fórmula una celda que empieza por = + - @ (con o sin espacios delante) o por tabulador/salto de línea. */
 const COMO_FORMULA = /^[\t\r\n]|^\s*[=+\-@]/;
 
-const celda = (v: unknown): string => {
+export const celda = (v: unknown): string => {
   const texto = v === null || v === undefined ? '' : String(v);
   // Los nombres de leads vienen de formularios web y las frases de las llamadas: no deben poder ejecutarse al abrir el CSV.
   const s = COMO_FORMULA.test(texto) ? `'${texto}` : texto;
@@ -85,9 +85,10 @@ const celda = (v: unknown): string => {
 
 /** CSV para Excel (UTF-8 con BOM, separador «;»): una fila por llamada con letra, desglose y frases citadas. */
 export function informeCsv(i: InformeLote): string {
-  const cabecera = ['fecha', 'llamada', 'lead', 'lead_id', 'etapa', 'via', 'estado', 'motivo', 'categoria', 'desglose', 'frases_citadas', 'descartes', 'revision_manual', 'intentos'];
+  const cabecera = ['fecha', 'llamada', 'lead', 'lead_id', 'etapa', 'via', 'estado', 'motivo', 'categoria', 'desglose', 'resumen', 'decision_ia', 'decision_estado', 'frases_citadas', 'descartes', 'revision_manual', 'intentos'];
   const filas = i.filas.map((f) => [
     f.ocurridaEn, f.llamadaId, f.lead?.nombre ?? '', f.lead?.id ?? '', f.lead?.etapa ?? '', f.via ?? '', f.estado, f.motivo ?? '', f.categoria ?? '', f.desglose ?? '',
+    (f.resumen ?? '').split('\n').join(' | '), f.decisionIA ?? '', f.decisionEstado ?? '',
     f.citas.map((c) => `${c.criterio} ${c.nivel}: «${c.cita}»`).join(' | '), f.descartes, f.revisionManual.join(' | '), f.intentos,
   ]);
   return `\uFEFF${[cabecera, ...filas].map((fila) => fila.map(celda).join(';')).join('\r\n')}\r\n`;
@@ -147,7 +148,7 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
     await ensureCaptacion(pool);
     const informe = await ejecutarLote({
       pool, cliente: new ClickUpClient(config), evaluar, desde: a.desde, hasta: a.hasta, candidatos: a.candidatos,
-      escribirMaximo: a.escribir, limite: a.limite, registro: (m) => console.log(m),
+      escribirMaximo: a.escribir, limite: a.limite, reintentarDecision: true, registro: (m) => console.log(m),
     });
     writeFileSync(a.informe, informeCsv(informe), 'utf8');
     console.log(resumenTexto(informe));

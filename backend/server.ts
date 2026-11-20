@@ -29,6 +29,7 @@ import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from '
 import { meetingReviewChain, meetingEmployeeRoles, meetingStageRecipientCondition, canDeleteMeetingActionsForRole } from './meeting-routing.ts';
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
 import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
+import { iniciarWebhookCaptacion } from './netelip/captacion/webhook-ruta.ts';
 import { createReunionesWorkers, ensureReunionesMeet } from './reuniones-meet/index.ts';
 import { createCaptacionWhatsApp, ensureCaptacionWhatsApp, registrarApiCaptacion } from './captacion-whatsapp/index.ts';
 import { createMarketingWorker, ensureMarketing, registerMarketing } from './marketing/index.ts';
@@ -229,6 +230,8 @@ app.use('/api/club/protocolos', express.json({ limit: '20kb' }), createClubProto
   },
   weeklySnapshot: (from, to) => loadProtocolWeeklySnapshot(pool, from, to),
 }));
+// Webhook de ClickUp de la captación ABCD: lee el cuerpo en bruto (firma HMAC), así que va antes del express.json global.
+iniciarWebhookCaptacion(app, pool);
 // Captación (aviso por WhatsApp a leads en e1 EN ESPERA): sus webhooks verifican la firma sobre el cuerpo crudo,
 // así que van antes de express.json.
 const captacionWhatsApp = createCaptacionWhatsApp(pool);
