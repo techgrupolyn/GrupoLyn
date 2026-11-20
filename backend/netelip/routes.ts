@@ -6,6 +6,7 @@ import { bodyFields, IgnoredEvent, InvalidEvent, ipAllowed, isInternal, NETELIP_
 import { maskPhone } from './phone.ts';
 import { acceptInbox, parseCallRecording, type InboxKind } from './processing.ts';
 import { CALL_RESULTS, isStatusNotification, parseStatusEvent, registeredExtensions } from './status-events.ts';
+import { VdriveClient, vdriveConfigFromEnv } from './vdrive.ts';
 
 // Llamadas perdidas: no llegaron a hablar.
 const MISSED = "'no_contestada','ocupado','colgada','no_disponible'";
@@ -30,12 +31,21 @@ type Dependencies = {
   enviar?: Enviador | null;
   /** Documento del entrenador: carpeta de Drive y token de la cuenta con drive.file. */
   entrenadorDrive?: DriveEntrenador | null;
+  /** Grabaciones en vDrive (reproducir el audio en el Historial). Sin definir: se crea con NETELIP_VDRIVE_*. */
+  vdrive?: Pick<VdriveClient, 'download'> | null;
 };
+
+/** Tipo MIME del audio según la extensión de su ruta en vDrive. */
+export function audioContentType(audioRef: string): string {
+  const ext = audioRef.toLowerCase().split('.').pop();
+  return ext === 'wav' ? 'audio/wav' : ext === 'ogg' ? 'audio/ogg' : 'audio/mpeg';
+}
 
 const CONTROL_STATE_TTL_MS = 3 * 3600_000;
 // Quién ve Historial de llamadas (pedido de Alejandro Yepez, 14/10/2026). Debe coincidir con
-// NETELIP_ACCESS_ROLES del frontend (frontend/src/ceo-dashboard/CeoLogin.jsx).
-const DEFAULT_ACCESS_ROLES = 'superadmin,admin,employee:director,employee:director_general';
+// NETELIP_ACCESS_ROLES del frontend (frontend/src/ceo-dashboard/CeoLogin.jsx). employee:superadmin y employee:admin:
+// superadmin y admin que entran con el directorio de Supabase (CAL-09).
+const DEFAULT_ACCESS_ROLES = 'superadmin,admin,employee:superadmin,employee:admin,employee:director,employee:director_general';
 // P6: quién lee el texto. Mientras Producto no decida, los mismos roles que ven la sección.
 const DEFAULT_READER_ROLES = DEFAULT_ACCESS_ROLES;
 
@@ -328,6 +338,44 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
       if (!transcription) return res.status(404).json({ error: 'No hay transcripción para esta llamada.' });
       res.setHeader('Cache-Control', 'no-store');
       res.json(transcription);
+    } catch (error) { fail(res, error); }
+  });
+
+  // Audio de la llamada grabada (1an2gnpzyp7). Lo escucha quien puede leer la transcripción. El audio pasa por
+  // aquí: las credenciales de vDrive y la ruta del fichero nunca llegan al navegador, y el navegador lo recibe
+  // con la sesión, así que no hay ningún enlace público ni reutilizable.
+  const vdrive = deps.vdrive !== undefined ? deps.vdrive : (() => {
+    const cfg = vdriveConfigFromEnv(env);
+    return cfg ? new VdriveClient(cfg) : null;
+  })();
+  const UNAVAILABLE = 'Grabación no disponible.';
+  app.get('/api/netelip/calls/:id/audio', access, async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: 'Identificador de llamada no válido.' });
+    if (!canReadTranscripts(deps.role(res), env)) return res.status(403).json({ error: 'No tienes permiso para escuchar las llamadas.' });
+    try {
+      const { rows } = await pool.query<{ via: string; audio_ref: string | null; deleted: boolean }>(
+        `SELECT c.via, c.audio_ref,
+                EXISTS (SELECT 1 FROM netelip_audio_deletion_requests d WHERE d.audio_ref = c.audio_ref) AS deleted
+         FROM netelip_calls c WHERE c.id = $1`, [id]);
+      if (!rows.length) return res.status(404).json({ error: 'La llamada no existe.' });
+      const call = rows[0];
+      // Solo las de Netelip guardan el audio en vDrive. Una grabación borrada (supresión o retención) ya no se sirve.
+      if (!call.audio_ref || call.via !== 'phone' || call.deleted) return res.status(404).json({ error: UNAVAILABLE });
+      if (!vdrive) return res.status(503).json({ error: UNAVAILABLE });
+      let audio: Buffer;
+      try {
+        audio = await vdrive.download(call.audio_ref);
+      } catch (error) {
+        const message = (error as Error).message;
+        console.warn(JSON.stringify({ msg: 'netelip_audio_unavailable', call_id: id, error: message.slice(0, 200) }));
+        return res.status(/HTTP 404/.test(message) ? 404 : 502).json({ error: UNAVAILABLE });
+      }
+      if (!audio.length) return res.status(404).json({ error: UNAVAILABLE });
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.type(audioContentType(call.audio_ref)).send(audio);
     } catch (error) { fail(res, error); }
   });
 

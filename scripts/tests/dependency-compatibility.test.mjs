@@ -10,6 +10,18 @@ import test from 'node:test';
 
 const require = createRequire(new URL('../../evolution-api/package.json', import.meta.url));
 
+test('Evolution conserva dependencias de ejecución tras retirar el compilador', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../../evolution-api/package.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.dependencies.tsup, undefined);
+  assert.equal(typeof manifest.devDependencies.tsup, 'string');
+  assert.throws(() => require.resolve('tsup'), { code: 'MODULE_NOT_FOUND' });
+  assert.ok(readFileSync(new URL('../../evolution-api/dist/main.js', import.meta.url)).length > 0);
+  for (const name of ['express', 'pg', 'baileys', 'minio', '@prisma/client']) {
+    assert.equal(typeof require.resolve(name), 'string', name);
+  }
+  assert.equal(typeof require('@prisma/client').PrismaClient, 'function');
+});
+
 for (const component of ['backend', 'evolution-api']) {
   test(`${component}: lock fija compression y proxy-addr corregidos`, () => {
     const lock = JSON.parse(readFileSync(new URL(`../../${component}/package-lock.json`, import.meta.url), 'utf8'));

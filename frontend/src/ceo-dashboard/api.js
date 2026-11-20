@@ -157,10 +157,20 @@ export const api = {
     status: (id) => request(`/whatsapp-accounts/${encodeURIComponent(id)}/status`),
     update: (id, payload) => request(/whatsapp-accounts/, { method: 'PATCH', body: JSON.stringify(payload) }),
   },
+  // Panel de marketing (869fny1et).
+  marketing: {
+    panel: () => request('/marketing/panel'),
+    saveWeights: (body) => request('/marketing/ponderaciones', { method: 'PUT', body: JSON.stringify(body) }),
+    rules: () => request('/marketing/reglas'),
+    saveRules: (body) => request('/marketing/reglas', { method: 'PUT', body: JSON.stringify(body) }),
+    load: (fuentes) => request('/marketing/cargar', { method: 'POST', body: JSON.stringify(fuentes ? { fuentes } : {}) }),
+  },
   netelip: {
     calls: (query) => request(`/netelip/calls?${query}`),
     call: (id) => request(`/netelip/calls/${encodeURIComponent(id)}`),
     filterOptions: () => request('/netelip/calls/filter-options'),
+    // Audio de la llamada grabada (1an2gnpzyp7): llega con la sesión y se reproduce desde una URL blob: local.
+    audio: (id) => requestBlob(`/netelip/calls/${encodeURIComponent(id)}/audio`),
     // Calificador interno de llamadas (869e9y98n).
     evaluation: (id) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion`),
     addEvaluationFeedback: (id, texto) => request(`/netelip/calls/${encodeURIComponent(id)}/evaluacion/feedback`, { method: 'POST', body: JSON.stringify({ texto }) }),

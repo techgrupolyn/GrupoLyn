@@ -1,4 +1,7 @@
 import 'dotenv/config';
+import {registerTelegramContextRoutes} from './telegram-context.ts';
+import {createTelegramContextAccess,isTelegramContextRoute} from './telegram-access.ts';
+import {isReceivableWhatsAppJid,associateDirectClient} from './whatsapp-reception.ts';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { linkUnassignedMeetingActions } from './meeting-action-linking.ts';
 import cors from 'cors';
@@ -28,6 +31,8 @@ import { ensureDashboardOperations, registerDashboardOperations } from './dashbo
 import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
 import { iniciarWebhookCaptacion } from './netelip/captacion/webhook-ruta.ts';
 import { createReunionesWorkers, ensureReunionesMeet } from './reuniones-meet/index.ts';
+import { createCaptacionWhatsApp, ensureCaptacionWhatsApp, registrarApiCaptacion } from './captacion-whatsapp/index.ts';
+import { createMarketingWorker, ensureMarketing, registerMarketing } from './marketing/index.ts';
 import { idCarpetaDrive } from './netelip/entrenador/drive.ts';
 import { ensureProjectMeetingSchema, registerProjectMeetingRoutes, refreshProjectMeetings, syncProjectMeeting } from './meeting-project-workflow.ts';
 import { exactActionProject, reconcileMeetingActionProjects } from './meeting-project-linking.ts';
@@ -227,6 +232,10 @@ app.use('/api/club/protocolos', express.json({ limit: '20kb' }), createClubProto
 }));
 // Webhook de ClickUp de la captación ABCD: lee el cuerpo en bruto (firma HMAC), así que va antes del express.json global.
 iniciarWebhookCaptacion(app, pool);
+// Captación (aviso por WhatsApp a leads en e1 EN ESPERA): sus webhooks verifican la firma sobre el cuerpo crudo,
+// así que van antes de express.json.
+const captacionWhatsApp = createCaptacionWhatsApp(pool);
+app.use(captacionWhatsApp.router);
 app.use(express.json({ limit: '10mb' }));
 
 const limiter = rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false,
@@ -1041,6 +1050,8 @@ async function ensureDatabaseSchema(): Promise<void> {
   await ensureSummaryJobs(pool);
   await ensureNetelipCalls(pool);
   await ensureReunionesMeet(pool);
+  await ensureCaptacionWhatsApp(pool);
+  await ensureMarketing(pool);
   await ensureWhatsAppReliability(pool);
   await pool.query(
     `INSERT INTO usuarios (usuario, contraseña, password_hash, nombre, rol)
@@ -1236,7 +1247,8 @@ function requireCeoAuth(req: Request, res: Response, next: NextFunction): void {
 
 export function isCeoAdministratorRole(role: unknown): boolean {
   const normalized = String(role || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');
-  return ['superadmin', 'admin', 'ceo', 'employee:director', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(normalized);
+  // employee:superadmin / employee:admin: los roles superadmin y admin del directorio de Supabase (CAL-09).
+  return ['superadmin', 'admin', 'ceo', 'employee:superadmin', 'employee:admin', 'employee:director', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(normalized);
 }
 
 export function isCeoMeetingAccessRole(role: unknown): boolean {
@@ -1899,6 +1911,10 @@ function requireApiAccess(req: Request, res: Response, next: NextFunction): void
     next();
     return;
   }
+  if (isTelegramContextRoute(req.path)) {
+    requireCeoSession(req, res, next);
+    return;
+  }
   if (req.header('authorization')) {
     if (/^\/project-meetings(?:\/|$)/.test(req.path) || /^\/meetings\/work-items(?:\/|$)/.test(req.path)) {
       requireCeoSession(req, res, next);
@@ -2515,7 +2531,7 @@ async function persistMessage(messageItem: MessageItem, account: WhatsAppAccount
       console.log('[persist] Mensaje sin ID o remoteJid, omitiendo');
       return { messageId: '', chatId: '', fromMe: true, estado: 'pendiente', source: 'evolution', classification: null, unreadCount: 0 };
     }
-    if (!remoteJid.includes('@g.us')) {
+    if (!isReceivableWhatsAppJid(remoteJid)) {
       return { messageId: '', chatId: '', fromMe: Boolean(key.fromMe), estado: 'pendiente', source: 'evolution', classification: null, unreadCount: 0 };
     }
     const rawMessageId = messageId;
@@ -2658,7 +2674,9 @@ async function persistMessage(messageItem: MessageItem, account: WhatsAppAccount
       );
     }
 
-    if (!fromMe && messageId) {
+    if (!isGroup) await associateDirectClient((sql,params)=>pool.query(sql,params),messageId,account.id,remoteJid,alternateRemoteJid,fromMe);
+
+    if (isGroup && !fromMe && messageId) {
       const senderDigits = String(senderJid || remitente || '').replace(/\D/g, '');
       const empleados = await pool.query(`SELECT id, numero FROM empleados WHERE activo = TRUE`);
       const empleadoIds = empleados.rows.map((r) => String(r.id));
@@ -2673,7 +2691,7 @@ async function persistMessage(messageItem: MessageItem, account: WhatsAppAccount
     }
 
     let classificationInner: Record<string, unknown> | null = null;
-    if (AUTO_CLASSIFY_MESSAGES && !options.historical && !fromMe && texto.trim()) {
+    if (isGroup && AUTO_CLASSIFY_MESSAGES && !options.historical && !fromMe && texto.trim()) {
       try {
         const raw = await callGeminiWithPrompt(`Clasifica el siguiente mensaje en un rol. Devuelve SOLO JSON con {rol, confianza(0-1), necesita_accion(true/false), urgencia("baja"|"media"|"alta")}. Mensaje: "${texto.trim()}"`, 'flash');
         const match = raw.match(/\{[\s\S]*\}/);
@@ -2685,7 +2703,7 @@ async function persistMessage(messageItem: MessageItem, account: WhatsAppAccount
       }
     }
 
-    if (AUTO_CLASSIFY_MESSAGES && !options.historical && !fromMe && texto.trim()) {
+    if (isGroup && AUTO_CLASSIFY_MESSAGES && !options.historical && !fromMe && texto.trim()) {
       const allowedRoles = new Set(['legal', 'contabilidad', 'ventas', 'soporte', 'general', 'interiorista', 'planimetrista', 'director']);
       const rawRole = String(classificationInner?.rol || 'general').trim().toLowerCase();
       const rawUrgency = String(classificationInner?.urgencia || 'media').trim().toLowerCase();
@@ -2761,12 +2779,12 @@ const whatsappInbox = createWhatsAppInbox(pool, async (accountId, message, histo
   return result;
 });
 
-function groupWebhookMessages(body: unknown): MessageItem[] {
+function receivableWebhookMessages(body: unknown): MessageItem[] {
   return normalizeWebhookMessages(body).filter((message) => {
     const key = message?.key || message?.message?.key || {};
     const remoteJid = String(key.remoteJid || message?.remoteJid || '');
-    if (!remoteJid.endsWith('@g.us')) return false;
-    if (!String(key.id || message?.id || '').trim()) throw new Error('Mensaje de grupo sin identificador');
+    if (!isReceivableWhatsAppJid(remoteJid)) return false;
+    if (!String(key.id || message?.id || '').trim()) throw new Error('Mensaje de WhatsApp sin identificador');
     return true;
   });
 }
@@ -3380,7 +3398,7 @@ app.post('/webhook/evolution', requireWebhookAuth, async (req: Request, res: Res
       if (!account) return res.status(404).json({ ok: false, error: 'Instancia de WhatsApp no registrada' });
 
     if (event.includes('MESSAGES_UPSERT')) {
-      const messages = groupWebhookMessages(req.body);
+      const messages = receivableWebhookMessages(req.body);
       const receipts = await whatsappInbox.accept(account.id, messages, false);
       console.log('[webhook] Mensajes a procesar:', messages.length);
 
@@ -3388,7 +3406,7 @@ app.post('/webhook/evolution', requireWebhookAuth, async (req: Request, res: Res
         const key = messageItem?.key || messageItem?.message?.key || {};
         const remoteJid = String(key.remoteJid || messageItem?.remoteJid || '').trim();
         const isGroup = remoteJid.includes('@g.us');
-        if (!isGroup) continue;
+        if (!isGroup) { await whatsappInbox.deliver(receipts[messageIndex]); continue; }
         const participantJid = String((messageItem as { participantJid?: string })?.participantJid || '').trim();
         const effectiveJid = isGroup ? participantJid : remoteJid;
         const senderDigits = effectiveJid.replace(/\D/g, '');
@@ -3463,7 +3481,7 @@ app.post('/webhook/evolution', requireWebhookAuth, async (req: Request, res: Res
         }
       }
     } else if (event === 'MESSAGES_SET') {
-      const messages = groupWebhookMessages(req.body);
+      const messages = receivableWebhookMessages(req.body);
       const receipts = await whatsappInbox.accept(account.id, messages, true);
       for (const receipt of receipts) await whatsappInbox.deliver(receipt);
       publish('chats-updated', { source: 'evolution-history', accountId: account.id });
@@ -8905,6 +8923,8 @@ async function bootstrap() {
   setInterval(() => void runSummaryQueue(), 5_000).unref();
   if (process.env.NETELIP_WORKERS_ENABLED !== 'false') netelipWorkers.start();
   reunionesWorkers.start();
+  captacionWhatsApp.start();
+  marketingWorker.start();
   if (EVOLUTION_BACKGROUND_SYNC_ENABLED) await bootEvolution();
 }
 
@@ -9094,11 +9114,26 @@ registerNetelipCalls(app, {
   enviar: enviarWhatsAppCalificador,
   entrenadorDrive: ENTRENADOR_DRIVE_CARPETA && ENTRENADOR_DRIVE_CUENTA ? { carpetaId: ENTRENADOR_DRIVE_CARPETA, token: entrenadorDriveToken } : null,
 });
+registrarApiCaptacion(app, { pool, admin: requireCeoAuth });
+// Panel de marketing (869fny1et): gasto de Windsor + leads agregados de ClickUp + nota del calificador.
+const marketingWorker = createMarketingWorker(pool, process.env);
+registerMarketing(app, {
+  pool, admin: requireCeoAuth,
+  role: (res) => String((res.locals.ceoSession as CeoSession | undefined)?.rol || ''),
+  fail: (res, error) => {
+    console.error('[marketing] Error en la API:', (error as Error).message);
+    res.status(500).json({ error: 'No se pudo completar la operación del panel de marketing.' });
+  },
+});
 registerDashboardOperations(app, {
   pool, admin: requireCeoAuth, actor: meetingAuditActor, identity: meetingAuditIdentity,
   audit: setMeetingAuditContext, publish, onLeadSaved: netelipWorkers.relink,
   nextStage: async () => null,
 });
+
+registerTelegramContextRoutes(app,{pool,admin:createTelegramContextAccess({readSession:readCeoSession,isLegacyAdmin:isCeoAdministratorRole,
+  isClubAdmin:id=>hasClubAdminRole((sql,params)=>pool.query<{allowed:boolean}>(sql,params),id)}),privacyKey:process.env.TELEGRAM_CONTEXT_PRIVACY_KEY||'',resolveSpecialist,
+  callAgent:(prompt,model,system)=>callGeminiWithPromptResult(prompt,model,system)});
 
 if (!isTestEnv) {
   server.listen(PORT, BIND_HOST, async () => {

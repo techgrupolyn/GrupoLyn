@@ -30,6 +30,9 @@ RUN ./Docker/scripts/generate_database.sh
 
 RUN npm run build
 
+# The runtime image only needs the compiled application and production packages.
+RUN npm prune --omit=dev --ignore-scripts
+
 FROM node:24-alpine AS final
 
 RUN apk update && \

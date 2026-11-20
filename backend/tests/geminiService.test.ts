@@ -215,6 +215,12 @@ describe('callGeminiWithPrompt', () => {
     await expect(callGeminiWithPrompt('Consulta', 'flash', undefined, 100))
       .resolves.toContain('datos locales');
   });
+  it('conserva el contenido de citas entre acentos graves en texto y tablas', async () => {
+    const text = '| Presupuesto | `dos puertas por 2400 EUR` | Declarado |';
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, text: async () => JSON.stringify({ output_text: text }) });
+    await expect(callGeminiWithPrompt('Devuelve citas')).resolves.toBe('| Presupuesto | dos puertas por 2400 EUR | Declarado |');
+  });
+
   it('conserva citas literales con Markdown dentro de JSON', async () => {
     const text = JSON.stringify({ quote: 'El importe **no** es `9000`: son 1200.' });
     global.fetch = vi.fn().mockResolvedValue({ ok: true, text: async () => JSON.stringify({ output_text: text }) });
