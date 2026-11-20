@@ -199,9 +199,12 @@ export class ProcesadorCola {
     const l = rows[0];
     if (!l || l.text === null) return this.cerrar(fila, 'sin_conversacion', 'la llamada o su transcripción ya no existe');
 
+    // N-1.0: si una persona asignó esta llamada a una tarjeta a mano (el teléfono coincidía con varias), esa asignación manda.
+    const asignada = await this.asignadaAMano(fila.llamada_id);
     const entrada: EntradaLlamada = {
       llamadaId: String(l.id), telefonoE164: l.phone_e164, ocurridaEn: new Date(l.occurred_at), direccion: l.direction,
       duracionSegundos: l.duration_seconds, transcripcion: transcripcionPorTurnos(l.segments, l.text ?? ''),
+      leadAsignado: asignada,
     };
     const resultado: ResultadoLlamada = await evaluarLlamadaCaptacion({
       conDb: <T>(fn: (db: Db) => Promise<T>) => conDb(this.d.pool, fn),
@@ -219,8 +222,19 @@ export class ProcesadorCola {
       case 'sin_conversacion':
         return this.cerrar(fila, 'sin_conversacion', 'la grabación no contiene conversación');
       case 'sin_lead':
-        return this.sinLead(fila, resultado.motivo);
+        return this.sinLead(fila, resultado.motivo, asignada);
       case 'procesada': {
+        // N-1.0: una asignación a mano hecha MIENTRAS se evaluaba (no la que ya había al empezar), a otra tarjeta, no se pisa escribiendo en la que se evaluó: la llamada pasa a la
+        // cola de errores con aviso, para revisarla (la evaluación ya quedó guardada sobre la tarjeta equivocada).
+        const manual = await this.asignadaAMano(fila.llamada_id);
+        if (manual && manual !== asignada && manual !== resultado.clickupTaskId) {
+          const detalle = 'la llamada se asignó a mano a otra tarjeta mientras se evaluaba; revisar';
+          await this.d.pool.query(
+            `UPDATE captacion_cola SET estado = 'error', motivo = $2, clickup_task_id = $3, actualizado_en = now() WHERE llamada_id = $1`, [fila.llamada_id, detalle, resultado.clickupTaskId],
+          );
+          await this.d.avisar?.('Captación: llamada asignada a mano durante su evaluación', { llamada_id: fila.llamada_id }).catch(() => undefined);
+          return 'error';
+        }
         const e = await this.escribirEnClickUp(inst, resultado.clickupTaskId, resultado.escrituras);
         await this.d.pool.query(
           `UPDATE captacion_cola SET estado = 'procesada', clickup_task_id = $2, motivo = NULL, escritura = $3, escritura_detalle = $4, actualizado_en = now() WHERE llamada_id = $1`,
@@ -252,8 +266,24 @@ export class ProcesadorCola {
     return estado;
   }
 
+  /** La tarjeta a la que una persona asignó esta llamada a mano (N-1.0), o null. */
+  private async asignadaAMano(llamadaId: string): Promise<string | null> {
+    const { rows } = await this.d.pool.query<{ clickup_task_id: string }>(
+      `SELECT clickup_task_id FROM captacion_llamada_lead WHERE call_id = $1::bigint AND origen = 'manual' AND estado = 'vinculada'`, [llamadaId],
+    );
+    return rows[0]?.clickup_task_id ?? null;
+  }
+
   /** Sin lead: se vuelve a mirar unas horas después (el lead puede crearse tras la llamada); a la tercera queda en la cola «sin lead». */
-  private async sinLead(fila: Reclamada, motivo: string): Promise<SalidaCola> {
+  private async sinLead(fila: Reclamada, motivo: string, asignadaAlEmpezar: string | null): Promise<SalidaCola> {
+    // N-1.0: si MIENTRAS se miraba una persona asignó (o cambió la asignación de) la llamada a mano, no se rinde ni se espera 6 horas: se vuelve a probar ya, con la asignación.
+    if ((await this.asignadaAMano(fila.llamada_id)) !== asignadaAlEmpezar) {
+      await this.d.pool.query(
+        `UPDATE captacion_cola SET estado = 'pendiente', sin_lead_veces = 0, intentos = GREATEST(intentos - 1, 0), proximo_intento = now(), motivo = NULL, actualizado_en = now() WHERE llamada_id = $1`,
+        [fila.llamada_id],
+      );
+      return 'reintento';
+    }
     const veces = fila.sin_lead_veces + 1;
     if (veces >= MAX_VECES_SIN_LEAD) {
       await this.d.pool.query(

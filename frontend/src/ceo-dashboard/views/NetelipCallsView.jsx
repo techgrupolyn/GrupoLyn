@@ -3,6 +3,7 @@ import { ArrowDownLeft, ArrowUpRight, MessageCircle } from 'lucide-react';
 import api from '../api';
 import CallEvaluationPanel, { EvaluationBadge } from './CallEvaluationPanel';
 import DecisionPasePanel from './DecisionPasePanel';
+import LlamadasSinAsignarPanel from './LlamadasSinAsignarPanel';
 import { ObjectionsPanel, SalespeoplePanel } from './CalificadorPanels';
 import EntrenadorPanel from './EntrenadorPanel';
 import { callListQuery, clearCallFilters, DEFAULT_CALL_FILTERS, formatDuration, formatMadridDateTime, formatOffset, formatPhone, readCallFilters, writeCallFilters, CALL_RESULT_LABEL } from '../netelipFormat';
@@ -43,6 +44,11 @@ function ContactCell({ call, onOpenContact }) {
   if (call.contact) {
     return <div><button type="button" onClick={(event) => { event.stopPropagation(); onOpenContact(call.contact); }} className="text-left text-xs font-medium text-[#F2F2F2] underline decoration-[#4A4A4A] underline-offset-2 hover:decoration-amber-300">{call.contact.name}</button><div className="mt-1"><ContactPill type={call.contact.type} /></div></div>;
   }
+  // N-1.0: sin ficha en el Dashboard, pero la llamada ya está asociada a su lead de «Contacto de Reforma».
+  if (call.captacion?.status === 'vinculada') {
+    return <div>{call.captacion.url ? <a href={call.captacion.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="text-left text-xs font-medium text-[#F2F2F2] underline decoration-[#4A4A4A] underline-offset-2 hover:decoration-amber-300">{call.captacion.name || 'Lead de ClickUp'}</a> : <p className="text-xs font-medium text-[#F2F2F2]">{call.captacion.name || 'Lead de ClickUp'}</p>}<div className="mt-1"><span className="inline-flex rounded-full border border-sky-300/40 bg-sky-300/[.08] px-1.5 py-0.5 text-[9px] font-medium text-sky-100">Lead ClickUp</span></div></div>;
+  }
+  if (call.captacion?.status === 'varias_coincidencias') return <div><p className="text-xs text-[#BFBFBF]">Sin contacto identificado</p><p className="mt-1 text-[10px] text-amber-200">Varias tarjetas en ClickUp: pendiente de elegir</p></div>;
   if (call.contact_status === 'hidden') return <div><p className="text-xs text-[#BFBFBF]">Sin contacto identificado</p><p className="mt-1 text-[10px] text-[#737373]">Número oculto</p></div>;
   if (call.contact_status === 'multiple') return <div><p className="text-xs text-[#BFBFBF]">Sin contacto identificado</p><p className="mt-1 text-[10px] text-amber-200">Coincidencia múltiple</p></div>;
   return <div><p className="text-xs text-[#BFBFBF]">Sin contacto identificado</p><p className="mt-1 text-[10px] text-[#737373]">Pendiente de resolución</p></div>;
@@ -82,9 +88,10 @@ function CallDrawer({ detail, loading, error, onClose, onOpenContact }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
   const call = detail?.call;
-  const title = call?.contact?.name || 'Sin contacto identificado';
+  const clickupLead = call?.captacion?.status === 'vinculada' ? call.captacion : null;
+  const title = call?.contact?.name || clickupLead?.name || 'Sin contacto identificado';
   return <aside role="dialog" aria-modal="true" aria-label="Detalle de llamada" className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[600px] flex-col border-l border-[#2E2E2E] bg-[#0D0D0D] shadow-2xl">
-    <header className="shrink-0 border-b border-[#2E2E2E] bg-[#111111] px-5 py-5"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Llamada grabada</p><h2 className="mt-1 truncate text-xl font-semibold tracking-tight text-[#F2F2F2]">{loading && !call ? 'Cargando…' : title}</h2>{call && <div className="mt-2 flex flex-wrap items-center gap-2"><ContactPill type={call.contact?.type} />{call.contact && <button type="button" onClick={() => onOpenContact(call.contact)} className="text-[11px] text-amber-300 hover:text-amber-200">Ver ficha</button>}{!call.contact && <span className="text-[11px] text-[#737373]">{call.contact_status === 'hidden' ? 'Número oculto' : call.contact_status === 'multiple' ? 'Coincidencia múltiple: el teléfono pertenece a varios contactos' : 'Pendiente de resolución'}</span>}</div>}</div><button type="button" onClick={onClose} className="shrink-0 rounded border border-[#2E2E2E] px-2.5 py-1.5 text-xs text-[#BFBFBF] hover:border-[#737373]">Cerrar</button></div></header>
+    <header className="shrink-0 border-b border-[#2E2E2E] bg-[#111111] px-5 py-5"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Llamada grabada</p><h2 className="mt-1 truncate text-xl font-semibold tracking-tight text-[#F2F2F2]">{loading && !call ? 'Cargando…' : title}</h2>{call && <div className="mt-2 flex flex-wrap items-center gap-2"><ContactPill type={call.contact?.type} />{call.contact && <button type="button" onClick={() => onOpenContact(call.contact)} className="text-[11px] text-amber-300 hover:text-amber-200">Ver ficha</button>}{!call.contact && clickupLead && <span className="text-[11px] text-sky-100">Lead de «Contacto de Reforma»{clickupLead.via === 'manual' ? ' (asignado a mano)' : ''}{clickupLead.url && <> · <a href={clickupLead.url} target="_blank" rel="noreferrer" className="text-amber-300 hover:text-amber-200">Ver tarjeta</a></>}</span>}{!call.contact && !clickupLead && <span className="text-[11px] text-[#737373]">{call.contact_status === 'hidden' ? 'Número oculto' : call.contact_status === 'multiple' ? 'Coincidencia múltiple: el teléfono pertenece a varios contactos' : 'Pendiente de resolución'}</span>}</div>}</div><button type="button" onClick={onClose} className="shrink-0 rounded border border-[#2E2E2E] px-2.5 py-1.5 text-xs text-[#BFBFBF] hover:border-[#737373]">Cerrar</button></div></header>
     <div className="flex-1 overflow-y-auto px-5 py-4">
       {error && <p role="alert" className="mb-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}
       {call && <>
@@ -187,6 +194,7 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
     {tab === 'salespeople' && <SalespeoplePanel />}
     {tab === 'trainer' && <EntrenadorPanel />}
     {tab === 'calls' && <>
+    <LlamadasSinAsignarPanel />
     {error && <p role="alert" className="mb-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">{kpis.map((kpi) => <button key={kpi.label} type="button" onClick={() => update(kpi.apply)} aria-pressed={kpi.active} className={`dashboard-metric-card rounded-md border bg-[#141414] p-4 text-left ${kpi.active ? 'border-amber-300/50' : 'border-[#2E2E2E] hover:border-[#4A4A4A]'}`}><p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#737373]">{kpi.label}</p><p className="mt-1 text-2xl font-semibold text-[#F2F2F2]">{loading && !result ? '—' : kpi.value}</p></button>)}</div>
     <div className="mt-5 overflow-hidden rounded-md border border-[#2E2E2E] bg-[#141414]">

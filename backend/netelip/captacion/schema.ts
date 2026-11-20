@@ -4,6 +4,7 @@
 
 import { COLA_TABLES, ensureCola } from './schema-cola.ts';
 import { DECISION_TABLES, ensureDecision } from './schema-decision.ts';
+import { ensureVinculo, VINCULO_TABLES } from './schema-vinculo.ts';
 
 export const CAPTACION_TABLES = [
   'categoria_config', 'lead_presupuesto_evento', 'lead_calificacion_historial',
@@ -11,6 +12,7 @@ export const CAPTACION_TABLES = [
   'lead_resumen_historial',
   ...DECISION_TABLES,
   ...COLA_TABLES,
+  ...VINCULO_TABLES,
 ] as const;
 
 /** Acepta el `Pool` de pg o cualquier conexión con `query` (las pruebas usan una conexión con esquema propio). */
@@ -270,4 +272,6 @@ export async function ensureCaptacion(pool: { query(sql: string): Promise<unknow
   await ensureDecision(pool);
   // Cola de llamadas por procesar (tabla propia, en schema-cola.ts).
   await ensureCola(pool);
+  // N-1.0 · a qué lead de ClickUp pertenece cada llamada (tabla propia, en schema-vinculo.ts).
+  await ensureVinculo(pool);
 }

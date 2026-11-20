@@ -35,7 +35,7 @@ describe('una tarjeta cerrada por «Error» no es un resultado de negocio', () =
 
   it('en el informe, la decisión sobre una tarjeta duplicada (Error) queda sin referencia en vez de «difiere»', () => {
     const fila = { llamadaId: '1', ocurridaEn: '2026-11-11T10:17:29.000Z', estado: 'procesada', categoria: 'A', lead: { id: 'a', nombre: 'Lead', etapa: 'e16. RECHAZADO', noContinuidad: 'Error' } };
-    const i = armarInforme([fila], [{ llamadaId: 'netelip:1', decision: 'pasar_a_reunion', motivo: 'cita_agendada', excepciones: [], dudas: [], pendienteErnesto: false }]);
+    const i = armarInforme([fila], [{ llamadaId: 'netelip:1', decision: 'pasar_a_reunion', motivo: 'decisores_disponibles', excepciones: [], dudas: [], pendienteErnesto: false }]);
     expect(i.filas[0]).toMatchObject({ desenlace: 'sin_etapa', contraste: 'sin_referencia' });
     expect(i.resumen.coincidenciaPorcentaje).toBeNull();
   });
@@ -59,7 +59,7 @@ describe('contrastar la decisión de la IA con el desenlace', () => {
 describe('armarInforme', () => {
   const lead = (id: string, etapa: string | null, noContinuidad: string | null = null) => ({ id, nombre: `Lead ${id}`, etapa, noContinuidad });
   const fila = (llamadaId: string, estado: string, l: ReturnType<typeof lead> | null, categoria: string | null = 'A') => ({ llamadaId, ocurridaEn: '2026-10-01T10:00:00.000Z', estado, categoria, lead: l });
-  const dec = (n: string, decision: Decision, o: Partial<DecisionHistorica> = {}): DecisionHistorica => ({ llamadaId: `netelip:${n}`, decision, motivo: 'cumple_criterios', excepciones: [], dudas: [], pendienteErnesto: false, ...o });
+  const dec = (n: string, decision: Decision, o: Partial<DecisionHistorica> = {}): DecisionHistorica => ({ llamadaId: `netelip:${n}`, decision, motivo: 'presupuesto_suficiente', excepciones: [], dudas: [], pendienteErnesto: false, ...o });
 
   it('Escenario «Calibración con todo el histórico transcrito»: las que tienen lead identificado entran; las que no, quedan fuera y solo se cuentan', () => {
     const i = armarInforme(
@@ -150,14 +150,14 @@ describe('ejecutable de la calibración', () => {
 
   const informe = armarInforme(
     [{ llamadaId: '1', ocurridaEn: '2026-10-01T10:00:00.000Z', estado: 'procesada', categoria: 'A+', lead: { id: 'a', nombre: '=HYPERLINK("x")', etapa: 'e4. VISITA', noContinuidad: null } }],
-    [{ llamadaId: 'netelip:1', decision: 'pasar_a_reunion', motivo: 'cumple_criterios', excepciones: ['descuento'], dudas: ['encaje_incierto', 'presupuesto_limite'], pendienteErnesto: true }],
+    [{ llamadaId: 'netelip:1', decision: 'pasar_a_reunion', motivo: 'presupuesto_suficiente', excepciones: ['descuento'], dudas: ['encaje_incierto', 'presupuesto_limite'], pendienteErnesto: true }],
   );
   it('el CSV es para Excel: BOM, «;», cabecera y una fila por llamada analizada, con las celdas peligrosas neutralizadas', () => {
     const csv = informeCsvCalibracion(informe);
     expect(csv.startsWith('﻿fecha;llamada;lead;lead_id;etapa_actual;categoria;decision_ia;motivo;excepciones;dudas;pendiente_de_ernesto;desenlace;no_continuidad;contraste;sin_decision_por\r\n')).toBe(true);
     const lineas = csv.split('\r\n');
     expect(lineas).toHaveLength(3);
-    expect(lineas[1]).toBe('2026-10-01T10:00:00.000Z;1;"\'=HYPERLINK(""x"")";a;e4. VISITA;A+;pasar_a_reunion;cumple_criterios;descuento;encaje_incierto | presupuesto_limite;sí;avanzo;;coincide;');
+    expect(lineas[1]).toBe('2026-10-01T10:00:00.000Z;1;"\'=HYPERLINK(""x"")";a;e4. VISITA;A+;pasar_a_reunion;presupuesto_suficiente;descuento;encaje_incierto | presupuesto_limite;sí;avanzo;;coincide;');
   });
   it('el resumen de pantalla lleva solo totales: ni nombres ni citas', () => {
     const t = resumenCalibracion(informe);
@@ -263,7 +263,7 @@ describe.skipIf(!hayBaseDePruebas)('calibración con el histórico, de punta a p
     await base.query('INSERT INTO netelip_call_transcriptions (call_id, status, text, segments) VALUES ($1, $2, $3, $4)', [callId, 'completed', TRANSCRIPCION_CON_FECHA, null]);
     return callId;
   };
-  const decision = (d: string, motivo = 'cumple_criterios') => ({
+  const decision = (d: string, motivo = 'presupuesto_suficiente') => ({
     decision: d, motivos: [{ codigo: motivo, cita: FRASE.decisor, texto: null }], excepciones: [], dudas: [], pendiente_ernesto: null,
     proximos_pasos: [{ orden: 1, accion: 'Llamar', cuando: { tipo: 'plazo_guion', valor: 'en una semana' }, canal: 'llamada', que_pedir: null, requiere_ernesto: false, cita: CITA_FECHA }],
   });
@@ -278,8 +278,8 @@ describe.skipIf(!hayBaseDePruebas)('calibración con el histórico, de punta a p
       { id: 'caro', nombre: 'Caro', telefono: '+34600000003', etapa: ETAPA.viabilidad },
     );
     decisiones.set(await llamada('u1', '+34600000001'), decision('pasar_a_reunion'));
-    decisiones.set(await llamada('u2', '+34600000002'), decision('descartar', 'no_interesado'));
-    decisiones.set(await llamada('u3', '+34600000003'), decision('seguimiento', 'pide_tiempo'));
+    decisiones.set(await llamada('u2', '+34600000002'), decision('descartar', 'cliente_no_sigue'));
+    decisiones.set(await llamada('u3', '+34600000003'), decision('seguimiento', 'quiere_pensarlo'));
     await llamada('u4', '+34699999999');
     await llamada('u5', null);
 
@@ -298,8 +298,8 @@ describe.skipIf(!hayBaseDePruebas)('calibración con el histórico, de punta a p
       { id: 'caro', nombre: 'Caro', telefono: '+34600000003', etapa: ETAPA.viabilidad },
     );
     await llamada('u1', '+34600000001');
-    decisiones.set(await llamada('u2', '+34600000002'), { ...decision('descartar', 'no_interesado'), decision: 'dejarlo_en_el_aire' });
-    decisiones.set(await llamada('u3', '+34600000003'), decision('seguimiento', 'pide_tiempo'));
+    decisiones.set(await llamada('u2', '+34600000002'), { ...decision('descartar', 'cliente_no_sigue'), decision: 'dejarlo_en_el_aire' });
+    decisiones.set(await llamada('u3', '+34600000003'), decision('seguimiento', 'quiere_pensarlo'));
     await llamada('u4', '+34699999999');
     await llamada('u5', null);
 
@@ -316,8 +316,8 @@ describe.skipIf(!hayBaseDePruebas)('calibración con el histórico, de punta a p
     tareas({ id: 'ana', nombre: 'Ana', telefono: '+34600000001', etapa: ETAPA.viabilidad }, { id: 'beto', nombre: 'Beto', telefono: '+34600000002', etapa: ETAPA.viabilidad });
     const a = await llamada('u1', '+34600000001');
     const b = await llamada('u2', '+34600000002');
-    decisiones.set(a, decision('seguimiento', 'pide_tiempo'));
-    decisiones.set(b, decision('seguimiento', 'pide_tiempo'));
+    decisiones.set(a, decision('seguimiento', 'quiere_pensarlo'));
+    decisiones.set(b, decision('seguimiento', 'quiere_pensarlo'));
     olvidaLaPrimera.add(a);
     const i = await calibrar();
     expect(i.filas.map((f) => [f.lead, f.decisionIA, f.sinDecisionPor])).toEqual([['Ana', 'seguimiento', null], ['Beto', 'seguimiento', null]]);

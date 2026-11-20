@@ -14,6 +14,7 @@ import { configDesdeEnv, enviarPendientes, procesarSiguienteEvaluacion, type Env
 import { ClickUpClient, clickupConfigDesdeEnv } from './captacion/clickup.ts';
 import { configColaDesdeEnv, encolarPendientesCaptacion, ProcesadorCola } from './captacion/cola.ts';
 import { ESQUEMA_SALIDA } from './captacion/prompt.ts';
+import { VinculadorLlamadas } from './captacion/vinculo-llamadas.ts';
 
 export { ensureNetelipCalls } from './schema.ts';
 export { registerNetelipCalls } from './routes.ts';
@@ -29,6 +30,7 @@ const EVALUATION_INTERVAL_MS = 15_000;
 const EVALUATION_RECOVERY_INTERVAL_MS = 5 * 60_000;
 const CAPTACION_INTERVAL_MS = 30_000;
 const CAPTACION_RECOVERY_INTERVAL_MS = 10 * 60_000;
+const VINCULO_INTERVAL_MS = 60_000;
 
 function days(name: string, env: NodeJS.ProcessEnv): number | null {
   const raw = String(env[name] || '').trim();
@@ -107,6 +109,17 @@ export function createNetelipWorkers(pool: Pool, env: NodeJS.ProcessEnv = proces
     if (rewritten) console.log(JSON.stringify({ msg: 'captacion_reescritas', leads: rewritten }));
   });
 
+  // N-1.0 · cada llamada de Netelip queda asociada a su lead de «Contacto de Reforma» (por teléfono y, si no, por email). Solo LEE ClickUp.
+  // Apagado por defecto: CAPTACION_VINCULO_ENABLED=true (necesita CLICKUP_API_TOKEN y CAPTACION_CLICKUP_LIST_ID; no necesita Gemini).
+  const vinculador = env.CAPTACION_VINCULO_ENABLED === 'true' && clickupConfig
+    ? new VinculadorLlamadas({ pool, cliente: new ClickUpClient(clickupConfig), registro: (m) => console.log(`[captacion] ${m}`) })
+    : null;
+  const vinculo = singleFlight('captación · cruce de llamadas', async () => {
+    if (!vinculador) return;
+    const r = await vinculador.ejecutar();
+    if (r.vinculadas || r.variasCoincidencias) console.log(JSON.stringify({ msg: 'captacion_vinculo', ...r }));
+  });
+
   // Calificador interno de llamadas (869e9y98n): evalúa con Gemini y envía el feedback por WhatsApp.
   const evaluador = env.CALIFICADOR_ENABLED === 'false' ? null : evaluadorGemini(env);
   const calificadorConfig = configDesdeEnv(env);
@@ -134,6 +147,12 @@ export function createNetelipWorkers(pool: Pool, env: NodeJS.ProcessEnv = proces
       // Las transcripciones pendientes dependen de vDrive para descargar el audio: si las credenciales fallan, avisar al arrancar.
       else vdrive.list('/APIVoice/Record').catch((error) => notifyTech('vDrive de Netelip inaccesible', { error: (error as Error).message.slice(0, 300) }));
       if (colaConfig.activa && !procesadorCola) console.warn('[captacion] CAPTACION_WORKER_ENABLED=true pero faltan la clave de Gemini (CAPTACION_GEMINI_API_KEY o GOOGLE_GEMINI_API_KEY) o CLICKUP_API_TOKEN y CAPTACION_CLICKUP_LIST_ID: las llamadas se encolan pero no se procesan');
+      if (env.CAPTACION_VINCULO_ENABLED === 'true' && !vinculador) console.warn('[captacion] CAPTACION_VINCULO_ENABLED=true pero faltan CLICKUP_API_TOKEN y CAPTACION_CLICKUP_LIST_ID: las llamadas no se asocian a su lead');
+      if (vinculador) {
+        console.log('[captacion] cruce de llamadas con leads encendido (solo lee ClickUp)');
+        vinculo();
+        setInterval(vinculo, VINCULO_INTERVAL_MS).unref();
+      }
       if (procesadorCola) {
         console.log(`[captacion] flujo automático encendido (${colaConfig.escribirClickUp ? 'escribe en ClickUp' : 'simulacro: no escribe en ClickUp'})`);
         for (const [task, ms] of [[captacion, CAPTACION_INTERVAL_MS], [captacionRecuperacion, CAPTACION_RECOVERY_INTERVAL_MS]] as const) {

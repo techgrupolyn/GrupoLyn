@@ -14,20 +14,20 @@ import DecisionBandejaView from '../src/ceo-dashboard/views/DecisionBandejaView'
 import DecisionPasePanel from '../src/ceo-dashboard/views/DecisionPasePanel';
 
 const MOTIVOS = {
-  pasar_a_reunion: [{ codigo: 'cumple_criterios', etiqueta: 'Cumple los criterios' }],
-  derivar_partners: [{ codigo: 'presupuesto_partners', etiqueta: 'Presupuesto de Partners' }],
-  seguimiento: [{ codigo: 'falta_plano', etiqueta: 'Falta el plano' }, { codigo: 'pide_tiempo', etiqueta: 'Pide tiempo' }],
-  descartar: [{ codigo: 'no_interesado', etiqueta: 'El cliente decide no seguir' }],
+  pasar_a_reunion: [{ codigo: 'presupuesto_suficiente', etiqueta: 'Cumple los criterios' }],
+  derivar_partners: [{ codigo: 'presupuesto_bajo_lyn', etiqueta: 'Presupuesto de Partners' }],
+  seguimiento: [{ codigo: 'falta_dato_cliente', etiqueta: 'Falta el plano' }, { codigo: 'quiere_pensarlo', etiqueta: 'Pide tiempo' }],
+  descartar: [{ codigo: 'cliente_no_sigue', etiqueta: 'El cliente decide no seguir' }],
 };
 const PASO = { orden: 1, accion: 'Llamar para pedir el plano', cuando: { tipo: 'fecha_cliente', valor: 'a partir del día 20' }, canal: 'llamada', quePedir: 'el plano', requiereErnesto: false, cita: 'vuelvo el 20' };
-const sdr = { actor: 'sdr', decision: 'seguimiento', motivo_codigo: 'falta_plano', motivo_texto: null, dato_cita: 'Dijo que manda el plano', usuario_nombre: 'Sara', proximos_pasos: [], motivos: [], excepciones: [], dudas: [], pendiente_ernesto: null };
-const ia = { actor: 'ia', decision: 'seguimiento', motivo_codigo: 'falta_plano', motivo_texto: null, dato_cita: 'te mando el plano cuando vuelva', motivos: [{ codigo: 'falta_plano', texto: null }], excepciones: ['descuento'], dudas: [], pendiente_ernesto: null, proximos_pasos: [PASO] };
+const sdr = { actor: 'sdr', decision: 'seguimiento', motivo_codigo: 'falta_dato_cliente', motivo_texto: null, dato_cita: 'Dijo que manda el plano', usuario_nombre: 'Sara', proximos_pasos: [], motivos: [], excepciones: [], dudas: [], pendiente_ernesto: null };
+const ia = { actor: 'ia', decision: 'seguimiento', motivo_codigo: 'falta_dato_cliente', motivo_texto: null, dato_cita: 'te mando el plano cuando vuelva', motivos: [{ codigo: 'falta_dato_cliente', texto: null }], excepciones: ['descuento'], dudas: [], pendiente_ernesto: null, proximos_pasos: [PASO] };
 
 afterEach(() => vi.clearAllMocks());
 
 describe('decisión de pase · utilidades', () => {
   it('el motivo se muestra con la etiqueta de la lista, o con el texto libre si es «otro»', () => {
-    expect(motivoLabel(MOTIVOS, 'seguimiento', 'falta_plano')).toBe('Falta el plano');
+    expect(motivoLabel(MOTIVOS, 'seguimiento', 'falta_dato_cliente')).toBe('Falta el plano');
     expect(motivoLabel(MOTIVOS, 'seguimiento', 'otro', 'Quiere esperar')).toBe('Otro: Quiere esperar');
     expect(motivoLabel(MOTIVOS, 'seguimiento', 'otro')).toBe('Otro');
     expect(motivoLabel(MOTIVOS, 'seguimiento', 'motivo_que_ya_no_esta')).toBe('motivo_que_ya_no_esta');
@@ -59,12 +59,12 @@ describe('DecisionPasePanel · formulario del SDR', () => {
     const motivo = screen.getByLabelText('Motivo');
     expect(motivo).toBeEnabled();
     expect(within(motivo).getAllByRole('option').map((o) => o.textContent)).toEqual(['Elige un motivo', 'Falta el plano', 'Pide tiempo', 'Otro']);
-    fireEvent.change(motivo, { target: { value: 'falta_plano' } });
+    fireEvent.change(motivo, { target: { value: 'falta_dato_cliente' } });
     expect(enviar).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Dato o cita de la llamada que lo justifica'), { target: { value: '  Dijo que manda el plano ' } });
     expect(enviar).toBeEnabled();
     fireEvent.click(enviar);
-    await waitFor(() => expect(api.netelip.saveDecision).toHaveBeenCalledWith(7, { decision: 'seguimiento', motivo_codigo: 'falta_plano', dato_cita: 'Dijo que manda el plano' }));
+    await waitFor(() => expect(api.netelip.saveDecision).toHaveBeenCalledWith(7, { decision: 'seguimiento', motivo_codigo: 'falta_dato_cliente', dato_cita: 'Dijo que manda el plano' }));
   });
 
   it('Escenario «El SDR no ve a la IA antes de decidir»: antes de registrar no hay nada de la IA en pantalla; después aparece su decisión y sus próximos pasos', async () => {
@@ -74,7 +74,7 @@ describe('DecisionPasePanel · formulario del SDR', () => {
     expect(container.textContent).not.toContain('Decisión de la IA');
     expect(container.textContent).not.toContain('Llamar para pedir el plano');
     fireEvent.click(screen.getByLabelText('Seguimiento'));
-    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'falta_plano' } });
+    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'falta_dato_cliente' } });
     fireEvent.change(screen.getByLabelText('Dato o cita de la llamada que lo justifica'), { target: { value: 'dato' } });
     fireEvent.click(screen.getByRole('button', { name: 'Registrar mi decisión' }));
     await screen.findByText('Decisión de la IA');
@@ -100,7 +100,7 @@ describe('DecisionPasePanel · formulario del SDR', () => {
     render(<DecisionPasePanel callId={7} />);
     await screen.findByRole('button', { name: 'Registrar mi decisión' });
     fireEvent.click(screen.getByLabelText('Seguimiento'));
-    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'falta_plano' } });
+    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'falta_dato_cliente' } });
     fireEvent.click(screen.getByLabelText('Descartar'));
     expect(screen.getByLabelText('Motivo')).toHaveValue('');
   });
@@ -110,7 +110,7 @@ describe('DecisionPasePanel · formulario del SDR', () => {
     render(<DecisionPasePanel callId={7} />);
     await screen.findByRole('button', { name: 'Registrar mi decisión' });
     fireEvent.click(screen.getByLabelText('Seguimiento'));
-    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'falta_plano' } });
+    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'falta_dato_cliente' } });
     fireEvent.change(screen.getByLabelText('Dato o cita de la llamada que lo justifica'), { target: { value: 'dato' } });
     fireEvent.click(screen.getByRole('button', { name: 'Registrar mi decisión' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('La propuesta de esta llamada ya está registrada.');
@@ -169,7 +169,7 @@ describe('DecisionPasePanel · formulario del SDR', () => {
 
 describe('DecisionBandejaView · bandeja de Ernesto', () => {
   const fila = (n, o = {}) => ({
-    llamadaId: `netelip:${n}`, leadId: `lead${n}`, fechaLlamada: '2026-11-17T10:00:00.000Z', sdr: { decision: 'seguimiento', motivoCodigo: 'falta_plano' }, ia: { decision: 'seguimiento', motivoCodigo: 'falta_plano' },
+    llamadaId: `netelip:${n}`, leadId: `lead${n}`, fechaLlamada: '2026-11-17T10:00:00.000Z', sdr: { decision: 'seguimiento', motivoCodigo: 'falta_dato_cliente' }, ia: { decision: 'seguimiento', motivoCodigo: 'falta_dato_cliente' },
     coincide: true, motivoEscalado: 'piloto', estado: 'pendiente_ernesto', creadoEn: new Date(Date.now() - 3 * 3600_000).toISOString(), revisadoEn: null, ...o,
   });
   const caso = (o = {}) => ({
@@ -181,7 +181,7 @@ describe('DecisionBandejaView · bandeja de Ernesto', () => {
     { actor: 'coincidentes', revisados: 10, aciertos: 9, porcentaje: 90 }, { actor: 'sdr', revisados: 10, aciertos: 8, porcentaje: 80 }, { actor: 'ia', revisados: 0, aciertos: 0, porcentaje: null },
   ];
   beforeEach(() => {
-    vi.mocked(api.decisiones.bandeja).mockResolvedValue({ items: [fila(1), fila(2, { coincide: false, sdr: { decision: 'descartar', motivoCodigo: 'no_interesado' }, motivoEscalado: 'discrepancia' })] });
+    vi.mocked(api.decisiones.bandeja).mockResolvedValue({ items: [fila(1), fila(2, { coincide: false, sdr: { decision: 'descartar', motivoCodigo: 'cliente_no_sigue' }, motivoEscalado: 'discrepancia' })] });
     vi.mocked(api.decisiones.acierto).mockResolvedValue({ items: acierto });
     vi.mocked(api.decisiones.caso).mockResolvedValue(caso());
   });
@@ -251,7 +251,7 @@ describe('DecisionBandejaView · bandeja de Ernesto', () => {
   });
 
   it('Escenario «Discrepancia»: confirmar exige elegir con quién se está de acuerdo, y manda esa elección', async () => {
-    const dis = caso({ coincide: false, motivo_escalado: 'discrepancia', sdr: { ...sdr, decision: 'descartar', motivo_codigo: 'no_interesado' } });
+    const dis = caso({ coincide: false, motivo_escalado: 'discrepancia', sdr: { ...sdr, decision: 'descartar', motivo_codigo: 'cliente_no_sigue' } });
     vi.mocked(api.decisiones.caso).mockResolvedValue(dis);
     vi.mocked(api.decisiones.confirmar).mockResolvedValue({ ...dis, estado: 'validada' });
     render(<DecisionBandejaView />);
@@ -276,12 +276,12 @@ describe('DecisionBandejaView · bandeja de Ernesto', () => {
     const guardar = within(drawer).getByRole('button', { name: 'Guardar corrección' });
     expect(guardar).toBeDisabled();
     fireEvent.change(within(drawer).getByLabelText('Decisión'), { target: { value: 'descartar' } });
-    fireEvent.change(within(drawer).getByLabelText('Motivo'), { target: { value: 'no_interesado' } });
+    fireEvent.change(within(drawer).getByLabelText('Motivo'), { target: { value: 'cliente_no_sigue' } });
     expect(guardar).toBeDisabled();
     fireEvent.change(within(drawer).getByLabelText('Dato que cambia tu criterio'), { target: { value: '  Contrató a otra empresa ' } });
     expect(guardar).toBeEnabled();
     fireEvent.click(guardar);
-    await waitFor(() => expect(api.decisiones.corregir).toHaveBeenCalledWith('1', { decision: 'descartar', motivo_codigo: 'no_interesado', dato_cita: 'Contrató a otra empresa' }));
+    await waitFor(() => expect(api.decisiones.corregir).toHaveBeenCalledWith('1', { decision: 'descartar', motivo_codigo: 'cliente_no_sigue', dato_cita: 'Contrató a otra empresa' }));
   });
 
   it('un caso ya revisado enseña la decisión final y no ofrece acciones', async () => {

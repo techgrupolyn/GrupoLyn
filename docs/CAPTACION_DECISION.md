@@ -34,7 +34,7 @@ recomendación que ejecutan el SDR o Ernesto.
 Para publicar una lista de motivos nueva se insertan TODAS sus filas con una versión mayor (la lista vigente es la de mayor versión):
 
 ```sql
-INSERT INTO decision_motivo_config (version, decision, codigo, etiqueta, orden) VALUES (2, 'seguimiento', 'falta_plano', 'Falta el plano', 1), …;
+INSERT INTO decision_motivo_config (version, decision, codigo, etiqueta, orden) VALUES (2, 'seguimiento', 'falta_dato_cliente', 'Falta el plano', 1), …;
 ```
 
 Para un guion o manual nuevo: `INSERT INTO decision_contexto_config (tipo, version, texto) VALUES ('guion', 2, '…');`.
@@ -78,15 +78,12 @@ el tablero.
 
 ## Qué no cubre (decirlo siempre)
 
-- **El guion y el manual son provisionales.** No tenía el «Guion completo SDR Grupo LYN» ni el documento «Reglas de escalado» de Alex:
-  el manual v1 está armado con las reglas explícitas del ticket y el guion v1 es una marca de «pendiente de cargar». También es
-  **provisional la lista de motivos** (no pude abrir el borrador del documento de dudas). Hay que cargar los reales (ver arriba) y
-  repasar el prompt con llamadas reales.
-- **No se ha probado con el modelo real (Gemini)**, con llamadas reales ni con ClickUp real. El prompt creció a unos 26.800 caracteres
-  (≈ 8.000 tokens); con el guion completo (≈ 9.000 palabras) crecerá: el ticket pide condensarlo por pasos.
-- **La cola o el disparador automático no están construidos**: hoy una llamada solo se procesa con el lote. El flujo en vivo (llamada →
-  IA → caso en la bandeja) depende de esa cola. La cola debe procesar de una en una las llamadas de un mismo lead (ver
-  `CAPTACION_RESUMEN.md`).
+- **El guion v1 es una marca de «pendiente de cargar».** El guion real (versión 2, que incluye las reglas de escalado) se carga con un
+  SQL aparte antes de activar el flujo; el manual v1 está armado con las reglas explícitas de N-1.4. La lista de motivos es la que fijó
+  Jean el 19/11 (cuatro decisiones, motivos fijos y «Otro»); cambiarla es publicar una versión mayor, sin desplegar.
+- **Probado con Gemini y ClickUp reales el 19/11, en una copia de la base** (no en producción). El prompt con el guion v2 pasa de
+  26.800 a unos 62.800 caracteres (≈ 17.000 tokens por llamada); el bloque fijo es igual en todas las llamadas.
+- **El flujo automático** (cola) está descrito en `CAPTACION_COLA.md`; hay que activarlo con las variables `CAPTACION_*` tras el despliegue.
 - **La bandeja muestra el id de la tarjeta de ClickUp**, no el nombre del lead (la base de captación no guarda nombres): lleva un enlace
   a la tarjeta.
 - Independencia frente a «la IA revisa los descartes del SDR» (texto literal del guion): manda la independencia (la IA nunca ve al SDR).

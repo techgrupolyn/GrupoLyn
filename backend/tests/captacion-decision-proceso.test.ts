@@ -17,7 +17,7 @@ const paso = (o: Record<string, unknown> = {}) => ({
   orden: 1, accion: 'Confirmar la visita del viernes', cuando: { tipo: 'fecha_cliente', valor: 'viernes 20 a las seis' }, canal: 'llamada', que_pedir: null, requiere_ernesto: false, cita: CITA_FECHA, ...o,
 });
 const DECISION = {
-  decision: 'pasar_a_reunion', motivos: [{ codigo: 'cumple_criterios', cita: FRASE.decisor, texto: null }], excepciones: [], dudas: [], pendiente_ernesto: null, proximos_pasos: [paso()],
+  decision: 'pasar_a_reunion', motivos: [{ codigo: 'presupuesto_suficiente', cita: FRASE.decisor, texto: null }], excepciones: [], dudas: [], pendiente_ernesto: null, proximos_pasos: [paso()],
 };
 const dec = (o: Record<string, unknown> = {}) => ({ ...DECISION, ...o });
 
@@ -132,7 +132,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase de la IA en el proceso de 
     const { r } = await procesar(DECISION);
     expect(r.decision).toEqual({ estado: 'guardada', decision: 'pasar_a_reunion' });
     expect(await filaIA()).toMatchObject({
-      lead_id: 'lead-ana', llamada_id: interaccionDe('77'), decision: 'pasar_a_reunion', motivo_codigo: 'cumple_criterios', dato_cita: FRASE.decisor,
+      lead_id: 'lead-ana', llamada_id: interaccionDe('77'), decision: 'pasar_a_reunion', motivo_codigo: 'presupuesto_suficiente', dato_cita: FRASE.decisor,
       version_guion: 1, version_manual: 1, version_prompt: VERSION_PROMPT, origen: 'nuevo',
     });
     expect((await filaIA()).proximos_pasos).toEqual([{ orden: 1, accion: 'Confirmar la visita del viernes', cuando: { tipo: 'fecha_cliente', valor: 'viernes 20 a las seis' }, canal: 'llamada', quePedir: null, requiereErnesto: false, cita: CITA_FECHA }]);
@@ -161,7 +161,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase de la IA en el proceso de 
     await base.query("INSERT INTO decision_motivo_config (version, decision, codigo, etiqueta, orden) VALUES (2, 'seguimiento', 'motivo_de_la_v2', 'Un motivo de la versión dos', 1)");
     const { peticiones } = await procesar(DECISION);
     expect(peticiones[0]!.system).toContain('seguimiento: motivo_de_la_v2 (Un motivo de la versión dos)');
-    expect(peticiones[0]!.system).not.toContain('falta_plano (Falta el plano)');
+    expect(peticiones[0]!.system).not.toContain('falta_dato_cliente (Falta un dato del cliente)');
   });
 
   it('Escenario «Independencia de la IA»: con la propuesta del SDR ya registrada, la petición al modelo no la incluye', async () => {
@@ -222,8 +222,8 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase de la IA en el proceso de 
   });
 
   it('un motivo con una cita que no está en la llamada se descarta; sin ninguno citable la decisión queda «Pendiente de Ernesto»', async () => {
-    const { r } = await procesar(dec({ motivos: [{ codigo: 'cumple_criterios', cita: 'Dijo que sí a todo desde el primer minuto', texto: null }] }));
-    expect(r.descartes).toEqual([{ campo: 'decision_ia.motivos.cumple_criterios', motivo: 'cita no encontrada en la transcripción', cita: null }]);
+    const { r } = await procesar(dec({ motivos: [{ codigo: 'presupuesto_suficiente', cita: 'Dijo que sí a todo desde el primer minuto', texto: null }] }));
+    expect(r.descartes).toEqual([{ campo: 'decision_ia.motivos.presupuesto_suficiente', motivo: 'cita no encontrada en la transcripción', cita: null }]);
     expect(await filaIA()).toMatchObject({ motivo_codigo: null, dato_cita: null, pendiente_ernesto: { queDebeDecidir: 'La IA no pudo citar la llamada para justificar su decisión.' } });
   });
 
@@ -241,7 +241,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase de la IA en el proceso de 
   it('las citas de la decisión se comprueban contra la transcripción ENMASCARADA, la que vio el modelo (datos personales fuera)', async () => {
     const cita = 'Me llamo [NOMBRE] y lo decidimos juntos mi marido y yo';
     const texto = `${TRANSCRIPCION_CON_FECHA}\n[00:03:00] CLIENTE: Me llamo Ana Beltrán y lo decidimos juntos mi marido y yo.`;
-    const { peticiones, r } = await procesar(dec({ motivos: [{ codigo: 'cumple_criterios', cita, texto: null }] }), { nombreLead: () => 'Ana Beltrán' }, { transcripcion: texto });
+    const { peticiones, r } = await procesar(dec({ motivos: [{ codigo: 'presupuesto_suficiente', cita, texto: null }] }), { nombreLead: () => 'Ana Beltrán' }, { transcripcion: texto });
     expect(peticiones[0]!.user).toContain('Me llamo [NOMBRE] y lo decidimos');
     expect(peticiones[0]!.user).not.toContain('Beltrán');
     expect(r.descartes).toEqual([]);
@@ -251,7 +251,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase de la IA en el proceso de 
   it('Escenario «Próximo paso que necesita una excepción»: queda marcado «requiere Ernesto» y el caso espera por «excepcion»', async () => {
     await procesar(dec({ excepciones: ['topografo'], proximos_pasos: [paso({ accion: 'Valorar enviar a alguien a medir', requiere_ernesto: true })] }));
     const id = interaccionDe('77');
-    await registrarPropuestaSDR(db, { llamadaId: id, usuarioId: '5', usuarioNombre: 'Sara SDR', entrada: { decision: 'pasar_a_reunion', motivoCodigo: 'cumple_criterios', motivoTexto: null, datoCita: 'Dijo que sí' } });
+    await registrarPropuestaSDR(db, { llamadaId: id, usuarioId: '5', usuarioNombre: 'Sara SDR', entrada: { decision: 'pasar_a_reunion', motivoCodigo: 'presupuesto_suficiente', motivoTexto: null, datoCita: 'Dijo que sí' } });
     expect((await filaIA()).proximos_pasos[0]).toMatchObject({ requiereErnesto: true });
     expect((await base.query('SELECT motivo_escalado, coincidencia_sdr_ia FROM validacion_decision')).rows[0]).toEqual({ motivo_escalado: 'excepcion', coincidencia_sdr_ia: true });
   });
@@ -287,7 +287,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase de la IA en el proceso de 
     const { r } = await procesar(DECISION, { origenDecision: 'historico' });
     expect(r.decision).toMatchObject({ estado: 'guardada' });
     expect(await filaIA()).toMatchObject({ origen: 'historico' });
-    await registrarPropuestaSDR(db, { llamadaId: interaccionDe('77'), usuarioId: '5', usuarioNombre: 'Sara', entrada: { decision: 'pasar_a_reunion', motivoCodigo: 'cumple_criterios', motivoTexto: null, datoCita: 'x' } });
+    await registrarPropuestaSDR(db, { llamadaId: interaccionDe('77'), usuarioId: '5', usuarioNombre: 'Sara', entrada: { decision: 'pasar_a_reunion', motivoCodigo: 'presupuesto_suficiente', motivoTexto: null, datoCita: 'x' } });
     expect(await contar('validacion_decision')).toBe(0);
   });
 
@@ -296,7 +296,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase de la IA en el proceso de 
     const id = llamadaIdDe(77);
     const antes = await vistaParaSDR(db, interaccionDe('77'));
     expect(antes).toMatchObject({ leadConocido: true, sdr: null, ia: null });
-    await registrarPropuestaSDR(db, { llamadaId: interaccionDe('77'), usuarioId: '5', usuarioNombre: 'Sara SDR', entrada: { decision: 'pasar_a_reunion', motivoCodigo: 'cumple_criterios', motivoTexto: null, datoCita: 'Dijo que viene con su pareja' } });
+    await registrarPropuestaSDR(db, { llamadaId: interaccionDe('77'), usuarioId: '5', usuarioNombre: 'Sara SDR', entrada: { decision: 'pasar_a_reunion', motivoCodigo: 'presupuesto_suficiente', motivoTexto: null, datoCita: 'Dijo que viene con su pareja' } });
     const despues = await vistaParaSDR(db, interaccionDe('77'));
     expect(despues.ia).toMatchObject({ decision: 'pasar_a_reunion', proximosPasos: [expect.objectContaining({ accion: 'Confirmar la visita del viernes' })] });
     const casos = await bandeja(db);

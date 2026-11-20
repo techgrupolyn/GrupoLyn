@@ -24,7 +24,7 @@ describe('quién valida decisiones', () => {
 
 const PASO = { orden: 1, accion: 'Llamar para pedir el plano', cuando: { tipo: 'fecha_cliente' as const, valor: 'a partir del día 20' }, canal: 'llamada' as const, quePedir: 'el plano', requiereErnesto: false, cita: 'vuelvo el 20' };
 const iaDecision = (o: Partial<DecisionIA> = {}): DecisionIA => ({
-  decision: 'seguimiento', motivos: [{ codigo: 'falta_plano', texto: null, cita: 'te mando el plano cuando vuelva de vacaciones' }], excepciones: [], dudas: [], pendienteErnesto: null, proximosPasos: [PASO], ...o,
+  decision: 'seguimiento', motivos: [{ codigo: 'falta_dato_cliente', texto: null, cita: 'te mando el plano cuando vuelva de vacaciones' }], excepciones: [], dudas: [], pendienteErnesto: null, proximosPasos: [PASO], ...o,
 });
 
 describe.skipIf(!hayBaseDePruebas)('API de la decisión de pase', () => {
@@ -77,7 +77,7 @@ describe.skipIf(!hayBaseDePruebas)('API de la decisión de pase', () => {
     );
     if (decision) await registrarDecisionIA(db, { leadId: 'T1', llamadaId: id, decision, versionGuion: 1, versionManual: 1, versionPrompt: 'captacion-v5', origen: 'nuevo' });
   }
-  const propuesta = (o: Record<string, unknown> = {}) => ({ decision: 'seguimiento', motivo_codigo: 'falta_plano', dato_cita: 'Dijo que manda el plano al volver', ...o });
+  const propuesta = (o: Record<string, unknown> = {}) => ({ decision: 'seguimiento', motivo_codigo: 'falta_dato_cliente', dato_cita: 'Dijo que manda el plano al volver', ...o });
 
   // --- SDR ---------------------------------------------------------------------------------------------------------------
 
@@ -94,12 +94,12 @@ describe.skipIf(!hayBaseDePruebas)('API de la decisión de pase', () => {
     expect(ver.status).toBe(200);
     expect(ver.headers['cache-control']).toBe('no-store');
     expect(ver.body).toMatchObject({ lead_conocido: true, sdr: null, ia: null, estado: null });
-    expect(ver.body.motivos.seguimiento.map((m: { codigo: string }) => m.codigo)).toContain('falta_plano');
+    expect(ver.body.motivos.seguimiento.map((m: { codigo: string }) => m.codigo)).toContain('falta_dato_cliente');
 
     const r = await como(SDR).post('/api/netelip/calls/1/decision', propuesta());
     expect(r.status).toBe(201);
     // El dato es texto de la llamada: sin permiso de transcripciones no sale de nadie, tampoco del propio SDR; con permiso sí.
-    expect(r.body.sdr).toMatchObject({ actor: 'sdr', decision: 'seguimiento', motivo_codigo: 'falta_plano', dato_cita: null, usuario_nombre: 'Usuario 5' });
+    expect(r.body.sdr).toMatchObject({ actor: 'sdr', decision: 'seguimiento', motivo_codigo: 'falta_dato_cliente', dato_cita: null, usuario_nombre: 'Usuario 5' });
     const lector = await como({ 'x-rol': 'superadmin', 'x-uid': '1' }).get('/api/netelip/calls/1/decision');
     expect(lector.body.sdr.dato_cita).toBe('Dijo que manda el plano al volver');
   });
@@ -119,7 +119,7 @@ describe.skipIf(!hayBaseDePruebas)('API de la decisión de pase', () => {
     expect(antes.body.ia).toBeNull();
     expect(JSON.stringify(antes.body)).not.toContain('Llamar para pedir el plano');
     const despues = await como(SDR).post('/api/netelip/calls/1/decision', propuesta());
-    expect(despues.body.ia).toMatchObject({ actor: 'ia', decision: 'seguimiento', motivo_codigo: 'falta_plano', proximos_pasos: [{ accion: 'Llamar para pedir el plano' }] });
+    expect(despues.body.ia).toMatchObject({ actor: 'ia', decision: 'seguimiento', motivo_codigo: 'falta_dato_cliente', proximos_pasos: [{ accion: 'Llamar para pedir el plano' }] });
     expect(despues.body.estado).toBe('pendiente_ernesto');
     // Y a partir de ahí también la ve al abrir el detalle.
     expect((await como(SDR).get('/api/netelip/calls/1/decision')).body.ia).not.toBeNull();
@@ -150,7 +150,7 @@ describe.skipIf(!hayBaseDePruebas)('API de la decisión de pase', () => {
 
     await llamadaProcesada(1);
     expect((await como(SDR).post('/api/netelip/calls/1/decision', propuesta())).status).toBe(201);
-    const otra = await como(SDR).post('/api/netelip/calls/1/decision', propuesta({ decision: 'descartar', motivo_codigo: 'no_interesado' }));
+    const otra = await como(SDR).post('/api/netelip/calls/1/decision', propuesta({ decision: 'descartar', motivo_codigo: 'cliente_no_sigue' }));
     expect(otra.status).toBe(409);
     expect(otra.body.error).toContain('ya está registrada');
   });
@@ -159,8 +159,8 @@ describe.skipIf(!hayBaseDePruebas)('API de la decisión de pase', () => {
     await llamadaProcesada(1);
     const lectura = { 'x-rol': 'superadmin', 'x-uid': '1' };
     const sinPermiso = (await como(SDR).post('/api/netelip/calls/1/decision', propuesta())).body.ia;
-    expect(sinPermiso).toMatchObject({ decision: 'seguimiento', motivo_codigo: 'falta_plano', dato_cita: null });
-    expect(sinPermiso.motivos).toEqual([{ codigo: 'falta_plano', texto: null }]);
+    expect(sinPermiso).toMatchObject({ decision: 'seguimiento', motivo_codigo: 'falta_dato_cliente', dato_cita: null });
+    expect(sinPermiso.motivos).toEqual([{ codigo: 'falta_dato_cliente', texto: null }]);
     expect(sinPermiso.proximos_pasos[0]).toMatchObject({ accion: 'Llamar para pedir el plano', cita: null });
     const conPermiso = (await como(lectura).get('/api/netelip/calls/1/decision')).body.ia;
     expect(conPermiso.dato_cita).toBe('te mando el plano cuando vuelva de vacaciones');
@@ -236,7 +236,7 @@ describe.skipIf(!hayBaseDePruebas)('API de la decisión de pase', () => {
   });
 
   it('Escenario «Discrepancia»: confirmar exige decir con quién (400) y, diciéndolo, se adopta la decisión de esa parte', async () => {
-    await llamadaProcesada(1, iaDecision({ decision: 'derivar_partners', motivos: [{ codigo: 'presupuesto_partners', texto: null, cita: 'unos treinta mil euros para todo' }] }));
+    await llamadaProcesada(1, iaDecision({ decision: 'derivar_partners', motivos: [{ codigo: 'presupuesto_bajo_lyn', texto: null, cita: 'unos treinta mil euros para todo' }] }));
     await como(SDR).post('/api/netelip/calls/1/decision', propuesta({ decision: 'descartar', motivo_codigo: 'presupuesto_insuficiente' }));
     expect((await como(ERNESTO).get('/api/captacion/decisiones/llamada/1')).body).toMatchObject({ coincide: false, motivo_escalado: 'discrepancia' });
     const sin = await como(ERNESTO).post('/api/captacion/decisiones/llamada/1/confirmar');
@@ -253,18 +253,18 @@ describe.skipIf(!hayBaseDePruebas)('API de la decisión de pase', () => {
   it('Escenario «Corrección de Ernesto»: sin el dato que cambia su criterio, 400 y no se guarda; con él, «corregida»', async () => {
     await llamadaProcesada(1);
     await como(SDR).post('/api/netelip/calls/1/decision', propuesta());
-    const sin = await como(ERNESTO).post('/api/captacion/decisiones/llamada/1/corregir', { decision: 'descartar', motivo_codigo: 'no_interesado' });
+    const sin = await como(ERNESTO).post('/api/captacion/decisiones/llamada/1/corregir', { decision: 'descartar', motivo_codigo: 'cliente_no_sigue' });
     expect(sin.status).toBe(400);
     expect(sin.body.error).toContain('Falta el dato');
     expect((await como(ERNESTO).get('/api/captacion/decisiones/llamada/1')).body).toMatchObject({ estado: 'pendiente_ernesto', ernesto: null });
     expect(alRevisar).not.toHaveBeenCalled();
 
     const ok = await como(ERNESTO).post('/api/captacion/decisiones/llamada/1/corregir', {
-      decision: 'descartar', motivo_codigo: 'no_interesado', dato_cita: 'Dijo que ya contrató a otra empresa',
+      decision: 'descartar', motivo_codigo: 'cliente_no_sigue', dato_cita: 'Dijo que ya contrató a otra empresa',
       proximos_pasos: [{ accion: 'Cerrar el lead', cuando: { tipo: 'plazo_guion', valor: 'hoy' }, canal: 'llamada' }],
     });
     expect(ok.status).toBe(200);
-    expect(ok.body).toMatchObject({ estado: 'corregida', ernesto: { decision: 'descartar', motivo_codigo: 'no_interesado', proximos_pasos: [{ accion: 'Cerrar el lead' }] } });
+    expect(ok.body).toMatchObject({ estado: 'corregida', ernesto: { decision: 'descartar', motivo_codigo: 'cliente_no_sigue', proximos_pasos: [{ accion: 'Cerrar el lead' }] } });
     // El dato lo ve quien puede leer transcripciones.
     const lector = await como({ 'x-rol': 'superadmin', 'x-uid': '1' }).get('/api/captacion/decisiones/llamada/1');
     expect(lector.body.ernesto.dato_cita).toBe('Dijo que ya contrató a otra empresa');
@@ -273,7 +273,7 @@ describe.skipIf(!hayBaseDePruebas)('API de la decisión de pase', () => {
 
   it('un caso que no existe da 404 al confirmar o corregir', async () => {
     expect((await como(ERNESTO).post('/api/captacion/decisiones/llamada/404/confirmar')).status).toBe(404);
-    expect((await como(ERNESTO).post('/api/captacion/decisiones/llamada/404/corregir', { decision: 'descartar', motivo_codigo: 'no_interesado', dato_cita: 'x' })).status).toBe(404);
+    expect((await como(ERNESTO).post('/api/captacion/decisiones/llamada/404/corregir', { decision: 'descartar', motivo_codigo: 'cliente_no_sigue', dato_cita: 'x' })).status).toBe(404);
   });
 
   it('si reflejar la decisión en ClickUp falla, la revisión ya está guardada y la respuesta es correcta', async () => {
@@ -293,7 +293,7 @@ describe.skipIf(!hayBaseDePruebas)('API de la decisión de pase', () => {
       await llamadaProcesada(n);
       await como(SDR).post(`/api/netelip/calls/${n}/decision`, propuesta());
       if (n <= 9) await como(ERNESTO).post(`/api/captacion/decisiones/llamada/${n}/confirmar`);
-      else await como(ERNESTO).post(`/api/captacion/decisiones/llamada/${n}/corregir`, { decision: 'descartar', motivo_codigo: 'no_interesado', dato_cita: 'Cambió de idea' });
+      else await como(ERNESTO).post(`/api/captacion/decisiones/llamada/${n}/corregir`, { decision: 'descartar', motivo_codigo: 'cliente_no_sigue', dato_cita: 'Cambió de idea' });
     }
     for (let n = 100; n < 120; n++) {
       await llamadaProcesada(n, null);

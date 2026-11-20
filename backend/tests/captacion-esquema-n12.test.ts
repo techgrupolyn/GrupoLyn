@@ -173,7 +173,7 @@ describe.skipIf(!hayBaseDePruebas)('esquema 001 · orden estricto del histórico
 });
 
 describe.skipIf(!hayBaseDePruebas)('captación · reversión (schema-down.sql)', () => {
-  it('quita las 13 tablas del módulo y no toca otras', async () => {
+  it('quita las 14 tablas del módulo y no toca otras', async () => {
     await db.exec('CREATE TABLE crm_leads_ajena (id int)');
     await db.exec(BAJADA);
     expect(await tablas()).toEqual(['crm_leads_ajena']);
@@ -186,8 +186,8 @@ describe.skipIf(!hayBaseDePruebas)('captación · reversión (schema-down.sql)',
     const b = await db.query<{ n: number }>('SELECT count(*)::int AS n FROM categoria_config');
     expect([a.rows[0]?.n, b.rows[0]?.n]).toEqual([7, 7]);
   });
-  it('tras revertir, el módulo deja exactamente las 13 tablas que declara CAPTACION_TABLES (ni una más, ni una menos antes)', async () => {
-    expect(await tablas()).toEqual(['agregacion_config', 'captacion_cola', 'categoria_config', 'criterio_config', 'decision_contexto_config', 'decision_lead', 'decision_motivo_config', 'lead_calificacion_historial', 'lead_criterio_evaluacion', 'lead_no_apto_evento', 'lead_presupuesto_evento', 'lead_resumen_historial', 'validacion_decision']);
+  it('tras revertir, el módulo deja exactamente las 14 tablas que declara CAPTACION_TABLES (ni una más, ni una menos antes)', async () => {
+    expect(await tablas()).toEqual(['agregacion_config', 'captacion_cola', 'captacion_llamada_lead', 'categoria_config', 'criterio_config', 'decision_contexto_config', 'decision_lead', 'decision_motivo_config', 'lead_calificacion_historial', 'lead_criterio_evaluacion', 'lead_no_apto_evento', 'lead_presupuesto_evento', 'lead_resumen_historial', 'validacion_decision']);
     await db.exec(BAJADA);
     expect(await tablas()).toEqual([]);
   });

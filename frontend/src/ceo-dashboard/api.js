@@ -176,6 +176,11 @@ export const api = {
     publishTrainer: (numero) => request(`/netelip/entrenador/versiones/${encodeURIComponent(numero)}/publicar`, { method: 'POST' }),
     trainerDocx: (numero) => requestBlob(`/netelip/entrenador/versiones/${encodeURIComponent(numero)}/docx`),
   },
+  // N-1.0: llamadas cuyo teléfono coincide con varias tarjetas de ClickUp y su asignación a mano.
+  captacionLlamadas: {
+    sinAsignar: () => request('/captacion/llamadas/sin-asignar'),
+    asignar: (llamadaId, tarea) => request(`/captacion/llamadas/${encodeURIComponent(llamadaId)}/asignar`, { method: 'POST', body: JSON.stringify({ clickup_task_id: tarea }) }),
+  },
   // Bandeja de Ernesto (N-1.4): casos con la propuesta del SDR y la de la IA, confirmar o corregir, y el acierto del piloto.
   decisiones: {
     bandeja: (estado = 'pendientes') => request(`/captacion/decisiones/bandeja?estado=${encodeURIComponent(estado)}`),

@@ -7,9 +7,9 @@ import {
 } from '../netelip/captacion/decision.ts';
 
 const MOTIVOS: MotivosPorDecision = {
-  pasar_a_reunion: [{ codigo: 'cumple_criterios', etiqueta: 'Cumple los criterios' }],
-  derivar_partners: [{ codigo: 'presupuesto_partners', etiqueta: 'Presupuesto de Partners' }],
-  seguimiento: [{ codigo: 'falta_plano', etiqueta: 'Falta el plano' }, { codigo: 'pide_tiempo', etiqueta: 'Pide tiempo' }],
+  pasar_a_reunion: [{ codigo: 'presupuesto_suficiente', etiqueta: 'Cumple los criterios' }],
+  derivar_partners: [{ codigo: 'presupuesto_bajo_lyn', etiqueta: 'Presupuesto de Partners' }],
+  seguimiento: [{ codigo: 'falta_dato_cliente', etiqueta: 'Falta el plano' }, { codigo: 'quiere_pensarlo', etiqueta: 'Pide tiempo' }],
   descartar: [{ codigo: 'fuera_de_zona', etiqueta: 'Fuera de zona' }],
 };
 
@@ -26,7 +26,7 @@ const CITA_VUELTA = 'Vuelvo el 20 de noviembre';
 
 const bruta = (o: Partial<Record<keyof DecisionIABruta, unknown>> = {}): DecisionIABruta => ({
   decision: 'seguimiento',
-  motivos: [{ codigo: 'falta_plano', cita: CITA_PLANO }],
+  motivos: [{ codigo: 'falta_dato_cliente', cita: CITA_PLANO }],
   excepciones: [],
   dudas: [],
   pendienteErnesto: null,
@@ -58,7 +58,7 @@ describe('verificarDecisionIA · decisión y motivos', () => {
     const { decision, descartes } = bien();
     expect(descartes).toEqual([]);
     expect(decision.decision).toBe('seguimiento');
-    expect(decision.motivos).toEqual([{ codigo: 'falta_plano', texto: null, cita: CITA_PLANO }]);
+    expect(decision.motivos).toEqual([{ codigo: 'falta_dato_cliente', texto: null, cita: CITA_PLANO }]);
     expect(decision.proximosPasos).toEqual([{
       orden: 1, accion: 'Llamar para pedir el plano', cuando: { tipo: 'fecha_cliente', valor: 'a partir del 20 de noviembre' }, canal: 'llamada',
       quePedir: 'el plano', requiereErnesto: false, cita: CITA_VUELTA,
@@ -75,18 +75,18 @@ describe('verificarDecisionIA · decisión y motivos', () => {
   });
 
   it('un motivo con una cita que no está en la llamada se descarta y consta', () => {
-    const r = bien({ motivos: [{ codigo: 'falta_plano', cita: 'Dijo que sí a todo sin pensarlo mucho' }, { codigo: 'pide_tiempo', cita: CITA_PLANO }] });
-    expect(r.decision.motivos.map((m) => m.codigo)).toEqual(['pide_tiempo']);
-    expect(r.descartes).toEqual([{ campo: 'decision_ia.motivos.falta_plano', motivo: 'cita no encontrada en la transcripción' }]);
+    const r = bien({ motivos: [{ codigo: 'falta_dato_cliente', cita: 'Dijo que sí a todo sin pensarlo mucho' }, { codigo: 'quiere_pensarlo', cita: CITA_PLANO }] });
+    expect(r.decision.motivos.map((m) => m.codigo)).toEqual(['quiere_pensarlo']);
+    expect(r.descartes).toEqual([{ campo: 'decision_ia.motivos.falta_dato_cliente', motivo: 'cita no encontrada en la transcripción' }]);
   });
 
   it('un motivo sin cita o con una cita corta (menos de 4 palabras) tampoco vale', () => {
-    expect(bien({ motivos: [{ codigo: 'falta_plano', cita: null }] }).decision.motivos).toEqual([]);
-    expect(bien({ motivos: [{ codigo: 'falta_plano', cita: 'el plano' }] }).decision.motivos).toEqual([]);
+    expect(bien({ motivos: [{ codigo: 'falta_dato_cliente', cita: null }] }).decision.motivos).toEqual([]);
+    expect(bien({ motivos: [{ codigo: 'falta_dato_cliente', cita: 'el plano' }] }).decision.motivos).toEqual([]);
   });
 
   it('sin ningún motivo citable la decisión queda «Pendiente de Ernesto» con qué debe decidir', () => {
-    const r = bien({ motivos: [{ codigo: 'falta_plano', cita: 'una frase inventada por el modelo para esto' }] });
+    const r = bien({ motivos: [{ codigo: 'falta_dato_cliente', cita: 'una frase inventada por el modelo para esto' }] });
     expect(r.decision.motivos).toEqual([]);
     expect(r.decision.pendienteErnesto).toEqual({ queDebeDecidir: 'La IA no pudo citar la llamada para justificar su decisión.' });
     expect(bien({ motivos: 'no es una lista' }).decision.pendienteErnesto).not.toBeNull();
@@ -113,18 +113,18 @@ describe('verificarDecisionIA · decisión y motivos', () => {
   });
 
   it('el texto solo se guarda con «otro»', () => {
-    expect(bien({ motivos: [{ codigo: 'falta_plano', cita: CITA_PLANO, texto: 'no debería guardarse' }] }).decision.motivos[0]!.texto).toBeNull();
+    expect(bien({ motivos: [{ codigo: 'falta_dato_cliente', cita: CITA_PLANO, texto: 'no debería guardarse' }] }).decision.motivos[0]!.texto).toBeNull();
   });
 
   it('un código repetido se cuenta una vez y hay como mucho 3 motivos', () => {
-    const lista = ['falta_plano', 'falta_plano', 'pide_tiempo', 'x1', 'x2', 'x3'].map((codigo) => ({ codigo, cita: CITA_PLANO, texto: codigo }));
+    const lista = ['falta_dato_cliente', 'falta_dato_cliente', 'quiere_pensarlo', 'x1', 'x2', 'x3'].map((codigo) => ({ codigo, cita: CITA_PLANO, texto: codigo }));
     const r = bien({ motivos: lista });
-    expect(r.decision.motivos.map((m) => m.codigo)).toEqual(['falta_plano', 'pide_tiempo', 'otro']);
+    expect(r.decision.motivos.map((m) => m.codigo)).toEqual(['falta_dato_cliente', 'quiere_pensarlo', 'otro']);
     expect(MAX_MOTIVOS).toBe(3);
   });
 
   it('lo que no es un objeto dentro de los motivos, o sin código, se ignora', () => {
-    expect(bien({ motivos: [null, 5, 'x', { cita: CITA_PLANO }, { codigo: '   ', cita: CITA_PLANO }, { codigo: 'falta_plano', cita: CITA_PLANO }] }).decision.motivos).toHaveLength(1);
+    expect(bien({ motivos: [null, 5, 'x', { cita: CITA_PLANO }, { codigo: '   ', cita: CITA_PLANO }, { codigo: 'falta_dato_cliente', cita: CITA_PLANO }] }).decision.motivos).toHaveLength(1);
   });
 });
 
@@ -244,8 +244,8 @@ describe('motivoDeEscalado y comparación', () => {
 
   const prop = (decision: PropuestaResumida['decision'], motivoCodigo: string | null): PropuestaResumida => ({ decision, motivoCodigo });
   it('coinciden solo si lo hacen en la decisión Y en el motivo; la misma decisión con otro motivo es una discrepancia', () => {
-    expect(compararDecisiones(prop('seguimiento', 'falta_plano'), prop('seguimiento', 'falta_plano'))).toEqual({ coincide: true, mismaDecision: true });
-    expect(compararDecisiones(prop('seguimiento', 'falta_plano'), prop('seguimiento', 'pide_tiempo'))).toEqual({ coincide: false, mismaDecision: true });
+    expect(compararDecisiones(prop('seguimiento', 'falta_dato_cliente'), prop('seguimiento', 'falta_dato_cliente'))).toEqual({ coincide: true, mismaDecision: true });
+    expect(compararDecisiones(prop('seguimiento', 'falta_dato_cliente'), prop('seguimiento', 'quiere_pensarlo'))).toEqual({ coincide: false, mismaDecision: true });
     expect(compararDecisiones(prop('descartar', 'x'), prop('derivar_partners', 'x'))).toEqual({ coincide: false, mismaDecision: false });
     expect(compararDecisiones(prop('seguimiento', null), prop('seguimiento', null))).toEqual({ coincide: true, mismaDecision: true });
     expect(compararDecisiones(prop('seguimiento', 'a'), prop('seguimiento', null))).toEqual({ coincide: false, mismaDecision: true });
@@ -267,11 +267,11 @@ describe('Escenario «Solo decisiones de pase del SDR»: la fase del lead', () =
 });
 
 describe('entradas de personas', () => {
-  const ok = { decision: 'seguimiento', motivo_codigo: 'falta_plano', dato_cita: 'Dijo que manda el plano al volver' };
+  const ok = { decision: 'seguimiento', motivo_codigo: 'falta_dato_cliente', dato_cita: 'Dijo que manda el plano al volver' };
 
   it('acepta una propuesta completa y recoge los espacios', () => {
     expect(validarEntradaDecision({ ...ok, dato_cita: '  Dijo que   manda el plano ' }, MOTIVOS)).toEqual({
-      decision: 'seguimiento', motivoCodigo: 'falta_plano', motivoTexto: null, datoCita: 'Dijo que manda el plano',
+      decision: 'seguimiento', motivoCodigo: 'falta_dato_cliente', motivoTexto: null, datoCita: 'Dijo que manda el plano',
     });
   });
   it('«otro» exige decir cuál; con un motivo de la lista el texto se ignora', () => {
@@ -351,7 +351,7 @@ describe('calcularAcierto', () => {
     expect(fila(casos, 'ia')).toMatchObject({ revisados: 3, aciertos: 2, porcentaje: 67 });
   });
   it('el acierto de un actor exige decisión Y motivo: la misma decisión con otro motivo no cuenta', () => {
-    const casos = [caso({ sdr: p('seguimiento', 'falta_plano'), ia: p('seguimiento', 'pide_tiempo'), final: p('seguimiento', 'pide_tiempo') })];
+    const casos = [caso({ sdr: p('seguimiento', 'falta_dato_cliente'), ia: p('seguimiento', 'quiere_pensarlo'), final: p('seguimiento', 'quiere_pensarlo') })];
     expect(fila(casos, 'sdr').aciertos).toBe(0);
     expect(fila(casos, 'ia').aciertos).toBe(1);
   });

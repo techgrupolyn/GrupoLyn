@@ -243,7 +243,7 @@ describe('decisión de pase en el prompt (N-1.4)', () => {
     expect(ej6).toMatchObject({ decision: 'seguimiento', excepciones: ['topografo'] });
     expect(ej6.proximos_pasos.map((p) => p.requiere_ernesto)).toEqual([false, true]);
     // Falta el plano (un dato del cliente): seguimiento, y la excepción es otra cosa (alguien que vaya a medir).
-    expect(JSON.stringify(EJEMPLOS[5]!.salida.decision_ia)).toContain('falta_plano');
+    expect(JSON.stringify(EJEMPLOS[5]!.salida.decision_ia)).toContain('falta_dato_cliente');
   });
 
   it('el ejemplo de seguimiento: primer paso a partir del día 20 con la cita que lo justifica (Escenario «Próximos pasos en seguimiento»)', () => {
@@ -260,8 +260,8 @@ describe('decisión de pase en el prompt (N-1.4)', () => {
       'Una fecha solo si el cliente la dio',
       'Es una recomendación: no crea avisos, tareas ni mensajes ni mueve al lead de fase.',
       '### Motivos permitidos por decisión',
-      'seguimiento: falta_plano (Falta el plano)',
-      'descartar: presupuesto_insuficiente (Presupuesto insuficiente sin solución)',
+      'seguimiento: falta_dato_cliente (Falta un dato del cliente)',
+      'descartar: presupuesto_insuficiente (Presupuesto insuficiente)',
       '### Guion del SDR (versión 1)',
       '### Manual de reglas (versión 1)',
       'Ante la mínima duda que pueda cambiar esa conclusión',
@@ -278,7 +278,7 @@ describe('decisión de pase en el prompt (N-1.4)', () => {
     expect(p).toContain('### Manual de reglas (versión 3)\nMANUAL TRES');
     expect(p).toContain('seguimiento: solo_este (Solo este motivo)');
     expect(p).toContain('descartar: (sin motivos configurados)');
-    expect(p).not.toContain('falta_plano (Falta el plano)');
+    expect(p).not.toContain('falta_dato_cliente (Falta un dato del cliente)');
   });
 
   it('el prompt de usuario avisa de que un lead en F2 o más allá no genera decisión, y solo entonces', () => {

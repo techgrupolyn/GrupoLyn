@@ -21,6 +21,11 @@ export interface EntradaLlamada {
   duracionSegundos: number;
   /** Transcripción por turnos, SIN enmascarar. */
   transcripcion: string;
+  /**
+   * Tarjeta a la que una persona asignó la llamada a mano (N-1.0, cuando el teléfono coincidía con varias). Manda sobre el cruce
+   * automático, siempre que esa tarjeta esté entre los leads que se le pasan.
+   */
+  leadAsignado?: string | null;
 }
 
 export interface Dependencias {
@@ -65,7 +70,7 @@ export type ResultadoLlamada =
   | {
       estado: 'procesada';
       clickupTaskId: string;
-      via: 'telefono' | 'email';
+      via: 'telefono' | 'email' | 'manual';
       categoria: Categoria;
       escrituras: ResultadoRecalculo['escrituras'];
       /** Citas o datos que el código descartó (con el motivo) y puntos que revisa una persona. */
@@ -87,7 +92,10 @@ export type ResultadoLlamada =
 export const interaccionDe = (llamadaId: string): string => `netelip:${llamadaId}`;
 
 export async function evaluarLlamadaCaptacion(deps: Dependencias, llamada: EntradaLlamada): Promise<ResultadoLlamada> {
-  const vinculo = vincularLlamadaConLead({ telefono: llamada.telefonoE164, email: llamada.email ?? null }, deps.leads);
+  const asignado = llamada.leadAsignado ? deps.leads.find((l) => l.esTareaPadre && l.clickupTaskId === llamada.leadAsignado) : undefined;
+  const vinculo: ResultadoVinculacion | { estado: 'vinculado'; clickupTaskId: string; via: 'manual' } = asignado
+    ? { estado: 'vinculado', clickupTaskId: asignado.clickupTaskId, via: 'manual' }
+    : vincularLlamadaConLead({ telefono: llamada.telefonoE164, email: llamada.email ?? null }, deps.leads);
   if (vinculo.estado === 'sin_lead') return { estado: 'sin_lead', motivo: vinculo.motivo };
 
   const transcripcion = enmascarar(llamada.transcripcion, [deps.nombreLead(vinculo.clickupTaskId) ?? '']);

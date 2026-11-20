@@ -12,6 +12,7 @@ const MISSED = "'no_contestada','ocupado','colgada','no_disponible'";
 import { registerCalificador } from './calificador/rutas.ts';
 import { reflejoEnClickUp } from './captacion/decision-clickup.ts';
 import { registerDecisionPase } from './captacion/decision-rutas.ts';
+import { registerVinculoLlamadas, urlTarjeta } from './captacion/vinculo-rutas.ts';
 import type { Enviador } from './calificador/proceso.ts';
 import { registerEntrenador } from './entrenador/rutas.ts';
 import type { DriveEntrenador } from './entrenador/proceso.ts';
@@ -193,6 +194,7 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
            CASE WHEN c.contact_status = 'hidden' THEN NULL ELSE COALESCE(c.phone_e164, c.counterpart_phone) END AS phone,
            c.client_id, c.lead_id::text AS lead_id,
            NULLIF(CONCAT_WS(' ', cl.nombre, cl.apellido), '') AS client_name, l.name AS lead_name,
+           vl.estado AS vinculo_estado, vl.clickup_task_id AS vinculo_tarea, vl.lead_nombre AS vinculo_nombre, vl.via AS vinculo_via,
            c.agent_extension, COALESCE(NULLIF(CONCAT_WS(' ', e.nombre, e.apellido), ''), x.label) AS agent_name,
            CASE t.status WHEN 'processing' THEN 'pending' ELSE t.status END AS transcription_status,
            t.status = 'processing' AS transcribing, t.progress AS transcription_progress,
@@ -200,18 +202,23 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
     FROM netelip_calls c
     LEFT JOIN clientes cl ON cl.id = c.client_id
     LEFT JOIN crm_leads l ON l.id = c.lead_id
+    LEFT JOIN captacion_llamada_lead vl ON vl.call_id = c.id
     LEFT JOIN netelip_extensions x ON x.extension = c.agent_extension
     LEFT JOIN empleados e ON e.id = x.empleado_id
     LEFT JOIN netelip_call_transcriptions t ON t.call_id = c.id
     -- Una sola evaluación por fila: la automática más reciente (las reevaluaciones no cambian el listado).
     LEFT JOIN LATERAL (SELECT * FROM llamada_evaluacion x WHERE x.llamada_id = c.id ORDER BY x.reevaluacion, x.creado_en DESC LIMIT 1) ev ON TRUE`;
 
-  type CallRow = Record<string, unknown> & { client_id: string | null; lead_id: string | null; client_name: string | null; lead_name: string | null; agent_extension: string | null; agent_name: string | null };
+  type CallRow = Record<string, unknown> & { client_id: string | null; lead_id: string | null; client_name: string | null; lead_name: string | null; vinculo_estado?: string | null; vinculo_tarea?: string | null; vinculo_nombre?: string | null; vinculo_via?: string | null; agent_extension: string | null; agent_name: string | null };
   const toItem = (row: CallRow) => ({
     id: Number(row.id), external_id: row.external_id, via: row.via, direction: row.direction, occurred_at: row.occurred_at,
     phone: row.phone, contact_status: row.contact_status,
     contact: row.client_id ? { type: 'client', id: row.client_id, name: row.client_name || '' }
       : row.lead_id ? { type: 'lead', id: row.lead_id, name: row.lead_name || '' } : null,
+    // N-1.0: el lead de «Contacto de Reforma» al que pertenece la llamada, y el motivo si todavía no tiene uno.
+    captacion: row.vinculo_estado === 'vinculada' && row.vinculo_tarea
+      ? { status: 'vinculada', via: row.vinculo_via, task_id: row.vinculo_tarea, name: row.vinculo_nombre || '', url: urlTarjeta(row.vinculo_tarea) }
+      : row.vinculo_estado ? { status: row.vinculo_estado } : null,
     agent: row.agent_extension ? { extension: row.agent_extension, name: row.agent_name || null } : null,
     duration_seconds: row.duration_seconds, call_status: row.call_status, transcription_status: row.transcription_status || null,
     // Resultado de la llamada (las grabadas son siempre contestadas) y si tiene grabación.
@@ -243,11 +250,11 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
       const name = `$${params.length}`;
       let phone = 'FALSE';
       if (digits.length >= 3) { params.push(`%${digits}%`); phone = `c.phone_e164 LIKE $${params.length}`; }
-      base.push(`(CONCAT_WS(' ', cl.nombre, cl.apellido) ILIKE ${name} OR l.name ILIKE ${name} OR ${phone})`);
+      base.push(`(CONCAT_WS(' ', cl.nombre, cl.apellido) ILIKE ${name} OR l.name ILIKE ${name} OR vl.lead_nombre ILIKE ${name} OR ${phone})`);
     }
     const table = [...base];
-    if (q.contact === 'identified') table.push("c.contact_status = 'matched'");
-    if (q.contact === 'unidentified') table.push("c.contact_status <> 'matched'");
+    if (q.contact === 'identified') table.push("(c.contact_status = 'matched' OR vl.estado = 'vinculada')");
+    if (q.contact === 'unidentified') table.push("(c.contact_status <> 'matched' AND vl.estado IS DISTINCT FROM 'vinculada')");
     if (q.contact_status && ['matched', 'unknown', 'hidden', 'multiple'].includes(q.contact_status)) add(table, 'c.contact_status = ?', q.contact_status);
     if (q.transcription === 'pending') table.push("t.status IN ('pending','processing')");
     else if (q.transcription === 'completed' || q.transcription === 'failed') add(table, 't.status = ?', q.transcription);
@@ -258,12 +265,13 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
     const order = q.sort === 'occurred_at_asc' ? 'c.occurred_at ASC, c.id ASC' : q.sort === 'duration_desc' ? 'c.duration_seconds DESC, c.id DESC' : 'c.occurred_at DESC, c.id DESC';
     try {
       const joins = `FROM netelip_calls c LEFT JOIN clientes cl ON cl.id = c.client_id LEFT JOIN crm_leads l ON l.id = c.lead_id
+        LEFT JOIN captacion_llamada_lead vl ON vl.call_id = c.id
         LEFT JOIN netelip_call_transcriptions t ON t.call_id = c.id`;
       const [rows, total, metrics] = await Promise.all([
         pool.query<CallRow>(`${CALL_SELECT} ${where(table)} ORDER BY ${order} LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, params),
         pool.query<{ total: string }>(`SELECT COUNT(*) AS total ${joins} ${where(table)}`, params),
         pool.query<Record<string, string>>(`SELECT COUNT(*) AS calls,
-            COUNT(*) FILTER (WHERE c.contact_status <> 'matched') AS unidentified,
+            COUNT(*) FILTER (WHERE c.contact_status <> 'matched' AND vl.estado IS DISTINCT FROM 'vinculada') AS unidentified,
             COUNT(*) FILTER (WHERE t.status IN ('pending','processing')) AS transcription_pending,
             COUNT(*) FILTER (WHERE t.status = 'failed') AS transcription_failed,
             COUNT(*) FILTER (WHERE c.resultado IN (${MISSED})) AS missed
@@ -352,5 +360,7 @@ export function registerNetelipCalls(app: Express, deps: Dependencies): void {
   registerCalificador(app, { pool, access, role: deps.role, actor: deps.actor, enviar: deps.enviar, fail, canReadTranscripts: (role) => canReadTranscripts(role, env), env });
   registerEntrenador(app, { pool, access, role: deps.role, actor: deps.actor, fail, env, drive: deps.entrenadorDrive });
   // N-1.4 · decisión de pase del SDR: formulario en el detalle de la llamada, bandeja de Ernesto y acierto.
+  // N-1.0 · llamadas con varias coincidencias entre los leads de ClickUp y su asignación a mano.
+  registerVinculoLlamadas(app, { pool, access, role: deps.role, actor: deps.actor, fail, env });
   registerDecisionPase(app, { pool, access, role: deps.role, actor: deps.actor, fail, canReadTranscripts: (role) => canReadTranscripts(role, env), env, alRevisar: reflejoEnClickUp(pool, env) });
 }

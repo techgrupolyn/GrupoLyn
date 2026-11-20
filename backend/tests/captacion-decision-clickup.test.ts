@@ -49,9 +49,9 @@ describe.skipIf(!hayBaseDePruebas)('sincronizarDecisionPase', () => {
     );
     await registrarDecisionIA(db, {
       leadId: 'T1', llamadaId: 'netelip:1', versionGuion: 1, versionManual: 1, versionPrompt: 'v', origen: 'nuevo',
-      decision: { decision: 'seguimiento', motivos: [{ codigo: 'falta_plano', texto: null, cita: 'el plano' }], excepciones: [], dudas: [], pendienteErnesto: null, proximosPasos: [] },
+      decision: { decision: 'seguimiento', motivos: [{ codigo: 'falta_dato_cliente', texto: null, cita: 'el plano' }], excepciones: [], dudas: [], pendienteErnesto: null, proximosPasos: [] },
     });
-    await registrarPropuestaSDR(db, { llamadaId: 'netelip:1', usuarioId: '5', usuarioNombre: 'Sara', entrada: { decision: 'seguimiento', motivoCodigo: 'falta_plano', motivoTexto: null, datoCita: 'x' } });
+    await registrarPropuestaSDR(db, { llamadaId: 'netelip:1', usuarioId: '5', usuarioNombre: 'Sara', entrada: { decision: 'seguimiento', motivoCodigo: 'falta_dato_cliente', motivoTexto: null, datoCita: 'x' } });
     await confirmarCaso(db, { llamadaId: 'netelip:1', revisor: { usuarioId: '7', usuarioNombre: nombre } });
   }
 

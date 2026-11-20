@@ -6,24 +6,28 @@ import type { Decision } from './decision.ts';
 export const DECISION_TABLES = ['decision_motivo_config', 'decision_contexto_config', 'decision_lead', 'validacion_decision'] as const;
 
 /**
- * Lista de motivos de la versión 1. PROVISIONAL: no tengo el borrador del documento de dudas de Alex (P-04). Es la semilla de la base
- * y también lo que usa el prompt cuando se arma sin base (pruebas); la lista real se publica en decision_motivo_config con una versión
- * nueva, sin desplegar.
+ * Lista de motivos de la versión 1: la fijada por Jean el 19/11/2026 en N-1.4 (P-04), cuatro decisiones con motivos fijos y «Otro»
+ * (que existe siempre y no se configura). Es la semilla de la base y lo que usa el prompt cuando se arma sin base (pruebas). Cuando
+ * el equipo identifique motivos nuevos se publica una versión mayor en decision_motivo_config, sin desplegar.
  */
 export const MOTIVOS_V1: ReadonlyArray<readonly [Decision, string, string]> = [
-  ['pasar_a_reunion', 'cumple_criterios', 'Cumple los criterios de la sesión de conceptos'],
-  ['pasar_a_reunion', 'cita_agendada', 'Cita agendada en la llamada'],
-  ['derivar_partners', 'presupuesto_partners', 'Presupuesto dentro del rango de Partners'],
-  ['derivar_partners', 'alcance_partners', 'Alcance parcial que encaja en Partners'],
-  ['seguimiento', 'falta_plano', 'Falta el plano'],
-  ['seguimiento', 'falta_decisor', 'Falta que decida otra persona'],
-  ['seguimiento', 'pide_tiempo', 'Pide tiempo para decidir'],
-  ['seguimiento', 'compra_pendiente', 'Compra de la vivienda pendiente'],
-  ['seguimiento', 'sin_respuesta', 'No contesta'],
-  ['descartar', 'presupuesto_insuficiente', 'Presupuesto insuficiente sin solución'],
-  ['descartar', 'fuera_de_zona', 'Fuera de la zona de trabajo'],
-  ['descartar', 'no_interesado', 'El cliente decide no seguir'],
-  ['descartar', 'no_es_reforma', 'No es una reforma de vivienda'],
+  ['pasar_a_reunion', 'presupuesto_suficiente', 'Presupuesto suficiente'],
+  ['pasar_a_reunion', 'zona_tipo_reforma', 'Zona y tipo de reforma'],
+  ['pasar_a_reunion', 'decisores_disponibles', 'Decisores disponibles'],
+  ['pasar_a_reunion', 'urgencia_real', 'Urgencia real'],
+  ['seguimiento', 'falta_dato_cliente', 'Falta un dato del cliente'],
+  ['seguimiento', 'falta_otro_decisor', 'Falta el otro decisor'],
+  ['seguimiento', 'plazo_largo', 'Plazo largo'],
+  ['seguimiento', 'quiere_pensarlo', 'Quiere pensarlo'],
+  ['derivar_partners', 'obra_pequena', 'Obra pequeña'],
+  ['derivar_partners', 'presupuesto_bajo_lyn', 'Presupuesto bajo para LYN'],
+  ['derivar_partners', 'servicio_fuera_lyn', 'Servicio fuera de LYN'],
+  ['descartar', 'presupuesto_insuficiente', 'Presupuesto insuficiente'],
+  ['descartar', 'fuera_de_zona', 'Fuera de zona'],
+  ['descartar', 'no_responde', 'No responde'],
+  ['descartar', 'solo_busca_precio', 'Solo busca precio'],
+  ['descartar', 'datos_falsos', 'Datos falsos'],
+  ['descartar', 'cliente_no_sigue', 'El cliente no sigue'],
 ];
 
 /** Las filas de la versión 1 como el VALUES del INSERT (el orden dentro de cada decisión es el de la lista). */
@@ -36,8 +40,8 @@ const filasMotivosV1 = (): string => {
 };
 
 /**
- * Texto de la versión 1 del manual de reglas. PROVISIONAL: lo armé con las reglas explícitas del ticket (escalado, descartes,
- * próximos pasos) porque no tengo el documento «Reglas de escalado» de Alex. Se sustituye publicando una versión nueva en
+ * Texto de la versión 1 del manual de reglas: las reglas explícitas de N-1.4 (escalado, descartes, próximos pasos). El guion completo
+ * (versión 2, que ya trae la sección «Reglas de escalado») se carga aparte. Se sustituye publicando una versión nueva en
  * `decision_contexto_config` (una fila con versión mayor), sin desplegar.
  */
 export const MANUAL_V1_PROVISIONAL = `MANUAL DE REGLAS v1 (provisional)
@@ -57,7 +61,7 @@ export const GUION_V1_PENDIENTE = 'GUION v1: pendiente de cargar el texto del «
 export async function ensureDecision(pool: { query(sql: string): Promise<unknown> }): Promise<void> {
   await pool.query(`
     -- Lista cerrada de motivos de cada decisión, configurable (P-04). Versionada: cambiar la lista es publicar una versión nueva
-    -- (el código lee la de mayor versión), sin desplegar. «otro» existe siempre y no se configura. Versión 1 PROVISIONAL.
+    -- (el código lee la de mayor versión), sin desplegar. «otro» existe siempre y no se configura. Versión 1: la lista fijada por Jean el 19/11.
     CREATE TABLE IF NOT EXISTS decision_motivo_config (
       version        SMALLINT     NOT NULL,
       decision       TEXT         NOT NULL,

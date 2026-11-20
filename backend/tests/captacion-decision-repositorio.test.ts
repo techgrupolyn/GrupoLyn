@@ -16,10 +16,10 @@ const PASO: ProximoPaso = {
   orden: 1, accion: 'Llamar para pedir el plano', cuando: { tipo: 'fecha_cliente', valor: 'a partir del día 20' }, canal: 'llamada', quePedir: 'el plano', requiereErnesto: false, cita: 'vuelvo el 20',
 };
 const ia = (o: Partial<DecisionIA> = {}): DecisionIA => ({
-  decision: 'seguimiento', motivos: [{ codigo: 'falta_plano', texto: null, cita: 'te mando el plano cuando vuelva de vacaciones' }],
+  decision: 'seguimiento', motivos: [{ codigo: 'falta_dato_cliente', texto: null, cita: 'te mando el plano cuando vuelva de vacaciones' }],
   excepciones: [], dudas: [], pendienteErnesto: null, proximosPasos: [PASO], ...o,
 });
-const sdr = (o: Partial<EntradaDecision> = {}): EntradaDecision => ({ decision: 'seguimiento', motivoCodigo: 'falta_plano', motivoTexto: null, datoCita: 'Dijo que manda el plano al volver', ...o });
+const sdr = (o: Partial<EntradaDecision> = {}): EntradaDecision => ({ decision: 'seguimiento', motivoCodigo: 'falta_dato_cliente', motivoTexto: null, datoCita: 'Dijo que manda el plano al volver', ...o });
 const ERNESTO: Revisor = { usuarioId: '77', usuarioNombre: 'Ernesto' };
 
 describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
@@ -59,7 +59,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
   it('trae sembrada la lista de motivos de las cuatro decisiones (provisional) y «otro» no se puede configurar', async () => {
     const m = await cargarMotivos(db);
     for (const d of ['pasar_a_reunion', 'derivar_partners', 'seguimiento', 'descartar'] as const) expect(m[d].length, d).toBeGreaterThan(0);
-    expect(m.seguimiento.map((x) => x.codigo)).toContain('falta_plano');
+    expect(m.seguimiento.map((x) => x.codigo)).toContain('falta_dato_cliente');
     expect(m.descartar.map((x) => x.codigo)).toContain('presupuesto_insuficiente');
     await expect(base.query("INSERT INTO decision_motivo_config (version, decision, codigo, etiqueta, orden) VALUES (9, 'seguimiento', 'otro', 'Otro', 1)")).rejects.toThrow();
   });
@@ -74,7 +74,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
 
   it('los motivos salen en el orden configurado', async () => {
     const m = await cargarMotivos(db);
-    expect(m.seguimiento.map((x) => x.codigo)).toEqual(['falta_plano', 'falta_decisor', 'pide_tiempo', 'compra_pendiente', 'sin_respuesta']);
+    expect(m.seguimiento.map((x) => x.codigo)).toEqual(['falta_dato_cliente', 'falta_otro_decisor', 'plazo_largo', 'quiere_pensarlo']);
   });
 
   it('el guion y el manual vigentes son la mayor versión de cada tipo; un guion nuevo no exige desplegar', async () => {
@@ -98,7 +98,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
     await base.query("INSERT INTO decision_motivo_config (version, decision, codigo, etiqueta, orden) VALUES (2, 'seguimiento', 'nuevo_motivo', 'Nuevo', 1)");
     await ensureCaptacion(base);
     await ensureCaptacion(base);
-    expect(await contar('decision_motivo_config', 'version = 1')).toBe(13);
+    expect(await contar('decision_motivo_config', 'version = 1')).toBe(17);
     expect(await contar('decision_contexto_config')).toBe(2);
     expect((await cargarMotivos(db)).seguimiento).toEqual([{ codigo: 'nuevo_motivo', etiqueta: 'Nuevo' }]);
   });
@@ -111,7 +111,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
     const ctx = await cargarContexto(db);
     expect(await guardarIA(id, ia({ excepciones: ['descuento'], dudas: ['encaje_incierto'] }), { versionGuion: ctx.guion.version, versionManual: ctx.manual.version })).toBe(true);
     const f = (await base.query('SELECT * FROM decision_lead WHERE llamada_id = $1', [id])).rows[0]!;
-    expect(f).toMatchObject({ actor: 'ia', decision: 'seguimiento', motivo_codigo: 'falta_plano', dato_cita: 'te mando el plano cuando vuelva de vacaciones', version_guion: 2, version_manual: 1, version_prompt: 'captacion-v5', origen: 'nuevo' });
+    expect(f).toMatchObject({ actor: 'ia', decision: 'seguimiento', motivo_codigo: 'falta_dato_cliente', dato_cita: 'te mando el plano cuando vuelva de vacaciones', version_guion: 2, version_manual: 1, version_prompt: 'captacion-v5', origen: 'nuevo' });
     expect(f.excepciones).toEqual(['descuento']);
     expect(f.dudas).toEqual(['encaje_incierto']);
     expect(f.proximos_pasos).toEqual([PASO]);
@@ -144,9 +144,9 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
   it('el esquema exige las versiones del guion y del manual a la IA, y solo ella puede ser histórica', async () => {
     const insertar = (cols: string, vals: string) => base.query(`INSERT INTO decision_lead (lead_id, llamada_id, ${cols}) VALUES ('T1', 'x', ${vals})`);
     await expect(insertar('actor, decision', "'ia', 'seguimiento'")).rejects.toThrow();
-    await expect(insertar('actor, decision, motivo_codigo, dato_cita, origen', "'sdr', 'seguimiento', 'falta_plano', 'dato', 'historico'")).rejects.toThrow();
-    await expect(insertar('actor, decision, motivo_codigo, dato_cita, origen', "'sdr', 'seguimiento', 'falta_plano', 'dato', 'nuevo'")).resolves.toBeDefined();
-    await expect(insertar('actor, decision, motivo_codigo', "'sdr', 'seguimiento', 'falta_plano'")).rejects.toThrow();
+    await expect(insertar('actor, decision, motivo_codigo, dato_cita, origen', "'sdr', 'seguimiento', 'falta_dato_cliente', 'dato', 'historico'")).rejects.toThrow();
+    await expect(insertar('actor, decision, motivo_codigo, dato_cita, origen', "'sdr', 'seguimiento', 'falta_dato_cliente', 'dato', 'nuevo'")).resolves.toBeDefined();
+    await expect(insertar('actor, decision, motivo_codigo', "'sdr', 'seguimiento', 'falta_dato_cliente'")).rejects.toThrow();
     await expect(insertar('actor, decision, dato_cita', "'sdr', 'seguimiento', 'dato'")).rejects.toThrow();
     await expect(insertar('actor, decision, dato_cita, a_favor', "'ernesto', 'seguimiento', 'dato', 'luna'")).rejects.toThrow();
     await expect(insertar('actor, decision, dato_cita, motivo_codigo, a_favor', "'sdr', 'seguimiento', 'dato', 'm', 'ia'")).rejects.toThrow();
@@ -176,7 +176,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
   it('el SDR registra UNA vez por llamada: la segunda se rechaza y no cambia la primera', async () => {
     const id = await llamadaDeLead(1);
     await guardarSDR(id);
-    await expect(guardarSDR(id, sdr({ decision: 'descartar', motivoCodigo: 'no_interesado' }))).rejects.toThrow(YaRegistrada);
+    await expect(guardarSDR(id, sdr({ decision: 'descartar', motivoCodigo: 'cliente_no_sigue' }))).rejects.toThrow(YaRegistrada);
     expect(await contar('decision_lead', "actor = 'sdr'")).toBe(1);
     expect((await base.query("SELECT decision FROM decision_lead WHERE actor = 'sdr'")).rows[0]!.decision).toBe('seguimiento');
   });
@@ -218,7 +218,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
   });
 
   it('Escenario «Discrepancia»: SDR descarta e IA deriva → pendiente con motivo «discrepancia»', async () => {
-    const id = await caso(1, ia({ decision: 'derivar_partners', motivos: [{ codigo: 'presupuesto_partners', texto: null, cita: 'entre uno y dos mil' }] }), sdr({ decision: 'descartar', motivoCodigo: 'presupuesto_insuficiente' }));
+    const id = await caso(1, ia({ decision: 'derivar_partners', motivos: [{ codigo: 'presupuesto_bajo_lyn', texto: null, cita: 'entre uno y dos mil' }] }), sdr({ decision: 'descartar', motivoCodigo: 'presupuesto_insuficiente' }));
     expect((await base.query('SELECT coincidencia_sdr_ia, motivo_escalado, estado FROM validacion_decision WHERE llamada_id = $1', [id])).rows[0]).toEqual({ coincidencia_sdr_ia: false, motivo_escalado: 'discrepancia', estado: 'pendiente_ernesto' });
   });
 
@@ -285,7 +285,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
     await confirmarCaso(db, { llamadaId: a, revisor: ERNESTO });
     const pendientes = await bandeja(db);
     expect(pendientes.map((f) => f.llamadaId)).toEqual([b, c]);
-    expect(pendientes[0]).toMatchObject({ leadId: 'T1', coincide: false, motivoEscalado: 'discrepancia', estado: 'pendiente_ernesto', sdr: { decision: 'seguimiento', motivoCodigo: 'falta_plano' }, ia: { decision: 'descartar', motivoCodigo: 'fuera_de_zona' }, revisadoEn: null });
+    expect(pendientes[0]).toMatchObject({ leadId: 'T1', coincide: false, motivoEscalado: 'discrepancia', estado: 'pendiente_ernesto', sdr: { decision: 'seguimiento', motivoCodigo: 'falta_dato_cliente' }, ia: { decision: 'descartar', motivoCodigo: 'fuera_de_zona' }, revisadoEn: null });
     expect(pendientes[0]!.fechaLlamada).toBe('2026-11-17T10:00:00.000Z');
     expect((await bandeja(db, { estado: 'revisados' })).map((f) => [f.llamadaId, f.estado])).toEqual([[a, 'validada']]);
     expect((await bandeja(db, { estado: 'todos' })).map((f) => f.llamadaId)).toEqual([b, c, a]);
@@ -321,7 +321,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
   it('Ernesto confirma un caso en que SDR e IA coinciden: queda «validada» y su fila (la final) junto a las del SDR y la IA, con los pasos de la IA', async () => {
     const id = await caso(1);
     const fila = await confirmarCaso(db, { llamadaId: id, revisor: ERNESTO });
-    expect(fila).toMatchObject({ actor: 'ernesto', decision: 'seguimiento', motivoCodigo: 'falta_plano', aFavor: null, usuarioId: '77', usuarioNombre: 'Ernesto', versionGuion: 1, versionManual: 1, proximosPasos: [PASO] });
+    expect(fila).toMatchObject({ actor: 'ernesto', decision: 'seguimiento', motivoCodigo: 'falta_dato_cliente', aFavor: null, usuarioId: '77', usuarioNombre: 'Ernesto', versionGuion: 1, versionManual: 1, proximosPasos: [PASO] });
     const v = (await base.query('SELECT estado, revisado_por, revisado_en FROM validacion_decision')).rows[0]!;
     expect(v).toMatchObject({ estado: 'validada', revisado_por: '77' });
     expect(v.revisado_en).not.toBeNull();
@@ -329,7 +329,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
   });
 
   it('si SDR e IA no coinciden en decisión o en motivo, confirmar exige decir con quién; sin decirlo no se guarda nada', async () => {
-    const id = await caso(1, ia({ decision: 'derivar_partners', motivos: [{ codigo: 'presupuesto_partners', texto: null, cita: 'unos treinta mil euros' }] }), sdr({ decision: 'descartar', motivoCodigo: 'presupuesto_insuficiente' }));
+    const id = await caso(1, ia({ decision: 'derivar_partners', motivos: [{ codigo: 'presupuesto_bajo_lyn', texto: null, cita: 'unos treinta mil euros' }] }), sdr({ decision: 'descartar', motivoCodigo: 'presupuesto_insuficiente' }));
     await expect(confirmarCaso(db, { llamadaId: id, revisor: ERNESTO })).rejects.toThrow('indica con quién estás de acuerdo');
     await expect(confirmarCaso(db, { llamadaId: id, revisor: ERNESTO, aFavor: 'nadie' })).rejects.toThrow('«a favor» debe ser sdr o ia');
     expect(await contar('decision_lead', "actor = 'ernesto'")).toBe(0);
@@ -340,16 +340,16 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
   });
 
   it('con la misma decisión pero otro motivo es una discrepancia: también hay que elegir y se adopta el motivo de quien se elija', async () => {
-    const id = await caso(1, ia({ motivos: [{ codigo: 'pide_tiempo', texto: null, cita: 'necesito pensarlo con calma' }] }), sdr({ motivoCodigo: 'falta_plano' }));
+    const id = await caso(1, ia({ motivos: [{ codigo: 'quiere_pensarlo', texto: null, cita: 'necesito pensarlo con calma' }] }), sdr({ motivoCodigo: 'falta_dato_cliente' }));
     expect((await base.query('SELECT coincidencia_sdr_ia, motivo_escalado FROM validacion_decision')).rows[0]).toEqual({ coincidencia_sdr_ia: false, motivo_escalado: 'discrepancia' });
     expect((await bandeja(db))[0]).toMatchObject({ coincide: false, motivoEscalado: 'discrepancia' });
     await expect(confirmarCaso(db, { llamadaId: id, revisor: ERNESTO })).rejects.toThrow(EntradaInvalida);
     const fila = await confirmarCaso(db, { llamadaId: id, revisor: ERNESTO, aFavor: 'ia' });
-    expect(fila).toMatchObject({ decision: 'seguimiento', motivoCodigo: 'pide_tiempo', aFavor: 'ia', datoCita: 'necesito pensarlo con calma' });
+    expect(fila).toMatchObject({ decision: 'seguimiento', motivoCodigo: 'quiere_pensarlo', aFavor: 'ia', datoCita: 'necesito pensarlo con calma' });
   });
 
   it('si la IA adoptada no tenía ningún dato citado, la confirmación deja constancia sin inventar uno', async () => {
-    const id = await caso(1, ia({ motivos: [], pendienteErnesto: { queDebeDecidir: 'x' } }), sdr({ motivoCodigo: 'falta_plano' }));
+    const id = await caso(1, ia({ motivos: [], pendienteErnesto: { queDebeDecidir: 'x' } }), sdr({ motivoCodigo: 'falta_dato_cliente' }));
     const fila = await confirmarCaso(db, { llamadaId: id, revisor: ERNESTO, aFavor: 'ia' });
     expect(fila.datoCita).toBe('Confirmado sin cambios');
     expect(fila.motivoCodigo).toBeNull();
@@ -359,7 +359,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
     const id = await caso(1);
     await confirmarCaso(db, { llamadaId: id, revisor: ERNESTO });
     await expect(confirmarCaso(db, { llamadaId: id, revisor: ERNESTO })).rejects.toThrow(CasoYaRevisado);
-    await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'no_interesado', dato_cita: 'x' } })).rejects.toThrow(CasoYaRevisado);
+    await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'cliente_no_sigue', dato_cita: 'x' } })).rejects.toThrow(CasoYaRevisado);
     await expect(confirmarCaso(db, { llamadaId: llamadaIdDe(404), revisor: ERNESTO })).rejects.toThrow(CasoNoEncontrado);
     expect(await contar('decision_lead', "actor = 'ernesto'")).toBe(1);
   });
@@ -369,11 +369,11 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
   it('Escenario «Corrección de Ernesto»: sin el dato que cambia su criterio no se guarda la corrección', async () => {
     const id = await caso(1);
     for (const dato of [undefined, '', '   ']) {
-      await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'no_interesado', dato_cita: dato } })).rejects.toThrow('Falta el dato');
+      await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'cliente_no_sigue', dato_cita: dato } })).rejects.toThrow('Falta el dato');
     }
-    await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { motivo_codigo: 'no_interesado', dato_cita: 'x' } })).rejects.toThrow('La decisión debe ser');
+    await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { motivo_codigo: 'cliente_no_sigue', dato_cita: 'x' } })).rejects.toThrow('La decisión debe ser');
     await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', dato_cita: 'x' } })).rejects.toThrow('El motivo debe ser');
-    await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'falta_plano', dato_cita: 'x' } })).rejects.toThrow('El motivo debe ser');
+    await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'falta_dato_cliente', dato_cita: 'x' } })).rejects.toThrow('El motivo debe ser');
     await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'otro', dato_cita: 'x' } })).rejects.toThrow('hay que escribir cuál');
     expect(await contar('decision_lead', "actor = 'ernesto'")).toBe(0);
     expect((await base.query('SELECT estado FROM validacion_decision')).rows[0]!.estado).toBe('pendiente_ernesto');
@@ -381,30 +381,30 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
 
   it('corrige con decisión, motivo y dato: queda «corregida» con su fila y, si no edita los pasos, los de la IA', async () => {
     const id = await caso(1);
-    const fila = await corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'no_interesado', dato_cita: 'El cliente dijo que ya contrató a otra empresa' } });
-    expect(fila).toMatchObject({ actor: 'ernesto', decision: 'descartar', motivoCodigo: 'no_interesado', datoCita: 'El cliente dijo que ya contrató a otra empresa', aFavor: null, proximosPasos: [PASO] });
+    const fila = await corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'cliente_no_sigue', dato_cita: 'El cliente dijo que ya contrató a otra empresa' } });
+    expect(fila).toMatchObject({ actor: 'ernesto', decision: 'descartar', motivoCodigo: 'cliente_no_sigue', datoCita: 'El cliente dijo que ya contrató a otra empresa', aFavor: null, proximosPasos: [PASO] });
     expect((await base.query('SELECT estado, revisado_por FROM validacion_decision')).rows[0]).toEqual({ estado: 'corregida', revisado_por: '77' });
   });
 
   it('Ernesto puede editar los próximos pasos al corregir; deben ser válidos (hasta 3)', async () => {
     const id = await caso(1);
-    await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'seguimiento', motivo_codigo: 'falta_plano', dato_cita: 'x' }, proximosPasos: [{ accion: '' }] })).rejects.toThrow('El próximo paso 1 está incompleto');
+    await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'seguimiento', motivo_codigo: 'falta_dato_cliente', dato_cita: 'x' }, proximosPasos: [{ accion: '' }] })).rejects.toThrow('El próximo paso 1 está incompleto');
     expect(await contar('decision_lead', "actor = 'ernesto'")).toBe(0);
     const fila = await corregirCaso(db, {
-      llamadaId: id, revisor: ERNESTO, entrada: { decision: 'seguimiento', motivo_codigo: 'falta_plano', dato_cita: 'Nuevo dato' },
+      llamadaId: id, revisor: ERNESTO, entrada: { decision: 'seguimiento', motivo_codigo: 'falta_dato_cliente', dato_cita: 'Nuevo dato' },
       proximosPasos: [{ accion: 'Escribir por WhatsApp', cuando: { tipo: 'plazo_guion', valor: 'mañana' }, canal: 'whatsapp', requiere_ernesto: false }],
     });
     expect(fila.proximosPasos).toEqual([{ orden: 1, accion: 'Escribir por WhatsApp', cuando: { tipo: 'plazo_guion', valor: 'mañana' }, canal: 'whatsapp', quePedir: null, requiereErnesto: false, cita: null }]);
     // Una lista vacía también es una edición: Ernesto quita los pasos.
     const id2 = await caso(2);
-    const sinPasos = await corregirCaso(db, { llamadaId: id2, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'no_interesado', dato_cita: 'x' }, proximosPasos: [] });
+    const sinPasos = await corregirCaso(db, { llamadaId: id2, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'cliente_no_sigue', dato_cita: 'x' }, proximosPasos: [] });
     expect(sinPasos.proximosPasos).toEqual([]);
   });
 
   it('la lista de motivos de la corrección es la configurada: una versión nueva cambia lo que se acepta', async () => {
     const id = await caso(1);
     await base.query("INSERT INTO decision_motivo_config (version, decision, codigo, etiqueta, orden) VALUES (2, 'descartar', 'motivo_de_la_v2', 'De la v2', 1)");
-    await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'no_interesado', dato_cita: 'x' } })).rejects.toThrow('El motivo debe ser');
+    await expect(corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'cliente_no_sigue', dato_cita: 'x' } })).rejects.toThrow('El motivo debe ser');
     const f = await corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'motivo_de_la_v2', dato_cita: 'x' } });
     expect(f.motivoCodigo).toBe('motivo_de_la_v2');
   });
@@ -415,7 +415,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
     for (let n = 1; n <= 10; n++) {
       const id = await caso(n);
       if (n <= 9) await confirmarCaso(db, { llamadaId: id, revisor: ERNESTO });
-      else await corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'no_interesado', dato_cita: 'cambió de idea' } });
+      else await corregirCaso(db, { llamadaId: id, revisor: ERNESTO, entrada: { decision: 'descartar', motivo_codigo: 'cliente_no_sigue', dato_cita: 'cambió de idea' } });
     }
     // 50 llamadas de la calibración con el histórico: decisión de la IA como `historico`, sin caso ni revisión.
     for (let n = 100; n < 150; n++) await guardarIA(await llamadaDeLead(n), ia(), { origen: 'historico' });
@@ -432,7 +432,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
   });
 
   it('el acierto de cada actor mira decisión y motivo finales de Ernesto', async () => {
-    const id = await caso(1, ia({ decision: 'derivar_partners', motivos: [{ codigo: 'presupuesto_partners', texto: null, cita: 'unos treinta mil euros' }] }), sdr({ decision: 'descartar', motivoCodigo: 'presupuesto_insuficiente' }));
+    const id = await caso(1, ia({ decision: 'derivar_partners', motivos: [{ codigo: 'presupuesto_bajo_lyn', texto: null, cita: 'unos treinta mil euros' }] }), sdr({ decision: 'descartar', motivoCodigo: 'presupuesto_insuficiente' }));
     await confirmarCaso(db, { llamadaId: id, revisor: ERNESTO, aFavor: 'ia' });
     const filas = await acierto(db);
     expect(filas.find((f) => f.actor === 'coincidentes')).toMatchObject({ revisados: 0, porcentaje: null });
@@ -449,7 +449,7 @@ describe.skipIf(!hayBaseDePruebas)('decisión de pase contra Postgres', () => {
     await confirmarCaso(db, { llamadaId: id, revisor: ERNESTO });
     expect(await decisionFinalDelLead(db, 'T1')).toBe('Seguimiento · Ernesto');
     const id2 = await caso(2);
-    await corregirCaso(db, { llamadaId: id2, revisor: { usuarioId: '8', usuarioNombre: 'Dirección' }, entrada: { decision: 'pasar_a_reunion', motivo_codigo: 'cumple_criterios', dato_cita: 'Ya tiene el plano y los decisores' } });
+    await corregirCaso(db, { llamadaId: id2, revisor: { usuarioId: '8', usuarioNombre: 'Dirección' }, entrada: { decision: 'pasar_a_reunion', motivo_codigo: 'presupuesto_suficiente', dato_cita: 'Ya tiene el plano y los decisores' } });
     expect(await decisionFinalDelLead(db, 'T1')).toBe('Pasar a reunión · Dirección');
     expect(await decisionFinalDelLead(db, 'OTRO')).toBeNull();
   });

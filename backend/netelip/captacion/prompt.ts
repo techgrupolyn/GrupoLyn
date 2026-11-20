@@ -159,11 +159,11 @@ const motivo = (codigo: string, cita: string, texto: string | null = null) => ({
 const SIN_EXCEPCIONES = { excepciones: [], dudas: [], pendiente_ernesto: null } as const;
 
 const DECISION_EJ1 = {
-  decision: 'pasar_a_reunion', motivos: [motivo('cita_agendada', 'nos vemos el jueves a las cinco en vuestra oficina')], ...SIN_EXCEPCIONES,
+  decision: 'pasar_a_reunion', motivos: [motivo('decisores_disponibles', 'nos vemos el jueves a las cinco en vuestra oficina')], ...SIN_EXCEPCIONES,
   proximos_pasos: [paso(1, 'Confirmar la reunión del jueves a las cinco en la oficina', 'fecha_cliente', 'jueves 12 de noviembre a las cinco', 'llamada', 'nos vemos el jueves a las cinco en vuestra oficina', 'que vengan los dos decisores')],
 };
 const DECISION_EJ2 = {
-  decision: 'seguimiento', motivos: [motivo('falta_decisor', 'mi mujer no lo ve claro y sin ella no decido')], ...SIN_EXCEPCIONES,
+  decision: 'seguimiento', motivos: [motivo('falta_otro_decisor', 'mi mujer no lo ve claro y sin ella no decido')], ...SIN_EXCEPCIONES,
   proximos_pasos: [paso(1, 'Proponer una llamada con los dos para resolver sus dudas', 'plazo_guion', 'en tres o cuatro días', 'llamada', 'Tengo que comentarlo en casa, ya os digo algo', 'preguntar qué presupuesto manejan')],
 };
 const DECISION_EJ3 = {
@@ -171,16 +171,16 @@ const DECISION_EJ3 = {
   proximos_pasos: [],
 };
 const DECISION_EJ4 = {
-  decision: 'seguimiento', motivos: [motivo('pide_tiempo', 'aunque todavía no sé qué día')], ...SIN_EXCEPCIONES,
+  decision: 'seguimiento', motivos: [motivo('quiere_pensarlo', 'aunque todavía no sé qué día')], ...SIN_EXCEPCIONES,
   proximos_pasos: [paso(1, 'Llamar para cerrar día y hora de la reunión', 'plazo_guion', 'en dos o tres días', 'llamada', 'Puedo ir a la oficina')],
 };
 const DECISION_EJ5 = {
-  decision: 'pasar_a_reunion', motivos: [motivo('cita_agendada', 'Podemos ir el viernes 20 a las seis de la tarde, los dos')], ...SIN_EXCEPCIONES,
+  decision: 'pasar_a_reunion', motivos: [motivo('decisores_disponibles', 'Podemos ir el viernes 20 a las seis de la tarde, los dos')], ...SIN_EXCEPCIONES,
   proximos_pasos: [paso(1, 'Confirmar la visita del viernes 20 a las seis', 'fecha_cliente', 'viernes 20 a las seis de la tarde', 'whatsapp', 'Podemos ir el viernes 20 a las seis de la tarde, los dos', 'confirmar que vienen los dos')],
 };
 // Falta un dato que aporta el cliente (el plano): es seguimiento y no escala por eso. Pedir que alguien vaya a medir sí es una excepción.
 const DECISION_EJ6 = {
-  decision: 'seguimiento', motivos: [motivo('falta_plano', 'te mando el plano cuando vuelva de vacaciones')], excepciones: ['topografo'], dudas: [], pendiente_ernesto: null,
+  decision: 'seguimiento', motivos: [motivo('falta_dato_cliente', 'te mando el plano cuando vuelva de vacaciones')], excepciones: ['topografo'], dudas: [], pendiente_ernesto: null,
   proximos_pasos: [
     paso(1, 'Volver a llamar a partir del 20 de noviembre para pedir el plano', 'fecha_cliente', 'a partir del 20 de noviembre', 'llamada', 'Vuelvo el 20 de noviembre', 'el plano'),
     paso(2, 'Valorar con Ernesto enviar a alguien a medir el terreno', 'plazo_guion', 'antes de la reunión', 'llamada', 'Hace falta que alguien venga a medir el terreno', null, true),

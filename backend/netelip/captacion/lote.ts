@@ -62,7 +62,7 @@ export interface FilaLote {
   ocurridaEn: string;
   duracionSegundos: number;
   lead: { id: string; nombre: string; etapa: string | null; noContinuidad?: string | null } | null;
-  via: 'telefono' | 'email' | null;
+  via: 'telefono' | 'email' | 'manual' | null;
   estado: ResultadoLlamada['estado'] | 'error';
   motivo: string | null;
   categoria: string | null;
