@@ -105,6 +105,10 @@ export async function runTelegramAgent({chatId,messages,specialist,callAgent}:{c
 }
 export function registerTelegramContextRoutes(app:Express,deps:Dependencies){
  const {pool}=deps;
+ // Default preserves test scope. Real context needs a separately reviewed backend setting and DB authorization.
+ const production=process.env.TELEGRAM_CONTEXT_PRODUCTION_ENABLE==='true';
+ const contextScope=production?"public.telegram_central_scope_ready(t.bot_id,t.chat_id,t.club_group_id,t.proyecto_id,'context',m.timestamp)":'t.enabled and t.is_test';
+ const attachmentScope=production?"public.telegram_central_scope_ready(t.bot_id,t.chat_id,t.club_group_id,t.proyecto_id,'media',m.timestamp)":'t.enabled and t.is_test';
  configureAiPrivacy({enabled:()=>true,secret:deps.privacyKey,loadPeople:async()=>{
   const rows=(await pool.query("select id,nombre,apellido from clientes where activo union all select id,nombre,apellido from empleados where activo")).rows;
   return rows.map(p=>({id:p.id,name:[p.nombre,p.apellido].filter(Boolean).join(' '),aliases:[p.nombre,p.apellido].filter(Boolean)}));
@@ -119,13 +123,13 @@ export function registerTelegramContextRoutes(app:Express,deps:Dependencies){
   const rows=(await pool.query(`select m.chat_id,m.proyecto_id,p.nombre project_name,m.cliente_id,c.nombre client_name,'Telegram' source,count(*)::int message_count,max(m.timestamp) last_message_at
    from mensajes m join proyectos p on p.id=m.proyecto_id left join clientes c on c.id=m.cliente_id
    join telegram_ingestion_targets t on t.bot_id=m.telegram_bot_id and t.chat_id=m.telegram_chat_id and t.proyecto_id=m.proyecto_id
-   where m.canal='telegram' and t.enabled and t.is_test and p.activo and ($1='' or m.proyecto_id=$1) and ($2='' or m.cliente_id=$2)
-   group by m.chat_id,m.proyecto_id,p.nombre,m.cliente_id,c.nombre order by last_message_at desc limit 100`,[project,client])).rows;res.json({source:'Telegram',testOnly:true,conversations:rows});
+   where m.canal='telegram' and ${contextScope} and p.activo and ($1='' or m.proyecto_id=$1) and ($2='' or m.cliente_id=$2)
+   group by m.chat_id,m.proyecto_id,p.nombre,m.cliente_id,c.nombre order by last_message_at desc limit 100`,[project,client])).rows;res.json({source:'Telegram',testOnly:!production,conversations:rows});
  }catch{res.status(503).json({error:'telegram_context_unavailable'});}});
- async function messages(chatId:string,limit=101,before?:{timestamp:string;id:string},range:Period={}){return(await pool.query(`select m.id,m.chat_id,m.proyecto_id,m.remitente,m.autor_tipo,m.cliente_id,m.empleado_id,m.texto,m.timestamp,m.tipo,m.media,'Telegram' source
+ async function messages(chatId:string,limit=101,before?:{timestamp:string;id:string},range:Period={}){return(await pool.query(`select m.id,m.chat_id,m.proyecto_id,m.remitente,m.autor_tipo,m.cliente_id,m.empleado_id,m.texto,m.timestamp,m.tipo,m.media,NOT t.is_test production_group,'Telegram' source
   from mensajes m join telegram_ingestion_targets t on t.bot_id=m.telegram_bot_id and t.chat_id=m.telegram_chat_id and t.proyecto_id=m.proyecto_id
   join proyectos p on p.id=m.proyecto_id and p.activo
-  where m.chat_id=$1 and m.canal='telegram' and t.enabled and t.is_test
+  where m.chat_id=$1 and m.canal='telegram' and ${contextScope}
    and ($3::timestamptz is null or (m.timestamp,m.id)<($3::timestamptz,$4::text))
    and ($5::timestamptz is null or m.timestamp >= $5::timestamptz) and ($6::timestamptz is null or m.timestamp <= $6::timestamptz)
   order by m.timestamp desc,m.id desc limit $2`,[chatId,limit,before?.timestamp||null,before?.id||'',range.from||null,range.to||null])).rows.reverse();}
@@ -138,7 +142,7 @@ export function registerTelegramContextRoutes(app:Express,deps:Dependencies){
  app.get('/api/telegram/context/attachment/:id',deps.admin,enabled,async(req,res)=>{try{
   const row=(await pool.query(`select m.media from mensajes m join telegram_ingestion_targets t on t.bot_id=m.telegram_bot_id and t.chat_id=m.telegram_chat_id and t.proyecto_id=m.proyecto_id
    join proyectos p on p.id=m.proyecto_id and p.activo
-   where m.id=$1 and m.canal='telegram' and t.enabled and t.is_test limit 1`,[String(req.params.id)])).rows[0],hash=row?.media?.storage_sha256;
+   where m.id=$1 and m.canal='telegram' and ${attachmentScope} limit 1`,[String(req.params.id)])).rows[0],hash=row?.media?.storage_sha256;
   if(!/^[a-f0-9]{64}$/u.test(hash||'')){res.status(404).end();return;}
   const bytes=await readFile('/var/lib/club-telegram-central/attachments/'+hash);res.setHeader('Content-Type','application/octet-stream');res.setHeader('Content-Disposition','attachment; filename="adjunto-telegram"');res.setHeader('X-Content-Type-Options','nosniff');res.send(bytes);
  }catch{res.status(404).end();}});
@@ -149,6 +153,13 @@ export function registerTelegramContextRoutes(app:Express,deps:Dependencies){
   let range:Period;try{range=period(req.body);}catch{res.status(400).json({error:'invalid_period'});return;}
   const text=await messages(chatId,1001,undefined,range);if(text.length>1000){res.status(422).json({error:'telegram_context_too_large',limit:1000});return;}
   if(!text.some(m=>typeof m.texto==='string'&&m.texto.trim())){res.status(422).json({error:'telegram_text_required'});return;}
+  if(text.some(m=>m.production_group===true)){
+   // A read authorization never implies permission to send that content to a model.
+   const allowed=(await pool.query(`select bool_and(public.telegram_central_scope_ready(t.bot_id,t.chat_id,t.club_group_id,t.proyecto_id,'ai',m.timestamp)) allowed
+    from mensajes m join telegram_ingestion_targets t on t.bot_id=m.telegram_bot_id and t.chat_id=m.telegram_chat_id and t.proyecto_id=m.proyecto_id
+    where m.id=ANY($1::text[]) AND NOT t.is_test`,[text.filter(m=>m.production_group===true).map(m=>m.id)])).rows[0]?.allowed;
+   if(allowed!==true){res.status(403).json({error:'telegram_production_ai_not_authorized'});return;}
+  }
   const id=randomUUID();let result:Awaited<ReturnType<typeof runTelegramAgent>>;
   try{result=await runTelegramAgent({chatId,messages:text,specialist,callAgent:deps.callAgent});}catch(error){
    if(!(error instanceof TelegramEvidenceError))throw error;
