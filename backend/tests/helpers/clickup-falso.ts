@@ -91,7 +91,7 @@ export async function levantarClickUpFalso(): Promise<ClickUpFalso> {
       if (req.method === 'GET' && url.pathname === `/list/${LISTA_FALSA}/field`) res.end(JSON.stringify({ fields: falso.campos }));
       else if (req.method === 'GET' && url.pathname === `/list/${LISTA_FALSA}/task`) {
         const pagina = Number(url.searchParams.get('page'));
-        res.end(JSON.stringify({ tasks: falso.tareas.slice(pagina * 100, pagina * 100 + 100).map(aTareaClickUp) }));
+        res.end(JSON.stringify({ tasks: falso.tareas.slice(pagina * 100, pagina * 100 + 100).map(aTareaClickUp), last_page: (pagina + 1) * 100 >= falso.tareas.length }));
       } else res.end('{}');
     });
   });
