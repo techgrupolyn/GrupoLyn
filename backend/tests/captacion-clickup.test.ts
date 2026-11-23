@@ -88,7 +88,7 @@ describe('ClickUp · lectura', () => {
     });
     manejador = (_q, res, p) => {
       const pagina = Number(new URL(p.ruta, 'http://x').searchParams.get('page'));
-      json(res, 200, { tasks: Array.from({ length: pagina === 0 ? 100 : 50 }, (_, i) => tarea(pagina * 100 + i)) });
+      json(res, 200, { tasks: Array.from({ length: pagina === 0 ? 100 : 50 }, (_, i) => tarea(pagina * 100 + i)), last_page: pagina === 1 });
     };
     const todas = [];
     for await (const t of cliente().tareas()) todas.push(t);
@@ -111,6 +111,44 @@ describe('ClickUp · lectura', () => {
     for await (const t of cliente().tareas()) n.push(t.id);
     expect(n).toHaveLength(100);
     expect(peticiones).toHaveLength(2);
+  });
+
+  it('con last_page termina en esa página y sin ese indicador una página corta no es el final', async () => {
+    const tareaMin = (id: string) => ({ id, name: 'x', status: {}, custom_fields: [] });
+    manejador = (_q, res, p) => {
+      const pagina = Number(new URL(p.ruta, 'http://x').searchParams.get('page'));
+      json(res, 200, { tasks: [tareaMin(`a${pagina}`)], last_page: pagina === 1 });
+    };
+    const conIndicador: string[] = [];
+    for await (const t of cliente().tareas()) conIndicador.push(t.id);
+    expect(conIndicador).toEqual(['a0', 'a1']);
+    expect(peticiones).toHaveLength(2);
+
+    peticiones.length = 0;
+    manejador = (_q, res, p) => {
+      const pagina = Number(new URL(p.ruta, 'http://x').searchParams.get('page'));
+      json(res, 200, { tasks: pagina < 3 ? [tareaMin(`b${pagina}`)] : [] });
+    };
+    const sinIndicador: string[] = [];
+    for await (const t of cliente().tareas()) sinIndicador.push(t.id);
+    expect(sinIndicador).toEqual(['b0', 'b1', 'b2']);
+  });
+
+  it('una página sin lista de tareas, o vacía cuando faltan más, es un error: no se usa una lista incompleta', async () => {
+    const tareaMin = (id: string) => ({ id, name: 'x', status: {}, custom_fields: [] });
+    manejador = (_q, res, p) => {
+      const pagina = Number(new URL(p.ruta, 'http://x').searchParams.get('page'));
+      if (pagina === 0) json(res, 200, { tasks: Array.from({ length: 100 }, (_, i) => tareaMin(`c${i}`)), last_page: false });
+      else json(res, 200, {});
+    };
+    const leidas: string[] = [];
+    await expect((async () => { for await (const t of cliente().tareas()) leidas.push(t.id); })()).rejects.toThrow('sin lista de tareas');
+
+    manejador = (_q, res, p) => {
+      const pagina = Number(new URL(p.ruta, 'http://x').searchParams.get('page'));
+      json(res, 200, pagina === 0 ? { tasks: [tareaMin('d0')], last_page: false } : { tasks: [], last_page: false });
+    };
+    await expect((async () => { for await (const _ of cliente().tareas()) { /* leer todo */ } })()).rejects.toThrow('vacía aunque faltan más');
   });
 
   it('lee una tarea concreta y rechaza ids con caracteres de ruta', async () => {

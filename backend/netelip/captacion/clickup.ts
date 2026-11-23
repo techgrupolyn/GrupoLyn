@@ -152,13 +152,24 @@ export class ClickUpClient {
     return String(id);
   }
 
-  /** Tareas padre de la lista (abiertas y cerradas, sin archivadas), página a página. Sin subtareas: no se vinculan. */
+  /**
+   * Tareas padre de la lista (abiertas y cerradas, sin archivadas), página a página. Sin subtareas: no se vinculan.
+   * Termina cuando ClickUp dice `last_page: true` (o, si no lo manda, con una página vacía). Una página sin lista de tareas, o vacía cuando
+   * ClickUp dice que aún hay más, es un error: cortar en silencio dejaba una lista incompleta y vinculaba llamadas a un lead cuando el otro
+   * candidato no se había leído (visto en producción el 23/11: 400 y 100 leads en vez de 2126).
+   */
   async *tareas(): AsyncGenerator<TareaClickUp> {
     for (let pagina = 0; ; pagina++) {
-      const r = (await this.pedir('GET', `/list/${this.cfg.listaId}/task?page=${pagina}&include_closed=true&subtasks=false&archived=false`)) as { tasks?: Array<Record<string, any>> };
-      const tareas = r.tasks ?? [];
+      const ruta = `/list/${this.cfg.listaId}/task?page=${pagina}&include_closed=true&subtasks=false&archived=false`;
+      const r = (await this.pedir('GET', ruta)) as { tasks?: unknown; last_page?: unknown };
+      if (!Array.isArray(r.tasks)) throw new ClickUpError(`ClickUp devolvió la página ${pagina} sin lista de tareas: se corta la lectura para no usar una lista incompleta`, null, true);
+      const tareas = r.tasks as Array<Record<string, any>>;
       for (const t of tareas) yield aTarea(t);
-      if (tareas.length < 100) return;
+      if (r.last_page === true) return;
+      if (tareas.length === 0) {
+        if (r.last_page === false) throw new ClickUpError(`ClickUp devolvió la página ${pagina} vacía aunque faltan más: se corta la lectura para no usar una lista incompleta`, null, true);
+        return;
+      }
     }
   }
 
