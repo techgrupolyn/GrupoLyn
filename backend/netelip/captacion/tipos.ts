@@ -81,6 +81,6 @@ export const ETIQUETA_CATEGORIA: Record<Categoria, string> = {
 
 /**
  * Únicos campos que el sistema puede escribir en una tarea de ClickUp. `desglose` es el campo nuevo
- * «Desglose de calificación» de N-1.2 (texto corto, solo lo escribe el sistema).
+ * «Desglose de calificación» de N-1.2 y `resumen` el «Resumen ejecutivo» de N-1.3 (texto largo): los dos solo los escribe el sistema.
  */
-export const CAMPOS_PERMITIDOS = ['categoria', 'presupuesto', 'ponderado', 'fuente_presupuesto', 'indice_orden', 'desglose'] as const;
+export const CAMPOS_PERMITIDOS = ['categoria', 'presupuesto', 'ponderado', 'fuente_presupuesto', 'indice_orden', 'desglose', 'resumen'] as const;

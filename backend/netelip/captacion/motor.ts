@@ -275,6 +275,9 @@ export interface EscriturasClickUp {
   fuente_presupuesto: string;
 }
 
+/** Lo anterior más los dos textos que escribe el sistema cuando el lead los tiene: el desglose (N-1.2) y el resumen ejecutivo (N-1.3). */
+export type EscriturasConTextos = EscriturasClickUp & { desglose?: string; resumen?: string };
+
 export interface Calificacion {
   categoria: Categoria;
   presupuestoVigente: number | null;

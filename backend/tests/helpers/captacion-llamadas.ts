@@ -29,7 +29,35 @@ export interface OpcionesSalida {
   citaDecisor?: string;
   /** Marca «presupuesto insuficiente sin solución» con una cita que no está en la llamada (va a revisión manual). */
   noAptoInventado?: boolean;
+  /** Resumen ejecutivo que devuelve el «modelo» (N-1.3). Por defecto, vacío: el resumen no se guarda. */
+  resumen?: Partial<ResumenDelModelo>;
+  /** decision_ia que devuelve el «modelo» (N-1.4), tal cual. Por defecto no devuelve ninguna. */
+  decisionIA?: unknown;
 }
+
+export interface ResumenDelModelo {
+  que_quiere: string;
+  donde_quedo: string;
+  que_lo_frena: string;
+  para_que_llamarlo: string;
+  fecha_prevista: string | null;
+  fecha_prevista_cita: string | null;
+}
+
+/** Una frase que SÍ está en TRANSCRIPCION_CON_FECHA: sirve de cita para la fecha prevista del resumen. */
+export const CITA_FECHA = 'Nos vemos el viernes veinte a las seis en la oficina';
+/** TRANSCRIPCION_BASE más un turno en el que el lead acuerda una fecha (el viernes 20 de noviembre de 2026). */
+export const TRANSCRIPCION_CON_FECHA = `${TRANSCRIPCION_BASE}\n[00:02:40] CLIENTE: ${CITA_FECHA}.`;
+
+/** Resumen correcto para una llamada del 17/11/2026 con TRANSCRIPCION_CON_FECHA. */
+export const RESUMEN_BUENO: ResumenDelModelo = {
+  que_quiere: 'Reforma integral de la vivienda',
+  donde_quedo: 'Vendrá a la oficina el viernes a las seis',
+  que_lo_frena: 'Falta firmar la compra',
+  para_que_llamarlo: 'Confirmar la visita del viernes',
+  fecha_prevista: '2026-11-20',
+  fecha_prevista_cita: CITA_FECHA,
+};
 
 /** Salida del modelo para una llamada que contiene TRANSCRIPCION_BASE: presupuesto, urgencia y decisor con cita. */
 export function salidaModelo(interaccionId: string, o: OpcionesSalida = {}): string {
@@ -48,6 +76,7 @@ export function salidaModelo(interaccionId: string, o: OpcionesSalida = {}): str
       decisor: { nivel: o.nivelDecisor ?? 'A', cita: o.citaDecisor ?? FRASE.decisor, marca_tiempo: '00:01:40' },
       alcance: NE, actitud: NE, encaje_lyn: NE, predisposicion_f2f3: NE,
     },
-    resumen: { que_quiere: '', donde_quedo: '', que_lo_frena: '', para_que_llamarlo: '', fecha_prevista: null },
+    resumen: { que_quiere: '', donde_quedo: '', que_lo_frena: '', para_que_llamarlo: '', fecha_prevista: null, fecha_prevista_cita: null, ...o.resumen },
+    ...(o.decisionIA === undefined ? {} : { decision_ia: o.decisionIA }),
   });
 }

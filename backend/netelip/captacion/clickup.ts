@@ -2,7 +2,7 @@
 // escribe la calificación en los únicos campos permitidos. No usa ninguna librería: solo `fetch`.
 // El token solo viaja en la cabecera Authorization hacia la base indicada y nunca aparece en un error.
 import { ETIQUETA_CATEGORIA, ETIQUETA_SIN_PRESUPUESTO, type Categoria } from './tipos.ts';
-import type { EscriturasClickUp } from './motor.ts';
+import type { EscriturasConTextos } from './motor.ts';
 import type { LeadCandidato } from './vinculacion.ts';
 
 export const CLICKUP_API = 'https://api.clickup.com/api/v2';
@@ -14,6 +14,8 @@ export const NOMBRES_CAMPOS = {
   ponderado: 'valor_del_negocio',
   fuente_presupuesto: 'Fuente del presupuesto',
   desglose: 'Desglose de calificación',
+  /** N-1.3: texto largo con 4 líneas etiquetadas; solo lo escribe el sistema y no se muestra en la tarjeta cerrada del Board. */
+  resumen: 'Resumen ejecutivo',
   indice_orden: 'Índice de orden',
   /** Solo se LEE: lo escribe el flujo de n8n con el rango que marca el cliente en el formulario web. */
   presupuesto_formulario: 'Presupuesto formulario',
@@ -22,6 +24,8 @@ export const NOMBRES_CAMPOS = {
   etapa: 'ETAPA_CRM',
   tipo_reforma: 'tipo_reforma',
   tipo_contacto: 'Tipo de Contacto',
+  /** Solo se LEE: el motivo por el que un lead no continúa («Presupuesto insuficiente» equivale a No apto). */
+  no_continuidad: 'No continuidad',
 } as const;
 
 /** El error no trae el token ni el cuerpo de la respuesta (puede contener datos de clientes). */
@@ -140,6 +144,14 @@ export class ClickUpClient {
     }));
   }
 
+  /** Id del usuario dueño del token (el «usuario de integración»: sus escrituras no son cambios manuales). */
+  async usuarioActual(): Promise<string> {
+    const r = (await this.pedir('GET', '/user')) as { user?: { id?: number | string } };
+    const id = r.user?.id;
+    if (id === undefined || id === null || String(id) === '') throw new ClickUpError('ClickUp no devolvió el usuario del token', null, false);
+    return String(id);
+  }
+
   /** Tareas padre de la lista (abiertas y cerradas, sin archivadas), página a página. Sin subtareas: no se vinculan. */
   async *tareas(): AsyncGenerator<TareaClickUp> {
     for (let pagina = 0; ; pagina++) {
@@ -243,7 +255,7 @@ export function indiceOrdenDe(categoria: Categoria, ponderado: number | null): n
 
 export interface CambioCampo {
   /** Clave de las escrituras del motor (categoria, presupuesto…). */
-  clave: keyof Omit<typeof NOMBRES_CAMPOS, 'telefono' | 'email' | 'etapa' | 'tipo_reforma' | 'tipo_contacto' | 'presupuesto_formulario'>;
+  clave: keyof Omit<typeof NOMBRES_CAMPOS, 'telefono' | 'email' | 'etapa' | 'tipo_reforma' | 'tipo_contacto' | 'presupuesto_formulario' | 'no_continuidad'>;
   campoId: string;
   valor: string | number;
 }
@@ -258,7 +270,7 @@ export interface PlanEscritura {
  * Traduce las escrituras del motor a (campo, valor) de ClickUp. Valida TODO antes de devolver nada: si falta un
  * campo o una opción lanza `ClickUpConfigError` y no se escribe ni un campo de ese lead (nunca queda a medias).
  */
-export function planEscritura(esc: EscriturasClickUp & { desglose?: string }, campos: readonly CampoLista[]): PlanEscritura {
+export function planEscritura(esc: EscriturasConTextos, campos: readonly CampoLista[]): PlanEscritura {
   const porNombre = (nombre: string): CampoLista => {
     const c = campos.find((x) => x.name === nombre);
     if (!c) throw new ClickUpConfigError(`La lista no tiene el campo «${nombre}»`);
@@ -303,6 +315,14 @@ export function planEscritura(esc: EscriturasClickUp & { desglose?: string }, ca
     const d = porNombre(NOMBRES_CAMPOS.desglose);
     cambios.push({ clave: 'desglose', campoId: d.id, valor: esc.desglose });
   }
+
+  // «Resumen ejecutivo» (N-1.3) es OPCIONAL como la fuente: si la lista aún no tiene el campo se omite y se anota, y el resto de
+  // la calificación se escribe igual.
+  if (esc.resumen !== undefined) {
+    const r = campos.find((x) => x.name === NOMBRES_CAMPOS.resumen);
+    if (r) cambios.push({ clave: 'resumen', campoId: r.id, valor: esc.resumen });
+    else omitidos.push('resumen (el campo no existe en la lista)');
+  }
   return { cambios, omitidos };
 }
 
@@ -319,7 +339,7 @@ export class ClickUpEscrituraParcial extends Error {
  * error tal cual (no se tocó nada); si falla uno posterior, lanza `ClickUpEscrituraParcial` con lo ya escrito.
  * Repetir el plan es seguro: cada POST fija el valor del campo.
  */
-export async function escribirPlan(cliente: ClickUpClient, tareaId: string, plan: PlanEscritura): Promise<number> {
+export async function escribirPlan(cliente: Pick<ClickUpClient, 'escribirCampo'>, tareaId: string, plan: PlanEscritura): Promise<number> {
   let escritos = 0;
   for (const c of plan.cambios) {
     try {

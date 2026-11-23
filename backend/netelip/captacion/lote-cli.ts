@@ -76,7 +76,7 @@ export function leerArgumentos(argv: readonly string[]): Argumentos {
 /** Excel lee como fórmula una celda que empieza por = + - @ (con o sin espacios delante) o por tabulador/salto de línea. */
 const COMO_FORMULA = /^[\t\r\n]|^\s*[=+\-@]/;
 
-const celda = (v: unknown): string => {
+export const celda = (v: unknown): string => {
   const texto = v === null || v === undefined ? '' : String(v);
   // Los nombres de leads vienen de formularios web y las frases de las llamadas: no deben poder ejecutarse al abrir el CSV.
   const s = COMO_FORMULA.test(texto) ? `'${texto}` : texto;
@@ -85,9 +85,10 @@ const celda = (v: unknown): string => {
 
 /** CSV para Excel (UTF-8 con BOM, separador «;»): una fila por llamada con letra, desglose y frases citadas. */
 export function informeCsv(i: InformeLote): string {
-  const cabecera = ['fecha', 'llamada', 'lead', 'lead_id', 'etapa', 'via', 'estado', 'motivo', 'categoria', 'desglose', 'frases_citadas', 'descartes', 'revision_manual', 'intentos'];
+  const cabecera = ['fecha', 'llamada', 'lead', 'lead_id', 'etapa', 'via', 'estado', 'motivo', 'categoria', 'desglose', 'resumen', 'decision_ia', 'decision_estado', 'frases_citadas', 'descartes', 'revision_manual', 'intentos'];
   const filas = i.filas.map((f) => [
     f.ocurridaEn, f.llamadaId, f.lead?.nombre ?? '', f.lead?.id ?? '', f.lead?.etapa ?? '', f.via ?? '', f.estado, f.motivo ?? '', f.categoria ?? '', f.desglose ?? '',
+    (f.resumen ?? '').split('\n').join(' | '), f.decisionIA ?? '', f.decisionEstado ?? '',
     f.citas.map((c) => `${c.criterio} ${c.nivel}: «${c.cita}»`).join(' | '), f.descartes, f.revisionManual.join(' | '), f.intentos,
   ]);
   return `\uFEFF${[cabecera, ...filas].map((fila) => fila.map(celda).join(';')).join('\r\n')}\r\n`;
@@ -126,7 +127,14 @@ export const baseParecePruebas = (url: string): boolean => {
   }
 };
 
-export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
+/** Piezas que las pruebas sustituyen para recorrer `main` sin red ni base real. En el uso normal no se pasa nada. */
+export interface Inyectado {
+  pool?: Pool;
+  cliente?: ClickUpClient;
+  evaluar?: Evaluador;
+}
+
+export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = process.env, inyectado: Inyectado = {}): Promise<number> {
   const a = leerArgumentos(argv);
   const databaseUrl = env.DATABASE_URL?.trim();
   if (!databaseUrl) throw new Error('Falta DATABASE_URL (usa una copia de la base, nunca la de producción)');
@@ -135,26 +143,30 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
   }
   const config = clickupConfigDesdeEnv(env);
   if (!config) throw new Error('Faltan CLICKUP_API_TOKEN y/o CAPTACION_CLICKUP_LIST_ID');
-  const modelo = evaluadorGemini(
-    { ...env, GOOGLE_GEMINI_API_KEY: env.CAPTACION_GEMINI_API_KEY?.trim() || env.GOOGLE_GEMINI_API_KEY, CALIFICADOR_MODEL: env.CAPTACION_MODEL?.trim() || env.CALIFICADOR_MODEL },
-    fetch, { schema: ESQUEMA_SALIDA, maxOutputTokens: 4096 },
-  );
-  if (!modelo) console.warn('Sin clave de Gemini (GOOGLE_GEMINI_API_KEY o CAPTACION_GEMINI_API_KEY): las llamadas con lead quedarán como fallo del modelo.');
-  const evaluar: Evaluador = modelo ?? (async () => { throw new Error('sin clave de Gemini'); });
+  let evaluar = inyectado.evaluar;
+  if (!evaluar) {
+    const modelo = evaluadorGemini(
+      { ...env, GOOGLE_GEMINI_API_KEY: env.CAPTACION_GEMINI_API_KEY?.trim() || env.GOOGLE_GEMINI_API_KEY, CALIFICADOR_MODEL: env.CAPTACION_MODEL?.trim() || env.CALIFICADOR_MODEL },
+      fetch, { schema: ESQUEMA_SALIDA, maxOutputTokens: 4096 },
+    );
+    if (!modelo) console.warn('Sin clave de Gemini (GOOGLE_GEMINI_API_KEY o CAPTACION_GEMINI_API_KEY): las llamadas con lead quedarán como fallo del modelo.');
+    evaluar = modelo ?? (async () => { throw new Error('sin clave de Gemini'); });
+  }
 
-  const pool = new Pool({ connectionString: databaseUrl, max: 2 });
+  // La conexión que se abre aquí se cierra aquí; una que viene inyectada es de quien la pasó.
+  const pool = inyectado.pool ?? new Pool({ connectionString: databaseUrl, max: 2 });
   try {
     await ensureCaptacion(pool);
     const informe = await ejecutarLote({
-      pool, cliente: new ClickUpClient(config), evaluar, desde: a.desde, hasta: a.hasta, candidatos: a.candidatos,
-      escribirMaximo: a.escribir, limite: a.limite, registro: (m) => console.log(m),
+      pool, cliente: inyectado.cliente ?? new ClickUpClient(config), evaluar, desde: a.desde, hasta: a.hasta, candidatos: a.candidatos,
+      escribirMaximo: a.escribir, limite: a.limite, reintentarDecision: true, registro: (m) => console.log(m),
     });
     writeFileSync(a.informe, informeCsv(informe), 'utf8');
     console.log(resumenTexto(informe));
     console.log(`Informe: ${a.informe}`);
     return 0;
   } finally {
-    await pool.end();
+    if (!inyectado.pool) await pool.end();
   }
 }
 

@@ -12,6 +12,7 @@ import { InvalidPhone, toE164, tryE164 } from './phone.ts';
 import type { TranscriptionEngine } from './transcription.ts';
 import { madridDay, partiesFromRecording, type VdriveClient } from './vdrive.ts';
 import { encolarEvaluacion } from './calificador/encolar.ts';
+import { configColaDesdeEnv, encolarCaptacion } from './captacion/cola.ts';
 
 export const TRANSCRIPTION_BACKOFF_SECONDS = [60, 300, 900];
 export const MAX_TRANSCRIPTION_ATTEMPTS = 3;
@@ -235,6 +236,8 @@ export async function processNextTranscription(pool: Pool, engine: Transcription
     console.log(JSON.stringify({ msg: 'netelip_transcription_completed', call_id: job.call_id, chars: transcript.text.length }));
     // Calificador interno (869e9y98n): solo si la extensión tiene comercial activo y la llamada dura ≥ 60 s.
     await encolarEvaluacion(pool, job.call_id).catch((error) => console.error('[calificador] No se pudo encolar la evaluación:', (error as Error).message));
+    // Captación ABCD (869fny187): la misma transcripción alimenta la cola del flujo de leads. Apagado por defecto (CAPTACION_WORKER_ENABLED).
+    if (configColaDesdeEnv().activa) await encolarCaptacion(pool, job.call_id).catch((error) => console.error('[captacion] No se pudo encolar la llamada:', (error as Error).message));
     return 'completed';
   } catch (error) {
     const final = attempt >= MAX_TRANSCRIPTION_ATTEMPTS;

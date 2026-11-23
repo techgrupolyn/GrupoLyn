@@ -6,6 +6,7 @@ import type { Pool } from 'pg';
 import type { Evaluador } from '../calificador/modelo.ts';
 import { DURACION_MINIMA_SEGUNDOS, transcripcionPorTurnos, type Segmento } from '../calificador/reglas.ts';
 import { nivelAlcanceProvisional } from './agregacion.ts';
+import type { Origen } from './decision.ts';
 import {
   aLeadCandidato, ClickUpConfigError, ClickUpEscrituraParcial, escribirPlan, NOMBRES_CAMPOS, planEscritura,
   type CampoLista, type ClickUpClient, type TareaClickUp,
@@ -18,7 +19,7 @@ import type { LeadCandidato } from './vinculacion.ts';
 export const ETAPA_VIVA_MAX = 13;
 
 /** Número de una etapa de ClickUp: «e3. VIABILIDAD» → 3. Null si el nombre no empieza por «e» y un número. */
-const numeroDeEtapa = (etapa: unknown): number | null => {
+export const numeroDeEtapa = (etapa: unknown): number | null => {
   const m = /^e(\d+)/i.exec(String(etapa ?? '').trim());
   return m ? Number(m[1]) : null;
 };
@@ -46,6 +47,10 @@ export interface OpcionesLote {
   limite?: number;
   /** Intentos por llamada si el modelo falla o contesta mal. Por defecto 2. */
   intentos?: number;
+  /** `historico` en la calibración (N-1.4): las decisiones de la IA no entran en la bandeja ni en el acierto. Por defecto `nuevo`. */
+  origenDecision?: Origen;
+  /** Volver a pedir UNA vez la decisión de pase cuando el modelo no la da (ver `Dependencias.reintentarDecision`). Por defecto no. */
+  reintentarDecision?: boolean;
   esperar?: (ms: number) => Promise<void>;
   registro?: (mensaje: string) => void;
 }
@@ -56,12 +61,22 @@ export interface FilaLote {
   llamadaId: string;
   ocurridaEn: string;
   duracionSegundos: number;
-  lead: { id: string; nombre: string; etapa: string | null } | null;
-  via: 'telefono' | 'email' | null;
+  lead: { id: string; nombre: string; etapa: string | null; noContinuidad?: string | null } | null;
+  via: 'telefono' | 'email' | 'manual' | null;
   estado: ResultadoLlamada['estado'] | 'error';
   motivo: string | null;
   categoria: string | null;
   desglose: string | null;
+  /** Resumen ejecutivo vigente del lead tras esta llamada (4 líneas con etiqueta); null si el lead aún no tiene uno. */
+  resumen: string | null;
+  /** Decisión de pase que tomó la IA en esta llamada (N-1.4); null si no hubo (lead en F2 o más allá, o sin decisión válida). */
+  decisionIA: string | null;
+  /**
+   * Por qué hay o no decisión de pase en esta llamada: `guardada`, `ya_existia`, `omitida` (el lead ya estaba en F2 o más allá, o no hay
+   * configuración), `sin_decision` (el modelo no devolvió ninguna) o `invalida: <motivo>` (la verificó y la descartó). Null si la llamada no
+   * llegó a procesarse.
+   */
+  decisionEstado: string | null;
   citas: CitaLote[];
   descartes: number;
   revisionManual: string[];
@@ -199,6 +214,11 @@ export async function ejecutarLote(o: OpcionesLote): Promise<InformeLote> {
       leads: candidatos,
       nombreLead: (id: string) => porId.get(id)?.nombre ?? null,
       evaluar: o.evaluar,
+      // N-1.4: un lead en F2 (e4) o más allá no genera decisión de pase. En la calibración (histórica) NO se aplica: la fase actual
+      // del lead es justo el desenlace con el que se compara la decisión de la IA.
+      etapaLead: o.origenDecision === 'historico' ? undefined : (id: string) => numeroDeEtapa(porId.get(id)?.campos[NOMBRES_CAMPOS.etapa]),
+      origenDecision: o.origenDecision,
+      reintentarDecision: o.reintentarDecision,
     };
     let resultado: ResultadoLlamada | null = null;
     let error: string | null = null;
@@ -219,13 +239,16 @@ export async function ejecutarLote(o: OpcionesLote): Promise<InformeLote> {
 
     const base = { llamadaId: entrada.llamadaId, ocurridaEn: entrada.ocurridaEn.toISOString(), duracionSegundos: entrada.duracionSegundos, intentos };
     if (resultado === null) {
-      filas.push({ ...base, lead: null, via: null, estado: 'error', motivo: error, categoria: null, desglose: null, citas: [], descartes: 0, revisionManual: [] });
+      filas.push({ ...base, lead: null, via: null, estado: 'error', motivo: error, categoria: null, desglose: null, resumen: null, decisionIA: null, decisionEstado: null, citas: [], descartes: 0, revisionManual: [] });
     } else if (resultado.estado === 'procesada') {
       const t = porId.get(resultado.clickupTaskId);
       ultima.set(resultado.clickupTaskId, resultado);
       filas.push({
-        ...base, lead: { id: resultado.clickupTaskId, nombre: t?.nombre ?? '', etapa: (t?.campos[NOMBRES_CAMPOS.etapa] as string | null) ?? null },
+        ...base, lead: { id: resultado.clickupTaskId, nombre: t?.nombre ?? '', etapa: (t?.campos[NOMBRES_CAMPOS.etapa] as string | null) ?? null, noContinuidad: (t?.campos[NOMBRES_CAMPOS.no_continuidad] as string | null) ?? null },
         via: resultado.via, estado: 'procesada', motivo: null, categoria: resultado.categoria, desglose: resultado.escrituras.desglose ?? null,
+        resumen: resultado.escrituras.resumen ?? null,
+        decisionIA: resultado.decision.estado === 'guardada' || resultado.decision.estado === 'ya_existia' ? resultado.decision.decision : null,
+        decisionEstado: resultado.decision.estado === 'invalida' ? `invalida: ${resultado.decision.motivo}` : resultado.decision.estado,
         citas: await citasDe(o.pool, interaccionDe(entrada.llamadaId)), descartes: resultado.descartes.length, revisionManual: [...resultado.revisionManual],
       });
     } else {
@@ -233,7 +256,7 @@ export async function ejecutarLote(o: OpcionesLote): Promise<InformeLote> {
       filas.push({
         ...base, lead: lead ? { id: lead.id, nombre: lead.nombre, etapa: (lead.campos[NOMBRES_CAMPOS.etapa] as string | null) ?? null } : null,
         via: null, estado: resultado.estado, motivo: 'motivo' in resultado ? resultado.motivo : 'error' in resultado ? resultado.error : null,
-        categoria: null, desglose: null, citas: [], descartes: 0, revisionManual: [],
+        categoria: null, desglose: null, resumen: null, decisionIA: null, decisionEstado: null, citas: [], descartes: 0, revisionManual: [],
       });
     }
     if ((i + 1) % 10 === 0) registro(`  ${i + 1}/${llamadas.length} llamadas`);
