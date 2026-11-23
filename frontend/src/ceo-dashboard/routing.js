@@ -19,9 +19,16 @@ export function normalizeSettingsTab(tab) {
   return SETTINGS_TAB_KEYS.has(value) ? value : 'general';
 }
 
-export function readDashboardRoute(search = '', consultationOnly = false) {
+/** Vistas del rol consultor_lectura: Historial de llamadas y Gestión de reuniones. */
+export const CONSULTOR_VIEWS = ['netelip', 'meetings'];
+
+export function readDashboardRoute(search = '', consultationOnly = false, consultor = false) {
   const params = new URLSearchParams(search);
   if (consultationOnly) return { view: 'ai', settingsTab: 'general' };
+  if (consultor) {
+    const requested = String(params.get('view') || '').toLowerCase();
+    return { view: CONSULTOR_VIEWS.includes(requested) ? requested : 'netelip', settingsTab: 'general' };
+  }
   const requestedView = String(params.get('view') || 'dashboard').toLowerCase();
   return {
     view: CEO_DASHBOARD_VIEWS.has(requestedView) ? requestedView : 'dashboard',

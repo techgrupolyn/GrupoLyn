@@ -7,6 +7,7 @@ import { maskPhone } from './phone.ts';
 import { acceptInbox, parseCallRecording, type InboxKind } from './processing.ts';
 import { CALL_RESULTS, isStatusNotification, parseStatusEvent, registeredExtensions } from './status-events.ts';
 import { VdriveClient, vdriveConfigFromEnv } from './vdrive.ts';
+import { canAccessNetelipCalls, canReadTranscripts, isNetelipReadOnly } from './roles.ts';
 
 // Llamadas perdidas: no llegaron a hablar.
 const MISSED = "'no_contestada','ocupado','colgada','no_disponible'";
@@ -21,7 +22,12 @@ import type { DriveEntrenador } from './entrenador/proceso.ts';
 type Dependencies = {
   pool: Pool;
   admin: RequestHandler;
-  /** Rol del usuario autenticado (lo deja `admin` en la sesión). */
+  /**
+   * Sesión válida del Dashboard, sin exigir rol de administración: la API de llamadas decide el acceso con NETELIP_ACCESS_ROLES
+   * (así entra el rol consultor_lectura, que no administra nada más). Sin definir: se usa `admin`.
+   */
+  session?: RequestHandler;
+  /** Rol del usuario autenticado (lo deja `session`/`admin` en la sesión). */
   role: (res: Response) => string;
   /** Avisa de que hay trabajo nuevo en la bandeja, para no esperar al siguiente ciclo. */
   kick: () => void;
@@ -42,34 +48,19 @@ export function audioContentType(audioRef: string): string {
 }
 
 const CONTROL_STATE_TTL_MS = 3 * 3600_000;
-// Quién ve Historial de llamadas (pedido de Alejandro Yepez, 14/10/2026). Debe coincidir con
-// NETELIP_ACCESS_ROLES del frontend (frontend/src/ceo-dashboard/CeoLogin.jsx). employee:superadmin y employee:admin:
-// superadmin y admin que entran con el directorio de Supabase (CAL-09).
-const DEFAULT_ACCESS_ROLES = 'superadmin,admin,employee:superadmin,employee:admin,employee:director,employee:director_general';
-// P6: quién lee el texto. Mientras Producto no decida, los mismos roles que ven la sección.
-const DEFAULT_READER_ROLES = DEFAULT_ACCESS_ROLES;
 
-export const normalizeRole = (role: unknown) =>
-  String(role || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');
-
-const roleIn = (role: unknown, list: string) => list.split(',').map(normalizeRole).filter(Boolean).includes(normalizeRole(role));
-
-/** Roles que ven la sección y usan la API de lectura. */
-export function canAccessNetelipCalls(role: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
-  return roleIn(role, String(env.NETELIP_ACCESS_ROLES || DEFAULT_ACCESS_ROLES));
-}
-
-/** P6: roles que leen el texto de las transcripciones (siempre dentro de los que ven la sección). */
-export function canReadTranscripts(role: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
-  return canAccessNetelipCalls(role, env) && roleIn(role, String(env.NETELIP_TRANSCRIPT_READER_ROLES || DEFAULT_READER_ROLES));
-}
+export { canAccessNetelipCalls, canReadTranscripts, isNetelipReadOnly, normalizeRole } from './roles.ts';
 
 export function registerNetelipCalls(app: Express, deps: Dependencies): void {
   const { pool } = deps;
   const env = deps.env || process.env;
-  // Sesión de administración del Dashboard y, además, un rol con acceso a llamadas.
-  const access: RequestHandler = (req, res, next) => deps.admin(req, res, () => {
-    if (!canAccessNetelipCalls(deps.role(res), env)) return res.status(403).json({ error: 'No tienes permisos para ver el historial de llamadas.' });
+  // Sesión del Dashboard y, además, un rol con acceso a llamadas. Los roles de solo lectura no escriben nada: se corta aquí,
+  // para todas las rutas de Netelip (también las que se añadan), y no ruta a ruta.
+  const session = deps.session || deps.admin;
+  const access: RequestHandler = (req, res, next) => session(req, res, () => {
+    const role = deps.role(res);
+    if (!canAccessNetelipCalls(role, env)) return res.status(403).json({ error: 'No tienes permisos para ver el historial de llamadas.' });
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && isNetelipReadOnly(role, env)) return res.status(403).json({ error: 'Tu acceso a las llamadas es de solo lectura.' });
     next();
   });
   const fail = (res: Response, error: unknown) => {

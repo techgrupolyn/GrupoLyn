@@ -50,13 +50,23 @@ export function isMeetingEditorCeoUser(user) {
   return ['superadmin', 'admin', 'ceo', ...DIRECTORY_ADMIN_ROLES, 'employee:director', 'employee:delineante', 'employee:pmc_proyectos', 'employee:jefe_de_proyectos', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:director_general'].includes(role);
 }
 
-// Netelip › Historial de llamadas: solo dirección y administración (pedido de Alejandro Yepez, 14/10/2026).
-// Debe coincidir con NETELIP_ACCESS_ROLES del backend (backend/netelip/routes.ts).
-export const NETELIP_ACCESS_ROLES = ['superadmin', 'admin', ...DIRECTORY_ADMIN_ROLES, 'employee:director', 'employee:director_general'];
+const normalizedRole = (user) => String(user?.rol || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');
+
+// Rol propio del superagente para personas de fuera (p. ej. una agencia de marketing); no existe en Club LYN. Ve Netelip y
+// Gestión de reuniones, en solo lectura. Debe coincidir con backend/rol-consultor.ts.
+export const CONSULTOR_ROLE = 'consultor_lectura';
+
+// Netelip › Historial de llamadas: dirección, administración y el consultor (pedido de Alejandro Yepez, 14/10/2026).
+// Debe coincidir con NETELIP_ACCESS_ROLES del backend (backend/netelip/roles.ts).
+export const NETELIP_ACCESS_ROLES = ['superadmin', 'admin', ...DIRECTORY_ADMIN_ROLES, 'employee:director', 'employee:director_general', CONSULTOR_ROLE];
 
 export function canAccessNetelipCalls(user) {
-  const role = String(user?.rol || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');
-  return NETELIP_ACCESS_ROLES.includes(role);
+  return NETELIP_ACCESS_ROLES.includes(normalizedRole(user));
+}
+
+/** Consultor: solo Netelip y Gestión de reuniones, sin cambiar nada (el backend también lo rechaza). No ve el resto del Dashboard. */
+export function isConsultorCeoUser(user) {
+  return normalizedRole(user) === CONSULTOR_ROLE;
 }
 
 // Panel de marketing: Dirección (épico 869fny1et). Debe coincidir con MARKETING_ACCESS_ROLES del backend

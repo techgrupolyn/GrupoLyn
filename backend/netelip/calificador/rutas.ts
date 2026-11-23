@@ -6,6 +6,7 @@ import { toE164 } from '../phone.ts';
 import { anadirFeedbackHumano, configDesdeEnv, type Enviador } from './proceso.ts';
 import { ROLES_COMERCIALES, type RolComercial } from './schema.ts';
 import { TIPOS_OBJECION } from './reglas.ts';
+import { isNetelipReadOnly, roleIn } from '../roles.ts';
 
 type Deps = {
   pool: Pool;
@@ -20,13 +21,12 @@ type Deps = {
   env: NodeJS.ProcessEnv;
 };
 
-// Quién puede escribir feedback y dar de alta comerciales. Por defecto, los mismos roles que ven la sección.
-const normalizeRole = (role: unknown) =>
-  String(role || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s/-]+/g, '_');
+// Quién puede escribir feedback y dar de alta comerciales. Por defecto, los roles que ven la sección salvo los de solo lectura.
 const DEFAULT_SUPERVISOR_ROLES = 'superadmin,admin,employee:superadmin,employee:admin,employee:director,employee:director_general';
 
+/** Un rol de solo lectura nunca supervisa, aunque se añada por error a CALIFICADOR_SUPERVISOR_ROLES. */
 export function canSupervise(role: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
-  return String(env.CALIFICADOR_SUPERVISOR_ROLES || DEFAULT_SUPERVISOR_ROLES).split(',').map(normalizeRole).filter(Boolean).includes(normalizeRole(role));
+  return !isNetelipReadOnly(role, env) && roleIn(role, String(env.CALIFICADOR_SUPERVISOR_ROLES || DEFAULT_SUPERVISOR_ROLES));
 }
 
 const idLlamada = (raw: unknown) => { const id = Number(raw); return Number.isSafeInteger(id) && id > 0 ? id : null; };
@@ -107,7 +107,9 @@ export function registerCalificador(app: Express, deps: Deps): void {
     } catch (error) { fail(res, error); }
   });
 
+  // Configuración interna con el WhatsApp de cada comercial: no la ven los roles de solo lectura.
   app.get('/api/netelip/comerciales', access, async (_req, res) => {
+    if (isNetelipReadOnly(deps.role(res), env)) return res.status(403).json({ error: 'No tienes permiso para ver la configuración de comerciales.' });
     try {
       const { rows } = await pool.query('SELECT extension_netelip, empleado_id, nombre, rol, whatsapp, activo, actualizado_en FROM comercial_rol ORDER BY extension_netelip');
       res.json({ items: rows, roles: ROLES_COMERCIALES });

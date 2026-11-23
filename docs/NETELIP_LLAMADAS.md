@@ -35,10 +35,36 @@ Llamada ─► Netelip API Voice ─► /webhook/netelip/<token>/control   (avis
   - conciliación con el informe de Netelip: cada hora, para llamadas de más de 24 h;
   - retención: diaria.
 - **Acceso**:
-  - La sección y la API solo están disponibles para `superadmin`, `admin`, `employee:superadmin`, `employee:admin` (superadmin y admin del directorio de Supabase), `employee:director` y `employee:director_general` (`NETELIP_ACCESS_ROLES`).
+  - La sección y la API solo están disponibles para `superadmin`, `admin`, `employee:superadmin`, `employee:admin` (superadmin y admin del directorio de Supabase), `employee:director`, `employee:director_general` y `consultor_lectura`, en solo lectura (`NETELIP_ACCESS_ROLES`; ver «Acceso de consulta para personas de fuera»).
   - El texto lo leen esos mismos roles mientras Producto no decida otra cosa (P6, `NETELIP_TRANSCRIPT_READER_ROLES`).
+  - Los roles de `NETELIP_READONLY_ROLES` (por defecto, `consultor_lectura`) no escriben nada: la API les rechaza cualquier `POST`/`PUT`/`PATCH`/`DELETE` de Netelip con 403.
   - «Consultas IA» no lee las tablas `netelip_*`.
 - **Esquema** (`schema.ts`): solo tablas nuevas `netelip_*`, aplicadas en cada arranque. Reversión: `backend/netelip/schema-down.sql`.
+
+## Acceso de consulta para personas de fuera
+
+Para que alguien de fuera (p. ej. una agencia de marketing) consulte las llamadas y las reuniones sin ver nada más del superagente ni de Club LYN, existe el rol `consultor_lectura`. Es un rol propio del superagente que no existe en Club LYN: se asigna a **usuarios locales** del Dashboard, que entran con usuario y contraseña en el mismo login.
+
+| Ve | No puede |
+|---|---|
+| **Netelip › Historial de llamadas**: listado, transcripción, audio, evaluación, objeciones y documento del entrenador | Cambiar nada. Tampoco ve la configuración de comerciales (sus WhatsApp), la bandeja de Decisiones de pase ni la lista de llamadas por asignar. La decisión de la IA solo la ve cuando el SDR ya ha registrado la suya |
+| **Gestión de reuniones**: todas las reuniones (resumen, decisiones, acciones, riesgos, versiones y grabación) | Editar, analizar, aprobar, devolver, asignar responsables ni añadir o borrar acciones. Tampoco ve el directorio de empleados y clientes ni el flujo de revisión por proyecto |
+
+El menú solo muestra esas dos secciones, cualquier otra vista abre el Historial y el resto de la API responde 403 (el backend corta cualquier escritura en Netelip y en reuniones, no solo la interfaz). El nombre del contacto de una llamada no enlaza a su ficha de lead o cliente.
+
+Alta, cambio y baja (en el servidor, con el `.env` del backend; la contraseña se pide sin mostrarla y se guarda con hash):
+
+```bash
+cd backend
+npx tsx --env-file=.env scripts/usuario-consultor.ts guardar --usuario agencia.ejemplo --nombre "Agencia Ejemplo"
+npx tsx --env-file=.env scripts/usuario-consultor.ts listar
+npx tsx --env-file=.env scripts/usuario-consultor.ts desactivar --usuario agencia.ejemplo
+```
+
+- `guardar` sobre un consultor que ya existe le cambia nombre y contraseña y lo reactiva. Nunca toca un usuario con otro rol (p. ej. `superadmin`) ni una cuenta del directorio.
+- El usuario no puede llevar `@` (los correos van al login del directorio) y la contraseña tiene al menos 12 caracteres.
+- Al desactivarlo, la sesión ya abierta sigue valiendo hasta que caduca (`CEO_SESSION_TTL_MS`, 8 h por defecto).
+- Si en el servidor están definidas `NETELIP_ACCESS_ROLES` o `NETELIP_TRANSCRIPT_READER_ROLES`, hay que añadirles `consultor_lectura`; si no, se usan los valores por defecto, que ya lo incluyen.
 
 ## Registro de todas las llamadas de una extensión
 
@@ -86,6 +112,9 @@ En la ventana de la transcripción del Historial, la sección **Grabación** tie
 | `NETELIP_ALERT_WEBHOOK_URL` | Canal de tecnología (Slack/Teams) para fallos y conciliación |
 | `NETELIP_TRANSCRIPT_RETENTION_DAYS` / `NETELIP_AUDIO_RETENTION_DAYS` | Según P5. Sin definir no se borra nada |
 | `NETELIP_DEBUG_AUDIO_DIR` | **No definir en producción** (copia los audios; solo para pruebas locales) |
+| `NETELIP_ACCESS_ROLES` | Sin definir: Dirección, administración y `consultor_lectura` (ver «Acceso») |
+| `NETELIP_TRANSCRIPT_READER_ROLES` | Sin definir: los mismos que `NETELIP_ACCESS_ROLES` |
+| `NETELIP_READONLY_ROLES` | Sin definir: `consultor_lectura`. Roles que ven pero no escriben nada en Netelip |
 
 ## Transcripción
 
@@ -141,7 +170,7 @@ Las rúbricas están versionadas en la tabla `rubrica_version` (869fpj8dm): el S
 | `CALIFICADOR_ENVIO` | `whatsapp` para enviar el feedback (P-02). Sale desde el WhatsApp de la instancia de Evolution (`INSTANCE_NAME`), el mismo que habla con los clientes. Sin definir, solo se ve en el Dashboard |
 | `CALIFICADOR_SUPERVISOR_NOMBRE` / `CALIFICADOR_SUPERVISOR_WHATSAPP` | `Ernesto` / su móvil en E.164. Obligatorio con envío activo: sin él, una evaluación escalada no se envía |
 | `CALIFICADOR_DASHBOARD_URL` | `https://ceo.grupolyn.com`, para el enlace a la llamada en el mensaje al supervisor |
-| `CALIFICADOR_SUPERVISOR_ROLES` | Roles que escriben feedback y dan de alta comerciales. Por defecto, los mismos que ven Historial de llamadas |
+| `CALIFICADOR_SUPERVISOR_ROLES` | Roles que escriben feedback y dan de alta comerciales. Por defecto, Dirección y administración (los que ven Historial de llamadas salvo `consultor_lectura`). Un rol de `NETELIP_READONLY_ROLES` nunca supervisa |
 
 **Antes de activarlo con el SDR (lunes 09/11):** el SDR informado por escrito de que sus llamadas se evalúan con IA (ticket, «Laboral y RGPD»); su extensión dada de alta con rol `sdr` y su WhatsApp; y `CALIFICADOR_ENVIO=whatsapp` solo cuando se confirme el canal (P-02).
 
