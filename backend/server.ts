@@ -11,7 +11,7 @@ import { Pool, PoolClient } from 'pg';
 import helmet from 'helmet';
 import compression from 'compression';
 import rateLimit from 'express-rate-limit';
-import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import type { EvolutionInstance, MessageItem, Chat, ConnectionStatus, Mensaje, ResumenRequest, ResumenResponse, RoleClassification, Specialist } from './types/index.ts';
 import { callGeminiWithPrompt, callGeminiWithPromptResult, resolveSpecialist, setSpecialists, specialists } from './geminiService.ts';
 import { requestWithDeadline } from './request-deadline.ts';
@@ -29,6 +29,8 @@ import { calendarEventsForDate, calendarOrganizer, type CalendarMeeting } from '
 import { meetingReviewChain, meetingEmployeeRoles, meetingStageRecipientCondition, canDeleteMeetingActionsForRole } from './meeting-routing.ts';
 import { ensureDashboardOperations, registerDashboardOperations } from './dashboard-operations.ts';
 import { createNetelipWorkers, ensureNetelipCalls, registerNetelipCalls } from './netelip/index.ts';
+import { hashPassword, verifyPassword } from './contrasenas.ts';
+import { esConsultor } from './rol-consultor.ts';
 import { iniciarWebhookCaptacion } from './netelip/captacion/webhook-ruta.ts';
 import { createReunionesWorkers, ensureReunionesMeet } from './reuniones-meet/index.ts';
 import { createCaptacionWhatsApp, ensureCaptacionWhatsApp, registrarApiCaptacion } from './captacion-whatsapp/index.ts';
@@ -1194,21 +1196,6 @@ function parseInvitationCode(value: string): { baseUrl: string; secret: string }
   }
 }
 
-function hashPassword(value: string): string {
-  const salt = randomBytes(16).toString('hex');
-  const digest = scryptSync(value, salt, 64).toString('hex');
-  return `${salt}:${digest}`;
-}
-
-function verifyPassword(value: string, storedHash: string | null | undefined): boolean {
-  const [salt, digest] = String(storedHash || '').split(':');
-  if (!salt || !digest) return false;
-  const candidate = scryptSync(value, salt, 64).toString('hex');
-  const expected = Buffer.from(digest, 'hex');
-  const received = Buffer.from(candidate, 'hex');
-  return expected.length === received.length && timingSafeEqual(expected, received);
-}
-
 function createCeoToken(user: { id: number; usuario: string; rol: string }): string {
   const payload = Buffer.from(JSON.stringify({ ...user, exp: Date.now() + CEO_SESSION_TTL_MS })).toString('base64url');
   const signature = createHmac('sha256', CEO_SESSION_SECRET).update(payload).digest('base64url');
@@ -1310,9 +1297,18 @@ async function resolveMeetingAccessScope(session: CeoSession): Promise<MeetingAc
   return { employeeId: hasGlobalDirection ? null : best.id, canEdit: best.rank > 0, hierarchyRole: best.cargo || null };
 }
 
+// consultor_lectura (personas de fuera): ve todas las reuniones, pero no edita, aprueba ni asigna nada.
+const CONSULTOR_MEETING_SCOPE: MeetingAccessScope = Object.freeze({ employeeId: null, canEdit: false, hierarchyRole: null });
+
 async function requireCeoMeetingAccess(req: Request, res: Response, next: NextFunction): Promise<void> {
   const session = readCeoSession(req);
   if (!session) return void res.status(401).json({ error: 'Sesión inválida o vencida. Inicia sesión nuevamente.' });
+  if (esConsultor(session.rol)) {
+    if (req.method !== 'GET') return void res.status(403).json({ error: 'Tu acceso a las reuniones es de solo lectura.' });
+    res.locals.ceoSession = session;
+    res.locals.meetingAccessScope = CONSULTOR_MEETING_SCOPE;
+    return void next();
+  }
   if (!isCeoMeetingAccessRole(session.rol)) return void res.status(403).json({ error: 'No tienes permiso para acceder a Gestión de reuniones.' });
   try {
     const scope = await resolveMeetingAccessScope(session);
@@ -1400,6 +1396,21 @@ async function requireMeetingActionDeleter(req: Request, res: Response, next: Ne
 
 export function isCeoConsultationRoute(path: string): boolean {
   return path === '/ceo/ask';
+}
+
+/**
+ * API de Netelip › Historial de llamadas (y la captación que cuelga de ella). Aquí basta una sesión válida: cada ruta comprueba
+ * después el rol con NETELIP_ACCESS_ROLES (backend/netelip/roles.ts), y así entra el rol consultor_lectura, que solo ve Netelip y reuniones.
+ */
+export function isNetelipCallsRoute(path: string): boolean {
+  return /^\/netelip\//.test(path) || /^\/captacion\/(?:decisiones|llamadas)\//.test(path);
+}
+
+/** Lo único de Gestión de reuniones que usa consultor_lectura: el listado, los filtros, el detalle y la grabación (solo GET). */
+export function isConsultorMeetingRoute(method: string, path: string): boolean {
+  if (method !== 'GET') return false;
+  if (['/meetings/configuration', '/meetings/work-items'].includes(path)) return false;
+  return [/^\/meetings$/, /^\/meetings\/filter-options$/, /^\/meetings\/[^/]+$/, /^\/meetings\/[^/]+\/recording$/].some((pattern) => pattern.test(path));
 }
 
 
@@ -1916,9 +1927,16 @@ function requireApiAccess(req: Request, res: Response, next: NextFunction): void
     return;
   }
   if (req.header('authorization')) {
-    if (/^\/project-meetings(?:\/|$)/.test(req.path) || /^\/meetings\/work-items(?:\/|$)/.test(req.path)) {
+    if (esConsultor(readCeoSession(req)?.rol)) {
+      // consultor_lectura: Netelip (cada ruta vuelve a comprobar el rol y corta las escrituras) y la lectura de reuniones. Nada más.
+      if (isNetelipCallsRoute(req.path)) requireCeoSession(req, res, next);
+      else if (isConsultorMeetingRoute(req.method, req.path)) void requireCeoMeetingAccess(req, res, next);
+      else res.status(403).json({ error: 'No tienes permisos para esta operación' });
+    } else if (/^\/project-meetings(?:\/|$)/.test(req.path) || /^\/meetings\/work-items(?:\/|$)/.test(req.path)) {
       requireCeoSession(req, res, next);
     } else if (isCeoConsultationRoute(req.path)) {
+      requireCeoSession(req, res, next);
+    } else if (isNetelipCallsRoute(req.path)) {
       requireCeoSession(req, res, next);
     } else if (isCeoMeetingReadRoute(req.method, req.path)) {
       void requireCeoMeetingAccess(req, res, next);
@@ -6168,6 +6186,13 @@ app.get('/api/meetings/:artifactId', requireCeoMeetingAccess, async (req: Reques
     ]);
     const session = res.locals.ceoSession as CeoSession;
     const row = artifactResult.rows[0];
+    if (esConsultor(session.rol)) {
+      // Solo lectura y sin el directorio de empleados y clientes (solo hace falta para asignar responsables).
+      return res.json({ ...meetingRowWithName(row), actions: actionsResult.rows, versions: versionsResult.rows, blockers: meetingApprovalBlockers(actionsResult.rows), detected_blockers: detectedBlockersResult.rows, available_projects: projectsResult, recording_notice: noticeResult.rows[0] || null,
+        permissions: { manageActions: false, deleteActions: false, editMeeting: false, review: false, assignOrganizer: false },
+        assignment_directory: { employees: [], clients: [] },
+      });
+    }
     const [deleteActions, editMeeting, review, employees, clients] = await Promise.all([
       canDeleteMeetingActions(session, scope, artifactId),
       scope.canEdit ? canEditMeetingArtifact(artifactId, scope.employeeId) : Promise.resolve(false),
@@ -9108,7 +9133,8 @@ const enviarWhatsAppCalificador = async (telefonoE164: string, texto: string) =>
 const netelipWorkers = createNetelipWorkers(pool, process.env, { enviar: enviarWhatsAppCalificador });
 const reunionesWorkers = createReunionesWorkers(pool, process.env, { tokenGoogle: googleDriveAccessToken });
 registerNetelipCalls(app, {
-  pool, admin: requireCeoAuth, kick: netelipWorkers.kick,
+  // session: también entra consultor_lectura (solo lectura); el acceso lo decide NETELIP_ACCESS_ROLES.
+  pool, admin: requireCeoAuth, session: requireCeoSession, kick: netelipWorkers.kick,
   role: (res) => String((res.locals.ceoSession as CeoSession | undefined)?.rol || ''),
   actor: (res) => ({ id: meetingAuditIdentity(res).id, nombre: meetingAuditActor(res) }),
   enviar: enviarWhatsAppCalificador,

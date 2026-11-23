@@ -92,6 +92,12 @@ function responsibleReferenceKey(person) {
 }
 
 export default function MeetingManagementView(props) {
+  // readOnlyViewer (consultor_lectura): siempre el flujo estándar y en solo lectura; no consulta el modo por proyecto.
+  if (props.readOnlyViewer) return <StandardMeetingManagementView {...props} limitedAccess={false} canEdit={false} projectWorkflow={false} canResolve={false} />;
+  return <MeetingManagementModeView {...props} />;
+}
+
+function MeetingManagementModeView(props) {
   const [mode, setMode] = useState(api.projectMeetings ? null : false);
   const [canResolve, setCanResolve] = useState(false);
   const [modeError, setModeError] = useState('');
@@ -105,7 +111,7 @@ export default function MeetingManagementView(props) {
   return <StandardMeetingManagementView {...props} projectWorkflow={mode} canResolve={canResolve} />;
 }
 
-function StandardMeetingManagementView({ limitedAccess = false, canEdit = !limitedAccess, openMeetingId = '', onMeetingOpened = () => {}, projectWorkflow = false, canResolve = false }) {
+function StandardMeetingManagementView({ readOnlyViewer = false, limitedAccess = false, canEdit = !limitedAccess, openMeetingId = '', onMeetingOpened = () => {}, projectWorkflow = false, canResolve = false }) {
   const meetingApi = projectWorkflow ? api.projectMeetings : api.meetings;
   const [meetings, setMeetings] = useState([]);
   const [directory, setDirectory] = useState(null);
@@ -255,8 +261,8 @@ function StandardMeetingManagementView({ limitedAccess = false, canEdit = !limit
 
   return <section className="ceo-page p-4 sm:p-6 xl:p-8">
     <div className="mb-5 flex flex-col gap-3 border-b border-[#2E2E2E] pb-5 lg:flex-row lg:items-end lg:justify-between">
-      <div><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#737373]">Agente de reuniones</p><h2 className="mt-1 text-xl font-semibold tracking-tight text-[#F2F2F2]">Gestión de reuniones</h2><p className="mt-1 text-xs text-[#737373]">{projectWorkflow ? 'Revisión por proyecto: cada rama avanza hasta el PMC o, si no hay, hasta el último cargo ocupado. Dirección recibe únicamente acciones asignadas o escaladas.' : limitedAccess ? 'Estas son las reuniones donde estás vinculado como responsable, PMC o miembro del proyecto.' : 'Revisá y aprobá los borradores operativos importados desde Google Drive.'}</p></div>
-<div className="flex flex-wrap gap-2"><input value={query} onChange={(event) => { setQuery(event.target.value); }} aria-label="Buscar reuniones" placeholder={projectWorkflow ? "Buscar reunión, contacto, PMC u obra…" : "Buscar contacto, teléfono, email u obra…"} className="h-9 w-72 max-w-full ceo-surface rounded border border-[#2E2E2E] bg-[#141414] px-3 text-xs text-[#F2F2F2] outline-none" />{!projectWorkflow && <><button type="button" onClick={reanalyzeMissingPmc} disabled={limitedAccess || requeueing} className="h-9 rounded border border-amber-300/35 bg-amber-300/[0.08] px-3 text-xs font-medium text-amber-100 hover:border-amber-300 disabled:opacity-40">{requeueing ? 'Encolando PMC…' : 'Reanalizar PMC pendientes'}</button><button type="button" onClick={retag} disabled={limitedAccess || retagging} className="h-9 rounded border border-emerald-300/35 bg-emerald-300/[0.08] px-3 text-xs font-medium text-emerald-100 hover:border-emerald-300 disabled:opacity-40">{retagging ? 'Vinculando…' : 'Vincular directorio'}</button></>}{projectWorkflow && <button type="button" onClick={() => load()} disabled={loading} className="h-9 rounded border border-[#2E2E2E] px-3 text-xs text-[#BFBFBF] disabled:opacity-40">{loading ? 'Actualizando…' : 'Actualizar'}</button>}</div>
+      <div><p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#737373]">Agente de reuniones</p><h2 className="mt-1 text-xl font-semibold tracking-tight text-[#F2F2F2]">Gestión de reuniones</h2><p className="mt-1 text-xs text-[#737373]">{projectWorkflow ? 'Revisión por proyecto: cada rama avanza hasta el PMC o, si no hay, hasta el último cargo ocupado. Dirección recibe únicamente acciones asignadas o escaladas.' : limitedAccess ? 'Estas son las reuniones donde estás vinculado como responsable, PMC o miembro del proyecto.' : readOnlyViewer ? 'Reuniones importadas desde Google Drive, en solo lectura.' : 'Revisá y aprobá los borradores operativos importados desde Google Drive.'}</p></div>
+<div className="flex flex-wrap gap-2"><input value={query} onChange={(event) => { setQuery(event.target.value); }} aria-label="Buscar reuniones" placeholder={projectWorkflow ? "Buscar reunión, contacto, PMC u obra…" : "Buscar contacto, teléfono, email u obra…"} className="h-9 w-72 max-w-full ceo-surface rounded border border-[#2E2E2E] bg-[#141414] px-3 text-xs text-[#F2F2F2] outline-none" />{!projectWorkflow && !readOnlyViewer && <><button type="button" onClick={reanalyzeMissingPmc} disabled={limitedAccess || requeueing} className="h-9 rounded border border-amber-300/35 bg-amber-300/[0.08] px-3 text-xs font-medium text-amber-100 hover:border-amber-300 disabled:opacity-40">{requeueing ? 'Encolando PMC…' : 'Reanalizar PMC pendientes'}</button><button type="button" onClick={retag} disabled={limitedAccess || retagging} className="h-9 rounded border border-emerald-300/35 bg-emerald-300/[0.08] px-3 text-xs font-medium text-emerald-100 hover:border-emerald-300 disabled:opacity-40">{retagging ? 'Vinculando…' : 'Vincular directorio'}</button></>}{projectWorkflow && <button type="button" onClick={() => load()} disabled={loading} className="h-9 rounded border border-[#2E2E2E] px-3 text-xs text-[#BFBFBF] disabled:opacity-40">{loading ? 'Actualizando…' : 'Actualizar'}</button>}</div>
     </div>
     {limitedAccess && <p className="mb-4 rounded border border-amber-300/30 bg-amber-300/[.06] p-3 text-xs text-amber-100">Sólo se muestran reuniones vinculadas a ti. Las opciones de edición dependen de tus permisos en cada reunión. La sincronización de Google Drive es central.</p>}{error && <p role="alert" className="mb-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}
     {notice && <p role="status" className="mb-4 rounded border border-amber-300/30 bg-amber-300/[0.08] p-3 text-xs text-amber-100">{notice}</p>}

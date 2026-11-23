@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canAccessNetelipCalls, isMeetingEditorCeoUser, isMeetingLimitedCeoUser } from '../src/ceo-dashboard/CeoLogin';
+import { canAccessMarketing, canAccessNetelipCalls, isMeetingEditorCeoUser, isMeetingLimitedCeoUser, isConsultorCeoUser } from '../src/ceo-dashboard/CeoLogin';
 
 describe('Acceso de dirección', () => {
   it.each(['director', 'director_general', 'direccion_de_operaciones', 'director_de_operaciones'])('permite navegación y edición a %s', (role) => {
@@ -26,5 +26,20 @@ describe('Netelip · Historial de llamadas', () => {
   });
   it.each(['ceo', 'employee:direccion_de_operaciones', 'employee:director_de_operaciones', 'employee:pmc_proyectos', 'consulta_publica', ''])('no lo ve %s', (rol) => {
     expect(canAccessNetelipCalls({ rol })).toBe(false);
+  });
+});
+
+describe('Consultor de solo lectura (consultor_lectura)', () => {
+  it('ve las llamadas, no edita reuniones y no tiene el menú limitado de empleado', () => {
+    const rol = 'consultor_lectura';
+    expect(isConsultorCeoUser({ rol })).toBe(true);
+    expect(canAccessNetelipCalls({ rol })).toBe(true);
+    expect(canAccessMarketing({ rol })).toBe(false);
+    expect(isMeetingEditorCeoUser({ rol })).toBe(false);
+    expect(isMeetingLimitedCeoUser({ rol })).toBe(false);
+  });
+
+  it.each(['superadmin', 'employee:director', 'employee:pmc_proyectos', ''])('%s no es consultor', (rol) => {
+    expect(isConsultorCeoUser({ rol })).toBe(false);
   });
 });

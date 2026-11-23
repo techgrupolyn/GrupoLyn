@@ -42,6 +42,7 @@ function DirectionCell({ call }) {
 
 /** Contacto de la fila: lead o cliente con enlace a su ficha, o el motivo por el que no hay contacto. */
 function ContactCell({ call, onOpenContact }) {
+  if (call.contact && !onOpenContact) return <div><p className="text-xs font-medium text-[#F2F2F2]">{call.contact.name}</p><div className="mt-1"><ContactPill type={call.contact.type} /></div></div>;
   if (call.contact) {
     return <div><button type="button" onClick={(event) => { event.stopPropagation(); onOpenContact(call.contact); }} className="text-left text-xs font-medium text-[#F2F2F2] underline decoration-[#4A4A4A] underline-offset-2 hover:decoration-amber-300">{call.contact.name}</button><div className="mt-1"><ContactPill type={call.contact.type} /></div></div>;
   }
@@ -82,7 +83,7 @@ function TranscriptionPanel({ detail }) {
   })}</ol></>;
 }
 
-function CallDrawer({ detail, loading, error, onClose, onOpenContact }) {
+function CallDrawer({ detail, loading, error, onClose, onOpenContact, readOnly = false }) {
   useEffect(() => {
     const onKey = (event) => { if (event.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -92,7 +93,7 @@ function CallDrawer({ detail, loading, error, onClose, onOpenContact }) {
   const clickupLead = call?.captacion?.status === 'vinculada' ? call.captacion : null;
   const title = call?.contact?.name || clickupLead?.name || 'Sin contacto identificado';
   return <aside role="dialog" aria-modal="true" aria-label="Detalle de llamada" className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[600px] flex-col border-l border-[#2E2E2E] bg-[#0D0D0D] shadow-2xl">
-    <header className="shrink-0 border-b border-[#2E2E2E] bg-[#111111] px-5 py-5"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Llamada grabada</p><h2 className="mt-1 truncate text-xl font-semibold tracking-tight text-[#F2F2F2]">{loading && !call ? 'Cargando…' : title}</h2>{call && <div className="mt-2 flex flex-wrap items-center gap-2"><ContactPill type={call.contact?.type} />{call.contact && <button type="button" onClick={() => onOpenContact(call.contact)} className="text-[11px] text-amber-300 hover:text-amber-200">Ver ficha</button>}{!call.contact && clickupLead && <span className="text-[11px] text-sky-100">Lead de «Contacto de Reforma»{clickupLead.via === 'manual' ? ' (asignado a mano)' : ''}{clickupLead.url && <> · <a href={clickupLead.url} target="_blank" rel="noreferrer" className="text-amber-300 hover:text-amber-200">Ver tarjeta</a></>}</span>}{!call.contact && !clickupLead && <span className="text-[11px] text-[#737373]">{call.contact_status === 'hidden' ? 'Número oculto' : call.contact_status === 'multiple' ? 'Coincidencia múltiple: el teléfono pertenece a varios contactos' : 'Pendiente de resolución'}</span>}</div>}</div><button type="button" onClick={onClose} className="shrink-0 rounded border border-[#2E2E2E] px-2.5 py-1.5 text-xs text-[#BFBFBF] hover:border-[#737373]">Cerrar</button></div></header>
+    <header className="shrink-0 border-b border-[#2E2E2E] bg-[#111111] px-5 py-5"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Llamada grabada</p><h2 className="mt-1 truncate text-xl font-semibold tracking-tight text-[#F2F2F2]">{loading && !call ? 'Cargando…' : title}</h2>{call && <div className="mt-2 flex flex-wrap items-center gap-2"><ContactPill type={call.contact?.type} />{call.contact && onOpenContact && <button type="button" onClick={() => onOpenContact(call.contact)} className="text-[11px] text-amber-300 hover:text-amber-200">Ver ficha</button>}{!call.contact && clickupLead && <span className="text-[11px] text-sky-100">Lead de «Contacto de Reforma»{clickupLead.via === 'manual' ? ' (asignado a mano)' : ''}{clickupLead.url && <> · <a href={clickupLead.url} target="_blank" rel="noreferrer" className="text-amber-300 hover:text-amber-200">Ver tarjeta</a></>}</span>}{!call.contact && !clickupLead && <span className="text-[11px] text-[#737373]">{call.contact_status === 'hidden' ? 'Número oculto' : call.contact_status === 'multiple' ? 'Coincidencia múltiple: el teléfono pertenece a varios contactos' : 'Pendiente de resolución'}</span>}</div>}</div><button type="button" onClick={onClose} className="shrink-0 rounded border border-[#2E2E2E] px-2.5 py-1.5 text-xs text-[#BFBFBF] hover:border-[#737373]">Cerrar</button></div></header>
     <div className="flex-1 overflow-y-auto px-5 py-4">
       {error && <p role="alert" className="mb-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}
       {call && <>
@@ -102,14 +103,16 @@ function CallDrawer({ detail, loading, error, onClose, onOpenContact }) {
         {/* key: al abrir otra llamada el reproductor se desmonta y el audio anterior se detiene. */}
         <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Grabación</h3><CallAudioPlayer key={call.id} call={call} transcriptionAccess={detail.transcription_access} /></section>
         <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Evaluación del comercial</h3><CallEvaluationPanel callId={call.id} transcriptionStatus={call.transcription_status} /></section>
-        <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Decisión de pase del SDR</h3><DecisionPasePanel callId={call.id} /></section>
+        <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Decisión de pase del SDR</h3><DecisionPasePanel callId={call.id} readOnly={readOnly} /></section>
         <section className="mt-5"><h3 className="mb-3 font-mono text-[10px] uppercase tracking-[.14em] text-[#737373]">Transcripción</h3><TranscriptionPanel detail={detail} /></section>
       </>}
     </div>
   </aside>;
 }
 
-export default function NetelipCallsView({ onOpenContact = () => {} }) {
+// readOnly (rol consultor_lectura): ve llamadas, evaluaciones, objeciones y el documento del entrenador, pero no registra, asigna ni
+// configura nada; tampoco ve la configuración de comerciales (sus WhatsApp). Sin onOpenContact, el nombre del contacto no enlaza a su ficha.
+export default function NetelipCallsView({ onOpenContact = null, readOnly = false }) {
   const [filters, setFilters] = useState(() => readCallFilters(window.location.search));
   const [result, setResult] = useState(null);
   const [agents, setAgents] = useState([]);
@@ -191,13 +194,13 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
       <input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Buscar llamadas" placeholder="Buscar por nombre o teléfono…" className="h-9 w-72 max-w-full ceo-surface rounded border border-[#2E2E2E] bg-[#141414] px-3 text-xs text-[#F2F2F2] outline-none" />
     </div>
     <div role="tablist" aria-label="Secciones de llamadas" className="mb-4 flex flex-wrap gap-1.5">
-      {[['calls', 'Llamadas'], ['objections', 'Objeciones e ideas de marketing'], ['salespeople', 'Comerciales evaluados'], ['trainer', 'Documento del entrenador']].map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)} className={`dashboard-filter-tab rounded px-3 py-1.5 text-xs ${tab === key ? 'is-active bg-[#2E2E2E] text-[#F2F2F2]' : 'text-[#737373] hover:text-[#BFBFBF]'}`}>{label}</button>)}
+      {[['calls', 'Llamadas'], ['objections', 'Objeciones e ideas de marketing'], ...(readOnly ? [] : [['salespeople', 'Comerciales evaluados']]), ['trainer', 'Documento del entrenador']].map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)} className={`dashboard-filter-tab rounded px-3 py-1.5 text-xs ${tab === key ? 'is-active bg-[#2E2E2E] text-[#F2F2F2]' : 'text-[#737373] hover:text-[#BFBFBF]'}`}>{label}</button>)}
     </div>
     {tab === 'objections' && <ObjectionsPanel onOpenCall={openCall} />}
-    {tab === 'salespeople' && <SalespeoplePanel />}
+    {tab === 'salespeople' && !readOnly && <SalespeoplePanel />}
     {tab === 'trainer' && <EntrenadorPanel />}
     {tab === 'calls' && <>
-    <LlamadasSinAsignarPanel />
+    {!readOnly && <LlamadasSinAsignarPanel />}
     {error && <p role="alert" className="mb-4 rounded border border-red-900/70 bg-red-950/30 p-3 text-xs text-red-200">{error}</p>}
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">{kpis.map((kpi) => <button key={kpi.label} type="button" onClick={() => update(kpi.apply)} aria-pressed={kpi.active} className={`dashboard-metric-card rounded-md border bg-[#141414] p-4 text-left ${kpi.active ? 'border-amber-300/50' : 'border-[#2E2E2E] hover:border-[#4A4A4A]'}`}><p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#737373]">{kpi.label}</p><p className="mt-1 text-2xl font-semibold text-[#F2F2F2]">{loading && !result ? '—' : kpi.value}</p></button>)}</div>
     <div className="mt-5 overflow-hidden rounded-md border border-[#2E2E2E] bg-[#141414]">
@@ -236,6 +239,6 @@ export default function NetelipCallsView({ onOpenContact = () => {} }) {
       <div className="flex flex-col gap-3 border-t border-[#2E2E2E] px-3 py-3 text-xs text-[#737373] sm:flex-row sm:items-center sm:justify-between"><p>Mostrando {total ? ((page - 1) * pageSize) + 1 : 0}–{Math.min(page * pageSize, total)} de {total} llamadas</p><div className="flex items-center gap-2"><button type="button" disabled={page <= 1 || loading} onClick={() => setFilters((current) => ({ ...current, page: Math.max(1, page - 1) }))} className="rounded border border-[#2E2E2E] px-3 py-1.5 text-[#BFBFBF] hover:border-amber-300/50 disabled:cursor-not-allowed disabled:opacity-40">Anterior</button><span className="min-w-24 text-center">Página {page} de {Math.max(1, totalPages)}</span><button type="button" disabled={page >= totalPages || loading} onClick={() => setFilters((current) => ({ ...current, page: Math.min(totalPages, page + 1) }))} className="rounded border border-[#2E2E2E] px-3 py-1.5 text-[#BFBFBF] hover:border-amber-300/50 disabled:cursor-not-allowed disabled:opacity-40">Siguiente</button></div></div>
     </div>
     </>}
-    {filters.call && <><button type="button" aria-label="Cerrar detalle" onClick={closeCall} className="fixed inset-0 z-40 bg-black/60" /><CallDrawer detail={detail} loading={detailLoading} error={detailError} onClose={closeCall} onOpenContact={onOpenContact} /></>}
+    {filters.call && <><button type="button" aria-label="Cerrar detalle" onClick={closeCall} className="fixed inset-0 z-40 bg-black/60" /><CallDrawer detail={detail} loading={detailLoading} error={detailError} onClose={closeCall} onOpenContact={onOpenContact} readOnly={readOnly} /></>}
   </section>;
 }

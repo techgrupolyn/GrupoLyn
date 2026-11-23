@@ -10,7 +10,7 @@ const box = 'rounded border border-[#2E2E2E] bg-[#141414] p-3';
 const field = 'w-full rounded border border-[#2E2E2E] bg-[#0D0D0D] p-2 text-xs text-[#F2F2F2] outline-none focus:border-amber-300/60';
 const VACIO = { decision: '', motivo: '', texto: '', dato: '' };
 
-export default function DecisionPasePanel({ callId }) {
+export default function DecisionPasePanel({ callId, readOnly = false }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [form, setForm] = useState(VACIO);
@@ -33,13 +33,16 @@ export default function DecisionPasePanel({ callId }) {
 
   if (data.sdr) {
     return <div className="space-y-3">
-      <DecisionBloque titulo="Tu propuesta" decision={data.sdr} motivos={data.motivos} />
+      <DecisionBloque titulo={readOnly ? "Propuesta del SDR" : "Tu propuesta"} decision={data.sdr} motivos={data.motivos} />
       {data.ia
         ? <DecisionBloque titulo="Decisión de la IA" decision={data.ia} motivos={data.motivos} resaltar={data.ia.decision !== data.sdr.decision} />
         : <p className={`${box} text-xs text-[#737373]`}>La IA todavía no ha analizado esta llamada. Cuando lo haga, verás aquí su decisión y los próximos pasos que recomienda.</p>}
       <p className="text-[11px] text-[#737373]">Estado del caso: {data.estado ? ESTADO_LABEL[data.estado] : 'esperando la decisión de la IA'}. Ernesto valida todos los casos durante el piloto.</p>
     </div>;
   }
+
+  // Solo lectura: no registra la propuesta del SDR (ni, por tanto, ve la de la IA antes que el SDR).
+  if (readOnly) return <p className={`${box} text-xs leading-5 text-[#737373]`}>El SDR todavía no ha registrado su decisión de pase para esta llamada.</p>;
 
   const motivosDeLaDecision = form.decision ? data.motivos?.[form.decision] || [] : [];
   const otro = form.motivo === OTRO;

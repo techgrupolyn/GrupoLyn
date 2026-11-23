@@ -195,6 +195,23 @@ describe('NetelipCallsView', () => {
     expect(onOpenContact).toHaveBeenCalledWith({ type: 'client', id: 'c1', name: 'Lucía Ficticia' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
+
+  it('solo lectura (consultor_lectura): sin comerciales, sin asignar llamadas y sin enlace a fichas', async () => {
+    render(<NetelipCallsView readOnly />);
+    expect(await screen.findByText('Lucía Ficticia')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Lucía Ficticia' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Comerciales evaluados' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Documento del entrenador' })).toBeInTheDocument();
+    expect(api.captacionLlamadas.sinAsignar).not.toHaveBeenCalled();
+  });
+
+  it('solo lectura: la decisión de pase no muestra el formulario del SDR', async () => {
+    vi.mocked(api.netelip.decision).mockResolvedValue({ lead_conocido: true, motivos: {}, estado: null, sdr: null, ia: null });
+    window.history.replaceState({}, '', '/?view=netelip&call=1');
+    render(<NetelipCallsView readOnly />);
+    expect(await screen.findByText('El SDR todavía no ha registrado su decisión de pase para esta llamada.')).toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'Decisión de pase del SDR' })).not.toBeInTheDocument();
+  });
 });
 
 describe('CallEvaluationPanel · rúbrica versionada', () => {
