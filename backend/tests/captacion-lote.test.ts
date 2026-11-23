@@ -244,7 +244,7 @@ describe.skipIf(!hayBaseDePruebas)('captación · lote · de punta a punta', () 
     guiones.set(await llamada({ id: 'u1', telefono: '+34600000001', texto: TRANSCRIPCION_CON_FECHA }), { resumen: RESUMEN_BUENO });
     const simulacro = await lote();
     expect(simulacro.filas[0]!.resumen).toBe(
-      'Qué quiere: Reforma integral de la vivienda\nDónde quedó: Vendrá a la oficina el viernes a las seis\nQué lo frena: Falta firmar la compra\nPara qué llamarlo: Confirmar la visita del viernes',
+      'Qué quiere: Reforma integral de la vivienda\nDónde quedó: Vendrá a la oficina el viernes a las seis\nQué lo frena: Falta firmar la compra\nPara qué llamarlo: Confirmar la visita del viernes; fecha prevista 20/11/2026',
     );
     expect(posts()).toEqual([]);
     const informe = await lote({ escribirMaximo: 1 });

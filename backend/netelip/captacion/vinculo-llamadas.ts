@@ -134,20 +134,26 @@ export class VinculadorLlamadas {
     return leads;
   }
 
-  /** Una pasada: las llamadas nuevas y las que quedaron sin lead en los últimos 30 días. */
+  /**
+   * Una pasada: las llamadas nuevas y las que quedaron sin lead en los últimos 30 días. Recorre TODAS por lotes (de la más antigua a la más
+   * reciente): con un tope por pasada, las que no coinciden y se vuelven a mirar cada minuto taparían a las que aún no se han visto.
+   */
   async ejecutar(): Promise<ResumenVinculo> {
     const leads = await this.leads(false);
-    return vincularLlamadas(this.d.pool, leads, { reintentarDesde: new Date(this.ahora() - VENTANA_REINTENTO_DIAS * 86_400_000) });
+    return this.recorrer(leads, new Date(this.ahora() - VENTANA_REINTENTO_DIAS * 86_400_000));
   }
 
   /** El repaso del histórico: todas las llamadas sin lead, de cualquier fecha, con los leads recién leídos. */
   async repasarTodo(): Promise<ResumenVinculo> {
-    const leads = await this.leads(true);
+    return this.recorrer(await this.leads(true), null);
+  }
+
+  private async recorrer(leads: readonly LeadVinculo[], reintentarDesde: Date | null): Promise<ResumenVinculo> {
     const lote = this.d.loteRepaso ?? LOTE_REPASO;
     const total = vacio();
     let despuesDeId = 0;
     for (;;) {
-      const r = await vincularLlamadas(this.d.pool, leads, { reintentarDesde: null, limite: lote, despuesDeId });
+      const r = await vincularLlamadas(this.d.pool, leads, { reintentarDesde, limite: lote, despuesDeId });
       total.revisadas += r.revisadas;
       total.vinculadas += r.vinculadas;
       total.variasCoincidencias += r.variasCoincidencias;

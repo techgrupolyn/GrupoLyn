@@ -7,7 +7,7 @@ import { escribirPlan, NOMBRES_CAMPOS, planEscritura, type CampoLista } from '..
 import type { EscriturasConTextos } from '../netelip/captacion/motor.ts';
 import { evaluarLlamadaCaptacion, type Dependencias, type EntradaLlamada } from '../netelip/captacion/proceso.ts';
 import {
-  BLOQUES_RESUMEN, contieneDatoDeContacto, contieneImporte, fechaMadrid, MAX_CARACTERES_RESUMEN, PREGUNTAR_PRESUPUESTO, renderResumen,
+  BLOQUES_RESUMEN, contieneDatoDeContacto, contieneImporte, fechaLegible, fechaMadrid, MAX_CARACTERES_RESUMEN, PREGUNTAR_PRESUPUESTO, renderResumen,
   SIN_FECHA_ACORDADA, SIN_INFORMACION, validarResumen, type ContextoResumen,
 } from '../netelip/captacion/resumen.ts';
 import {
@@ -49,9 +49,9 @@ const invalido = (r: ResumenSalida, c: ContextoResumen = ctx()): string => {
 describe('validarResumen · lo que vale', () => {
   it('un resumen correcto se queda tal cual y se escribe en 4 líneas con etiqueta, en el orden de Alex', () => {
     const r = ok(resumen());
-    expect(r).toEqual({ queQuiere: 'Reforma integral de un piso', dondeQuedo: 'Vendrá a la oficina el viernes', queLoFrena: 'Falta firmar la compra', paraQueLlamarlo: 'Confirmar la visita', fechaPrevista: '2026-11-20' });
+    expect(r).toEqual({ queQuiere: 'Reforma integral de un piso', dondeQuedo: 'Vendrá a la oficina el viernes', queLoFrena: 'Falta firmar la compra', paraQueLlamarlo: 'Confirmar la visita; fecha prevista 20/11/2026', fechaPrevista: '2026-11-20' });
     expect(renderResumen(r)).toBe(
-      'Qué quiere: Reforma integral de un piso\nDónde quedó: Vendrá a la oficina el viernes\nQué lo frena: Falta firmar la compra\nPara qué llamarlo: Confirmar la visita',
+      'Qué quiere: Reforma integral de un piso\nDónde quedó: Vendrá a la oficina el viernes\nQué lo frena: Falta firmar la compra\nPara qué llamarlo: Confirmar la visita; fecha prevista 20/11/2026',
     );
     expect(BLOQUES_RESUMEN.map((b) => b.etiqueta)).toEqual(['Qué quiere', 'Dónde quedó', 'Qué lo frena', 'Para qué llamarlo']);
   });
@@ -73,9 +73,9 @@ describe('validarResumen · lo que vale', () => {
 
   it('el texto completo, con sus etiquetas, puede llegar a 600 caracteres y no pasa de ahí', () => {
     // 61 caracteres de etiquetas y saltos de línea + 539 de texto = 600.
-    const justo = resumen({ queQuiere: 'a'.repeat(200), dondeQuedo: 'b'.repeat(100), queLoFrena: 'c'.repeat(100), paraQueLlamarlo: 'd'.repeat(139) });
+    const justo = resumen({ queQuiere: 'a'.repeat(200), dondeQuedo: 'b'.repeat(100), queLoFrena: 'c'.repeat(100), paraQueLlamarlo: 'd'.repeat(128) + ' 20/11/2026' });
     expect(renderResumen(ok(justo)).length).toBe(MAX_CARACTERES_RESUMEN);
-    const demasiado = resumen({ queQuiere: 'a'.repeat(200), dondeQuedo: 'b'.repeat(100), queLoFrena: 'c'.repeat(100), paraQueLlamarlo: 'd'.repeat(140) });
+    const demasiado = resumen({ queQuiere: 'a'.repeat(200), dondeQuedo: 'b'.repeat(100), queLoFrena: 'c'.repeat(100), paraQueLlamarlo: 'd'.repeat(129) + ' 20/11/2026' });
     expect(invalido(demasiado)).toBe('el resumen tiene 601 caracteres (máximo 600)');
   });
 
@@ -183,7 +183,7 @@ describe('validarResumen · la fecha prevista', () => {
 describe('validarResumen · lo que añade el sistema', () => {
   it('sin presupuesto registrado, «Para qué llamarlo» lleva «Preguntar presupuesto» (antes de «sin fecha acordada»)', () => {
     const c = ctx({ tienePresupuesto: false });
-    expect(ok(resumen(), c).paraQueLlamarlo).toBe(`Confirmar la visita; ${PREGUNTAR_PRESUPUESTO}`);
+    expect(ok(resumen(), c).paraQueLlamarlo).toBe(`Confirmar la visita; ${PREGUNTAR_PRESUPUESTO}; fecha prevista 20/11/2026`);
     expect(ok(resumen({ fechaPrevista: null, fechaCita: null }), c).paraQueLlamarlo).toBe('Confirmar la visita; Preguntar presupuesto; sin fecha acordada');
   });
 
@@ -194,22 +194,53 @@ describe('validarResumen · lo que añade el sistema', () => {
     expect(invalido(resumen({ paraQueLlamarlo: 'No hace falta preguntar presupuesto' }), c)).toBe(mensaje);
     // Con presupuesto registrado es verdad y vale; un «no» de otra frase no cuenta.
     expect(validarResumen(resumen({ paraQueLlamarlo: 'No preguntar presupuesto todavía' }), ctx({ tienePresupuesto: true })).ok).toBe(true);
-    expect(ok(resumen({ paraQueLlamarlo: 'No llamar hoy. Preguntar presupuesto' }), c).paraQueLlamarlo).toBe('No llamar hoy. Preguntar presupuesto');
+    expect(ok(resumen({ paraQueLlamarlo: 'No llamar hoy. Preguntar presupuesto' }), c).paraQueLlamarlo).toBe('No llamar hoy. Preguntar presupuesto; fecha prevista 20/11/2026');
   });
 
   it('con presupuesto registrado no lo añade, y si el modelo ya lo puso no se repite', () => {
-    expect(ok(resumen(), ctx({ tienePresupuesto: true })).paraQueLlamarlo).toBe('Confirmar la visita');
-    expect(ok(resumen({ paraQueLlamarlo: 'Preguntar presupuesto en la visita' }), ctx({ tienePresupuesto: false })).paraQueLlamarlo).toBe('Preguntar presupuesto en la visita');
+    expect(ok(resumen(), ctx({ tienePresupuesto: true })).paraQueLlamarlo).toBe('Confirmar la visita; fecha prevista 20/11/2026');
+    expect(ok(resumen({ paraQueLlamarlo: 'Preguntar presupuesto en la visita' }), ctx({ tienePresupuesto: false })).paraQueLlamarlo).toBe('Preguntar presupuesto en la visita; fecha prevista 20/11/2026');
   });
 
   it('un último bloque sin información lo sustituye la indicación, con mayúscula inicial', () => {
-    expect(ok(resumen({ paraQueLlamarlo: '' }), ctx({ tienePresupuesto: false })).paraQueLlamarlo).toBe('Preguntar presupuesto');
+    expect(ok(resumen({ paraQueLlamarlo: '' }), ctx({ tienePresupuesto: false })).paraQueLlamarlo).toBe('Preguntar presupuesto; fecha prevista 20/11/2026');
     expect(ok(resumen({ paraQueLlamarlo: SIN_INFORMACION, fechaPrevista: null, fechaCita: null }), ctx({ tienePresupuesto: true })).paraQueLlamarlo).toBe('Sin fecha acordada');
   });
 
   it('quita la puntuación final antes de añadir', () => {
     expect(ok(resumen({ paraQueLlamarlo: 'Llamar el jueves.', fechaPrevista: null, fechaCita: null })).paraQueLlamarlo).toBe('Llamar el jueves; sin fecha acordada');
     expect(ok(resumen({ paraQueLlamarlo: 'Llamar el jueves ; ', fechaPrevista: null, fechaCita: null })).paraQueLlamarlo).toBe('Llamar el jueves; sin fecha acordada');
+  });
+});
+
+describe('validarResumen · la fecha prevista en «Para qué llamarlo»', () => {
+  it('con fecha acordada, «Para qué llamarlo» la lleva escrita como DD/MM/AAAA, después de «Preguntar presupuesto»', () => {
+    expect(ok(resumen({ paraQueLlamarlo: 'Confirmar la visita' })).paraQueLlamarlo).toBe('Confirmar la visita; fecha prevista 20/11/2026');
+    expect(ok(resumen({ paraQueLlamarlo: 'Confirmar la visita' }), ctx({ tienePresupuesto: false })).paraQueLlamarlo).toBe('Confirmar la visita; Preguntar presupuesto; fecha prevista 20/11/2026');
+    expect(fechaLegible('2026-03-05')).toBe('05/03/2026');
+  });
+
+  it('si el bloque ya trae la fecha (DD/MM/AAAA o AAAA-MM-DD) no se repite', () => {
+    expect(ok(resumen({ paraQueLlamarlo: 'Confirmar la visita del 20/11/2026' })).paraQueLlamarlo).toBe('Confirmar la visita del 20/11/2026');
+    expect(ok(resumen({ paraQueLlamarlo: 'Confirmar la visita del 2026-11-20' })).paraQueLlamarlo).toBe('Confirmar la visita del 2026-11-20');
+  });
+
+  it('una fecha de otro día en el texto no cuenta: se añade la fecha prevista', () => {
+    expect(ok(resumen({ paraQueLlamarlo: 'Confirmar la visita; antes, el 19/11/2026' })).paraQueLlamarlo).toBe('Confirmar la visita; antes, el 19/11/2026; fecha prevista 20/11/2026');
+  });
+
+  it('un bloque sin información lo sustituye la fecha, con mayúscula inicial', () => {
+    expect(ok(resumen({ paraQueLlamarlo: '' })).paraQueLlamarlo).toBe('Fecha prevista 20/11/2026');
+  });
+
+  it('sin fecha acordada no se escribe ninguna fecha prevista', () => {
+    expect(ok(resumen({ fechaPrevista: null, fechaCita: null })).paraQueLlamarlo).not.toMatch(/fecha prevista/i);
+  });
+
+  it('la fecha que añade el sistema cuenta para los 600 caracteres', () => {
+    // 139 caracteres en el último bloque dejan el texto en 600 justos; la fecha añadida lo pasa.
+    const r = resumen({ queQuiere: 'a'.repeat(200), dondeQuedo: 'b'.repeat(100), queLoFrena: 'c'.repeat(100), paraQueLlamarlo: 'd'.repeat(139) });
+    expect(invalido(r)).toMatch(/caracteres \(máximo 600\)/);
   });
 });
 
@@ -409,7 +440,7 @@ describe.skipIf(!hayBaseDePruebas)('resumen ejecutivo contra Postgres', () => {
     expect(lineas.length).toBeLessThanOrEqual(5);
     expect(texto.length).toBeLessThanOrEqual(600);
     expect(contieneImporte(texto)).toBe(false);
-    expect(lineas[3]).toBe('Para qué llamarlo: Confirmar la visita del viernes');
+    expect(lineas[3]).toBe('Para qué llamarlo: Confirmar la visita del viernes; fecha prevista 20/11/2026');
   });
 
   it('Escenario «Actualización con una nueva interacción»: «Dónde quedó» refleja la última llamada, el anterior queda en el historial y el modelo recibe el resumen previo', async () => {
@@ -459,7 +490,7 @@ describe.skipIf(!hayBaseDePruebas)('resumen ejecutivo contra Postgres', () => {
     const r = await evaluarLlamadaCaptacion(p.deps, llamada());
     if (r.estado !== 'procesada') throw new Error('no procesada');
     expect(r.escrituras.presupuesto).toBeNull();
-    expect(r.escrituras.resumen!.split('\n')[3]).toBe('Para qué llamarlo: Confirmar la visita del viernes; Preguntar presupuesto');
+    expect(r.escrituras.resumen!.split('\n')[3]).toBe('Para qué llamarlo: Confirmar la visita del viernes; Preguntar presupuesto; fecha prevista 20/11/2026');
   });
 
   it('un presupuesto que viene del formulario también cuenta como «presupuesto registrado»: no se pide de nuevo', async () => {

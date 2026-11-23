@@ -26,6 +26,7 @@ lead, dónde quedó la conversación, qué lo frena y para qué llamarlo. Ticket
 | Sin datos de contacto: email, teléfono (9 o más dígitos), marcadores `[NOMBRE]`, dirección (calle, avenida, plaza… seguida de un nombre o número) | Resumen descartado |
 | `fecha_prevista` es una fecha real AAAA-MM-DD, no anterior al día de la llamada (hora de Madrid), no más de 400 días después, y trae una cita literal de la transcripción que menciona una fecha o un plazo | Resumen descartado: la fecha nunca se inventa |
 | Sin fecha acordada | «Para qué llamarlo» termina en «sin fecha acordada» (lo añade el código) |
+| Con fecha acordada | «Para qué llamarlo» lleva «fecha prevista DD/MM/AAAA» al final (lo añade el código, después de «Preguntar presupuesto» si toca). Si el bloque ya trae esa fecha, no se repite |
 | Lead sin presupuesto vigente (de cualquier fuente) | «Para qué llamarlo» incluye «Preguntar presupuesto» (lo añade el código). Si el modelo escribe «No preguntar presupuesto», el resumen se descarta |
 | Texto completo con etiquetas, 600 caracteres como máximo | Resumen descartado |
 

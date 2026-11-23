@@ -33,6 +33,9 @@ export function renderResumen(r: ResumenLead): string {
   return BLOQUES_RESUMEN.map((b) => `${b.etiqueta}: ${r[b.clave]}`).join('\n');
 }
 
+/** AAAA-MM-DD → DD/MM/AAAA, tal como se lee en la tarjeta. */
+export const fechaLegible = (iso: string): string => iso.split('-').reverse().join('/');
+
 /** AAAA-MM-DD en hora de Madrid. */
 export function fechaMadrid(d: Date): string {
   const p = Object.fromEntries(
@@ -119,7 +122,8 @@ function anadir(bloque: string, extra: string): string {
  * - un bloque sin texto pasa a «Sin información» (los cuatro vacíos no es un resumen);
  * - sin importes de dinero ni datos de contacto en ningún bloque;
  * - la fecha prevista es una fecha real, no anterior a la llamada ni a más de 400 días de ella, y viene con una cita literal de la transcripción;
- * - sin fecha acordada el último bloque lo dice («sin fecha acordada»), y sin presupuesto registrado añade «Preguntar presupuesto»;
+ * - sin fecha acordada el último bloque lo dice («sin fecha acordada»), con fecha acordada la lleva escrita («fecha prevista DD/MM/AAAA»),
+ *   y sin presupuesto registrado añade «Preguntar presupuesto»;
  * - el texto completo, con sus etiquetas, no pasa de 600 caracteres.
  */
 export function validarResumen(r: ResumenSalida, c: ContextoResumen): ResultadoResumen {
@@ -149,6 +153,11 @@ export function validarResumen(r: ResumenSalida, c: ContextoResumen): ResultadoR
   if (!c.tienePresupuesto && /\bno\b[^.;]{0,20}preguntar presupuesto/i.test(para)) return invalido('«Para qué llamarlo» dice que no se pregunte el presupuesto y el lead no tiene ninguno');
   if (!c.tienePresupuesto && !/preguntar presupuesto/i.test(para)) para = anadir(para, PREGUNTAR_PRESUPUESTO);
   if (fecha === null && !new RegExp(SIN_FECHA_ACORDADA, 'i').test(para)) para = anadir(para, SIN_FECHA_ACORDADA);
+  // Con fecha acordada, la fecha viaja a la vista: «Para qué llamarlo» la lleva escrita (DD/MM/AAAA) salvo que el bloque ya la diga así.
+  if (fecha !== null) {
+    const escrita = fechaLegible(fecha);
+    if (!para.includes(escrita) && !para.includes(fecha)) para = anadir(para, `fecha prevista ${escrita}`);
+  }
   bloques.paraQueLlamarlo = para;
 
   const resumen: ResumenLead = { ...bloques, fechaPrevista: fecha };

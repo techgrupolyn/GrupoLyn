@@ -29,7 +29,7 @@ Cada llamada tiene una fila en `captacion_llamada_lead` con su estado:
 ## Cuándo corre
 
 - **En el servicio** (`CAPTACION_VINCULO_ENABLED=true`, necesita `CLICKUP_API_TOKEN` y `CAPTACION_CLICKUP_LIST_ID`, no necesita Gemini): una pasada
-  cada minuto. Lee los leads de ClickUp con una vigencia de 5 minutos. Toma las llamadas sin fila y vuelve a mirar las que no coincidieron en los
+  cada minuto, que recorre todas las llamadas pendientes por lotes, de la más antigua a la más reciente. Lee los leads de ClickUp con una vigencia de 5 minutos. Toma las llamadas sin fila y vuelve a mirar las que no coincidieron en los
   últimos 30 días (el lead puede crearse después de la llamada). Una llamada ya vinculada no se toca. Apagado por defecto.
 - **El repaso del histórico** (una vez, o cuando haga falta), desde `backend/`:
 
@@ -56,7 +56,8 @@ Cada llamada tiene una fila en `captacion_llamada_lead` con su estado:
 - **No escribe nada en ClickUp** y no mueve tarjetas.
 - **No crea leads:** una llamada de alguien que nunca pasó por «Contacto de Reforma» queda como `sin_coincidencia`.
 - **La cola de la calificación solo califica leads vivos (e1 a e13)**; el cruce de N-1.0 usa todas las tarjetas padre. Una llamada puede quedar
-  vinculada a un lead cerrado y, aun así, no generar calificación.
+  vinculada a un lead cerrado y, aun así, no generar calificación. Si se asigna a mano a una tarjeta cerrada (o en F2 o después), la llamada
+  queda «sin lead» en la cola: no se evalúa contra otro lead que comparta el teléfono.
 - **Sin probar en producción** ni con ClickUp real. Probado con Postgres en memoria y ClickUp falso (ver las pruebas `captacion-vinculo.test.ts`).
 - **Teléfonos de otros países sin prefijo:** sin el país no se pueden normalizar (`020 7946 0958` puede ser de cualquier sitio); coinciden los escritos con prefijo (`+44 20 7946 0958`) y los españoles en cualquier formato.
 - **Asignación a mano durante una evaluación en curso:** si ocurre mientras se evalúa una llamada y es a otra tarjeta, no se escribe en ClickUp y la llamada pasa a la cola de errores con aviso (la evaluación ya quedó guardada sobre la primera tarjeta). Con la llamada a punto de rendirse como «sin lead», se reabre.

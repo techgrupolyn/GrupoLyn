@@ -179,6 +179,19 @@ describe.skipIf(!hayBaseDePruebas)('cruce de llamadas con leads, de punta a punt
     expect(await vinculo(vieja)).toMatchObject({ estado: 'vinculada', clickup_task_id: 'T1' });
   });
 
+  it('la pasada normal recorre TODAS las llamadas pendientes por lotes: las que no coinciden y se re-miran cada minuto no tapan a las más antiguas', async () => {
+    const ids: string[] = [];
+    for (let i = 1; i <= 5; i += 1) ids.push(await llamada(`u${i}`, `+3460011122${i}`, new Date(Date.now() - (10 - i) * 86_400_000).toISOString()));
+    const v = new VinculadorLlamadas({ pool, cliente, loteRepaso: 2, vigenciaLeadsMs: 0 });
+    expect(await v.ejecutar()).toMatchObject({ revisadas: 5, sinCoincidencia: 5 });
+    // Ahora aparece el lead de la llamada MÁS ANTIGUA y llega una llamada nueva: con un tope de 2 por pasada y el orden «más reciente primero», ninguna de las dos se vería.
+    falso.tareas = [{ id: 'T1', nombre: 'La más antigua', telefono: '+34600111221', etapa: 0 }];
+    const nueva = await llamada('u6', '+34600111226');
+    expect(await v.ejecutar()).toMatchObject({ revisadas: 6, vinculadas: 1, sinCoincidencia: 5 });
+    expect(await vinculo(ids[0]!)).toMatchObject({ estado: 'vinculada', clickup_task_id: 'T1' });
+    expect(await vinculo(nueva)).toMatchObject({ estado: 'sin_coincidencia' });
+  });
+
   it('el cruce solo LEE ClickUp (ninguna petición que no sea GET) y cuenta también las tarjetas cerradas; las subtareas no', async () => {
     const id = await llamada('u1', '+34600111222');
     const cerrada = await llamada('u2', '+34600111223');

@@ -201,6 +201,12 @@ export class ProcesadorCola {
 
     // N-1.0: si una persona asignó esta llamada a una tarjeta a mano (el teléfono coincidía con varias), esa asignación manda.
     const asignada = await this.asignadaAMano(fila.llamada_id);
+    // Asignada a una tarjeta que existe pero ya no es un lead vivo (cerrada, o en F2 o después): no se califica, y tampoco se evalúa contra OTRO lead que comparta el teléfono.
+    // Una tarjeta que ya no existe en la lista no cuenta: ahí vuelve el cruce normal.
+    const tareaAsignada = asignada ? inst.porId.get(asignada) : undefined;
+    if (tareaAsignada && !esVivo(tareaAsignada)) {
+      return this.cerrar(fila, 'sin_lead', 'la llamada está asignada a mano a un lead que ya no está vivo (cerrado o en F2 o después): no se califica');
+    }
     const entrada: EntradaLlamada = {
       llamadaId: String(l.id), telefonoE164: l.phone_e164, ocurridaEn: new Date(l.occurred_at), direccion: l.direction,
       duracionSegundos: l.duration_seconds, transcripcion: transcripcionPorTurnos(l.segments, l.text ?? ''),
@@ -261,7 +267,7 @@ export class ProcesadorCola {
     }
   }
 
-  private async cerrar(fila: Reclamada, estado: 'sin_conversacion', motivo: string): Promise<SalidaCola> {
+  private async cerrar(fila: Reclamada, estado: 'sin_conversacion' | 'sin_lead', motivo: string): Promise<SalidaCola> {
     await this.d.pool.query(`UPDATE captacion_cola SET estado = $2, motivo = $3, actualizado_en = now() WHERE llamada_id = $1`, [fila.llamada_id, estado, motivo.slice(0, 500)]);
     return estado;
   }

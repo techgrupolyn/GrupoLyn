@@ -382,6 +382,20 @@ describe.skipIf(!hayBaseDePruebas)('cola de captación, de punta a punta', () =>
     expect(await fila(id)).toMatchObject({ estado: 'procesada', clickup_task_id: 'ana' });
     expect(avisos).toEqual([]);
   });
+  it('N-1.0: asignada a mano a una tarjeta que existe pero ya no es lead vivo, no se evalúa contra OTRO lead con el mismo teléfono: queda sin lead, sin gastar el modelo', async () => {
+    tareas(
+      { id: 'cerrada', nombre: 'Ana (perdida)', telefono: '+34600000001', etapa: ETAPA.perdido },
+      { id: 'ana', nombre: 'Ana (viva)', telefono: '+34600000001', etapa: ETAPA.viabilidad },
+    );
+    const id = await llamada('u1', '+34600000001');
+    await base.query("INSERT INTO captacion_llamada_lead (call_id, estado, clickup_task_id, lead_nombre, via, origen) VALUES ($1, 'vinculada', 'cerrada', 'Ana (perdida)', 'manual', 'manual')", [id]);
+    expect(await procesador({ escribir: true }).procesarSiguiente()).toBe('sin_lead');
+    expect(await fila(id)).toMatchObject({ estado: 'sin_lead' });
+    expect(String((await fila(id))!.motivo)).toContain('no está vivo');
+    expect(peticiones).toEqual([]);
+    expect(posts()).toEqual([]);
+  });
+
   it('una llamada sin número (oculto) queda sin lead; una grabación sin conversación se cierra sin gastar intentos del modelo', async () => {
     tareas({ id: 'ana', nombre: 'Ana', telefono: '+34600000001', etapa: ETAPA.viabilidad });
     const oculta = await llamada('u1', null);

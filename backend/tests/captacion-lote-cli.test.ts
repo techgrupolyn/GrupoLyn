@@ -1,7 +1,17 @@
 // Ejecutable del lote: argumentos, informe CSV, resumen y las protecciones de arranque (todo sin base de datos ni red).
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { Pool } from 'pg';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { RespuestaModelo } from '../netelip/calificador/modelo.ts';
+import { ClickUpClient } from '../netelip/captacion/clickup.ts';
 import type { InformeLote } from '../netelip/captacion/lote.ts';
 import { baseParecePruebas, informeCsv, leerArgumentos, main, resumenTexto } from '../netelip/captacion/lote-cli.ts';
+import { ensureNetelipCalls } from '../netelip/schema.ts';
+import { abrirBaseAislada, hayBaseDePruebas, type BaseAislada } from './helpers/captacion-base.ts';
+import { salidaModelo, TRANSCRIPCION_BASE } from './helpers/captacion-llamadas.ts';
+import { levantarClickUpFalso, LISTA_FALSA, TOKEN_FALSO, type ClickUpFalso } from './helpers/clickup-falso.ts';
 
 const base = ['--desde', '2026-11-05', '--hasta', '2026-11-13', '--informe', 'C:/fuera/informe.csv'];
 
@@ -193,5 +203,106 @@ describe('captación · lote-cli · protecciones de arranque', () => {
 
   it('con argumentos mal puestos falla antes de mirar el entorno', async () => {
     await expect(main(['--desde', '2026-11-05'], {})).rejects.toThrow('--hasta debe ser una fecha');
+  });
+});
+
+// `main` completo: base de QA aislada, ClickUp falso por HTTP y modelo falso. Sin red real y sin tocar ClickUp.
+describe.skipIf(!hayBaseDePruebas)('captación · lote-cli · main de punta a punta', () => {
+  const ambiente = { DATABASE_URL: 'postgres://postgres@127.0.0.1:54329/lyn_qa_retest', CLICKUP_API_TOKEN: TOKEN_FALSO, CAPTACION_CLICKUP_LIST_ID: LISTA_FALSA };
+  let base: BaseAislada;
+  let pool: Pool;
+  let falso: ClickUpFalso;
+  let cliente: ClickUpClient;
+  let carpeta: string;
+  let salida: string[];
+  let aviso: ReturnType<typeof vi.spyOn>;
+  let escrito: ReturnType<typeof vi.spyOn>;
+
+  const evaluar = async (_sistema: string, usuario: string): Promise<RespuestaModelo> => {
+    const id = /interaccion_id (\S+)/.exec(usuario)![1]!;
+    return { text: salidaModelo(id), model: 'gemini-falso', inputTokens: 1000, outputTokens: 200 };
+  };
+  const argumentos = (informe: string, ...extra: string[]) => ['--desde', '2026-11-01', '--hasta', '2026-11-13', '--informe', informe, ...extra];
+  const posts = () => falso.peticiones.filter((p) => p.metodo !== 'GET');
+
+  beforeEach(async () => {
+    base = await abrirBaseAislada();
+    pool = { query: (sql: string, params?: unknown[]) => base.query(sql, params), connect: async () => ({ query: (sql: string, params?: unknown[]) => base.query(sql, params), release: () => undefined }) } as unknown as Pool;
+    await base.exec(`
+      CREATE TABLE empleados (id VARCHAR(255) PRIMARY KEY, nombre TEXT);
+      CREATE TABLE clientes (id VARCHAR(255) PRIMARY KEY, nombre TEXT, apellido TEXT);
+      CREATE TABLE crm_leads (id UUID PRIMARY KEY, name TEXT);
+    `);
+    await ensureNetelipCalls(pool);
+    falso = await levantarClickUpFalso();
+    falso.tareas = [{ id: 'ana', nombre: 'Ana Beltrán', telefono: '+34600111222', etapa: 1, tipoContacto: 0 }];
+    cliente = new ClickUpClient({ token: TOKEN_FALSO, listaId: LISTA_FALSA, baseUrl: falso.base, pausaMs: 0, esperar: async () => undefined });
+    const r = await base.query<{ id: string }>(
+      `INSERT INTO netelip_calls (external_id, direction, occurred_at, started_at_source, counterpart_phone, phone_e164, contact_status, duration_seconds, call_status, received_at)
+       VALUES ('u1', 'outbound', '2026-11-10T10:00:00Z', 'uniqueid', '+34600111222', '+34600111222', 'unknown', 240, 'ANSWERED', now()) RETURNING id`,
+    );
+    await base.query('INSERT INTO netelip_call_transcriptions (call_id, status, text, segments) VALUES ($1, $2, $3, NULL)', [String(r.rows[0]!.id), 'completed', TRANSCRIPCION_BASE]);
+    carpeta = mkdtempSync(join(tmpdir(), 'lote-cli-'));
+    salida = [];
+    escrito = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { salida.push(a.join(' ')); });
+    aviso = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(async () => {
+    escrito.mockRestore();
+    aviso.mockRestore();
+    rmSync(carpeta, { recursive: true, force: true });
+    await falso.cerrar();
+    await base.cerrar();
+  });
+
+  it('simulacro (por defecto): califica, escribe el informe CSV, imprime solo totales y NO escribe nada en ClickUp', async () => {
+    const informe = join(carpeta, 'informe.csv');
+    expect(await main(argumentos(informe), ambiente, { pool, cliente, evaluar })).toBe(0);
+
+    const csv = readFileSync(informe, 'utf8');
+    expect(csv.startsWith('﻿fecha;llamada;lead;')).toBe(true);
+    const filas = csv.trim().split('\r\n');
+    expect(filas).toHaveLength(2);
+    expect(filas[1]).toContain('Ana Beltrán');
+    expect(filas[1]).toContain(';procesada;');
+
+    const pantalla = salida.join('\n');
+    expect(pantalla).toContain('Llamadas procesadas: 1');
+    expect(pantalla).toContain('Escritura en ClickUp: 0 leads escritos · 1 en simulacro');
+    expect(pantalla).toContain(`Informe: ${informe}`);
+    // En pantalla solo van totales: ni el nombre del lead ni el teléfono.
+    expect(pantalla).not.toContain('Ana Beltrán');
+    expect(pantalla).not.toContain('600111222');
+    expect(posts()).toEqual([]);
+  });
+
+  it('con --escribir 1 escribe la categoría del lead en ClickUp y lo cuenta', async () => {
+    const informe = join(carpeta, 'informe.csv');
+    expect(await main(argumentos(informe, '--escribir', '1'), ambiente, { pool, cliente, evaluar })).toBe(0);
+    expect(salida.join('\n')).toContain('Escritura en ClickUp: 1 leads escritos');
+    expect(posts().length).toBeGreaterThan(0);
+    expect(posts().every((p) => p.ruta.startsWith('/task/ana/'))).toBe(true);
+  });
+
+  it('crea las tablas de la captación y no cierra la conexión que le pasan', async () => {
+    // El esquema de Netelip ya las crea al montar la prueba: se borran con el script de reversión para ver que `main` las vuelve a crear.
+    await base.exec(readFileSync(new URL('../netelip/captacion/schema-down.sql', import.meta.url), 'utf8'));
+    const antes = await base.query<{ t: string | null }>(`SELECT to_regclass('captacion_cola')::text AS t`);
+    expect(antes.rows[0]!.t).toBeNull();
+    await main(argumentos(join(carpeta, 'informe.csv')), ambiente, { pool, cliente, evaluar });
+    const tabla = await base.query<{ t: string | null }>(`SELECT to_regclass('captacion_cola')::text AS t`);
+    expect(tabla.rows[0]!.t).not.toBeNull();
+    // Sigue utilizable: main no la cerró.
+    expect((await base.query('SELECT 1 AS uno')).rows).toHaveLength(1);
+  });
+
+  it('si el modelo falla, el lote termina igual y el informe dice por qué esa llamada no tiene calificación', async () => {
+    const informe = join(carpeta, 'informe.csv');
+    const roto = async (): Promise<RespuestaModelo> => { throw new Error('Gemini respondió HTTP 503'); };
+    expect(await main(argumentos(informe), ambiente, { pool, cliente, evaluar: roto })).toBe(0);
+    const filas = readFileSync(informe, 'utf8').trim().split('\r\n');
+    expect(filas).toHaveLength(2);
+    expect(filas[1]).not.toContain(';procesada;');
+    expect(salida.join('\n')).toContain('Llamadas procesadas: 1');
   });
 });
