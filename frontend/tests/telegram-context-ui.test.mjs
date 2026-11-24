@@ -38,3 +38,8 @@ test('date filtering is applied explicitly and the same period goes to message l
  try{await tick();const d=dom.window.document;d.querySelector('#groups button').click();await tick();assert.equal(d.getElementById('specialist').options[0].textContent,'Agente existente de prueba');d.getElementById('from').value='2026-11-01T10:00';d.getElementById('to').value='2026-11-12T18:00';d.getElementById('applyPeriod').click();await tick();assert.match(d.getElementById('messageScope').textContent,/periodo seleccionado/);assert.ok(calls.some(c=>c.url.includes('&from=')&&c.url.includes('&to=')));d.getElementById('analyze').click();await tick();const body=JSON.parse(calls.find(c=>c.url.endsWith('analyze')).init.body);assert.ok(body.from&&body.to);assert.equal(body.specialistId,'general');assert.match(d.getElementById('analysis').textContent,/Resumen del periodo/);
  }finally{dom.window.close();}
 });
+
+for(const testOnly of [true,false])test('the conversation page states its authenticated server scope: testOnly='+testOnly,async()=>{
+ const dom=fixtureDom(async()=>({ok:true,json:async()=>({testOnly,conversations:[]})}));
+ try{await tick();assert.match(dom.window.document.getElementById('scope').textContent,testOnly?/Grupos de prueba/:/Grupos reales autorizados por Club LYN/);}finally{dom.window.close();}
+});
