@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import {registerTelegramContextRoutes} from './telegram-context.ts';
+import {registerTelegramResponseProcessing} from './telegram-response-processing.ts';
 import {createTelegramContextAccess,isTelegramContextRoute} from './telegram-access.ts';
 import {isReceivableWhatsAppJid,associateDirectClient} from './whatsapp-reception.ts';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
@@ -246,6 +247,7 @@ const activationLimiter = rateLimit({ windowMs: 15 * 60_000, max: 12, standardHe
   message: { error: 'Demasiados intentos de activación. Espera unos minutos e inténtalo nuevamente.' } });
 const ceoLoginLimiter = rateLimit({ windowMs: 15 * 60_000, max: 10, standardHeaders: true, legacyHeaders: false,
   message: { error: 'Demasiados intentos de inicio de sesión. Espera unos minutos e inténtalo nuevamente.' } });
+registerTelegramResponseProcessing(app,{pool,resolveSpecialist,callAgent:(prompt,model,system)=>callGeminiWithPromptResult(prompt,model,system)});
 app.use('/api', limiter, requireApiAccess);
 
 const server = createServer(app);
