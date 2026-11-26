@@ -15,7 +15,7 @@ export function parseResponseOutput(text:string,mode:string,ids:string[]){
  for(const i of value.issues){
   if(!ids.includes(String(i.messageId))||seen.has(String(i.messageId))||typeof i.topic!=='string'||!i.topic.trim()||i.topic.length>200||
    !['urgente','pendiente','informativo'].includes(i.priority)||typeof i.needsResponse!=='boolean'||!roles.includes(i.primaryRole)||
-   !Array.isArray(i.supportRoles)||i.supportRoles.length>4||i.supportRoles.some((r:any)=>!roles.includes(r)||r===i.primaryRole)||
+   !Array.isArray(i.supportRoles)||i.supportRoles.length>4||new Set(i.supportRoles).size!==i.supportRoles.length||i.supportRoles.some((r:any)=>!roles.includes(r)||r===i.primaryRole)||
    (!i.needsResponse&&i.priority!=='informativo')||(i.needsResponse&&i.priority==='informativo'))fail('invalid_response_output');
   seen.add(String(i.messageId));
  }
@@ -40,7 +40,7 @@ export async function processTelegramResponses(deps:Dependencies,body:any){
  const selected=body.messages.map((ref:any)=>rows.find(m=>String(m.telegram_message_id)===String(ref.messageId)&&String(m.telegram_update_id)===String(ref.updateId)));
  if(selected.some((m:any)=>!m||m.autor_tipo==='equipo'))fail('telegram_response_context_changed');
  const primary=body.mode==='classify'?'general':specialistFor(body.primaryRole);
- if(body.mode==='draft'&&(!roles.includes(body.primaryRole)||!Array.isArray(body.supportRoles)||body.supportRoles.some((r:any)=>!roles.includes(r))))fail('invalid_response_request');
+ if(body.mode==='draft'&&(!roles.includes(body.primaryRole)||!Array.isArray(body.supportRoles)||body.supportRoles.length>4||new Set(body.supportRoles).size!==body.supportRoles.length||body.supportRoles.includes(body.primaryRole)||body.supportRoles.some((r:any)=>!roles.includes(r))))fail('invalid_response_request');
  const specialist=deps.resolveSpecialist(primary),active=(await deps.pool.query('select id from especialistas where activo')).rows.map(s=>s.id);
  if(!specialist||!active.includes(specialist.id))fail('existing_specialist_required');
  const support=(body.mode==='draft'?body.supportRoles:[]).map((r:string)=>deps.resolveSpecialist(specialistFor(r)));
