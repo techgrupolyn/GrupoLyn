@@ -54,7 +54,7 @@ jobs:
       - run: npm test
         working-directory: backend
       - name: Telegram context and privacy regressions
-        run: node node_modules/tsx/dist/cli.mjs --test --test-reporter=tap telegram-context.test.ts telegram-production-routes.test.ts telegram-context-transport-evidence.test.ts telegram-routes.test.ts telegram-transport.test.ts telegram-access.test.ts telegram-privacy-readiness.test.ts whatsapp-reception.test.ts telegram-privacy-regression.test.ts telegram-privacy-corpus.test.ts telegram-privacy-transport-corpus.test.ts
+        run: node node_modules/tsx/dist/cli.mjs --test --test-reporter=tap telegram-response-processing.test.ts telegram-context.test.ts telegram-production-routes.test.ts telegram-context-transport-evidence.test.ts telegram-routes.test.ts telegram-transport.test.ts telegram-access.test.ts telegram-privacy-readiness.test.ts whatsapp-reception.test.ts telegram-privacy-regression.test.ts telegram-privacy-corpus.test.ts telegram-privacy-transport-corpus.test.ts
         working-directory: backend
       - run: npm audit --omit=dev
         working-directory: backend
