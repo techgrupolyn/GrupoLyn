@@ -35,6 +35,12 @@ export async function processTelegramResponses(deps:Dependencies,body:any){
    (t.is_test OR ($2::boolean AND public.telegram_central_scope_ready(t.bot_id,t.chat_id,t.club_group_id,t.proyecto_id,$3,m.timestamp)))
   order by m.timestamp desc,m.id desc limit 1001`,[body.chatId,process.env.TELEGRAM_CONTEXT_PRODUCTION_ENABLE==='true',body.mode==='metadata'?'context':'ai'])).rows.reverse();
  if(rows.length>1000)fail('telegram_context_too_large');
+ if(!rows.length&&body.mode==='metadata'){
+  const target=(await deps.pool.query(`select exists(select from telegram_ingestion_targets t join proyectos p on p.id=t.proyecto_id and p.activo
+   where 'telegram:'||t.bot_id::text||'::'||t.chat_id::text=$1 and t.club_group_id=$2::uuid and t.enabled and
+   (t.is_test or ($3::boolean and public.telegram_central_scope_ready(t.bot_id,t.chat_id,t.club_group_id,t.proyecto_id,'context',clock_timestamp())))) allowed`,[body.chatId,body.groupId,process.env.TELEGRAM_CONTEXT_PRODUCTION_ENABLE==='true'])).rows[0]?.allowed;
+  if(target!==true)fail('telegram_response_context_denied');return{messages:[]};
+ }
  if(!rows.length||rows.some(m=>m.club_group_id!==body.groupId))fail('telegram_response_context_denied');
  if(body.mode==='metadata')return{messages:rows.map(m=>({messageId:Number(m.telegram_message_id),updateId:Number(m.telegram_update_id),actorType:m.autor_tipo||'no_identificado',sentAt:new Date(m.timestamp).toISOString()}))};
  const selected=body.messages.map((ref:any)=>rows.find(m=>String(m.telegram_message_id)===String(ref.messageId)&&String(m.telegram_update_id)===String(ref.updateId)));

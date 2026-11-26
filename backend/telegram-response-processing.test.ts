@@ -19,6 +19,13 @@ test('metadata contains only provenance and never invokes AI; stale references a
  await assert.rejects(processTelegramResponses(f.deps,{...request,messages:[{messageId:1,updateId:6}]}),/context_changed/);
  await assert.rejects(processTelegramResponses({...f.deps,pool:{query:async()=>({rows:[]})}},request),/context_denied/);
 });
+test('authorized empty groups have an empty inbox; disabled targets remain denied',async()=>{
+ const f=fixture();let allowed=true;
+ const deps={...f.deps,pool:{query:async(sql:string)=>sql.includes('from mensajes')?{rows:[]}:{rows:[{allowed}]}}};
+ const body={...request,mode:'metadata',messages:[]};
+ assert.deepEqual(await processTelegramResponses(deps,body),{messages:[]});assert.equal(f.calls.length,0);
+ allowed=false;await assert.rejects(processTelegramResponses(deps,body),/context_denied/);
+});
 test('strict output rejects missing IDs, invented roles, priority contradictions and non-JSON',()=>{
  for(const candidate of [{issues:[]},{issues:[{...issue,messageId:'2'}]},{issues:[{...issue,primaryRole:'CEO'}]},{issues:[{...issue,needsResponse:false}]},{issues:[issue,issue]}])assert.throws(()=>parseResponseOutput(JSON.stringify(candidate),'classify',['1']));
  assert.throws(()=>parseResponseOutput('no JSON','draft',['1']));assert.throws(()=>parseResponseOutput('{"text":""}','draft',['1']));
